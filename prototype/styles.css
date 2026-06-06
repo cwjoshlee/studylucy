@@ -372,6 +372,10 @@ textarea {
   background: #f7fbff;
 }
 
+.answer-panel.locked {
+  background: #fbfcff;
+}
+
 .answer-panel label,
 .manual-panel label {
   display: block;
@@ -398,6 +402,12 @@ textarea {
   font-weight: 900;
 }
 
+.answer-row input:disabled {
+  background: #edf2f7;
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
 .answer-unit {
   min-width: 36px;
   color: var(--muted);
@@ -420,6 +430,12 @@ textarea {
   border: 0;
   background: var(--blue);
   color: white;
+}
+
+.answer-row button:disabled {
+  background: #aebecb;
+  color: #f8fafc;
+  cursor: not-allowed;
 }
 
 .control-row {
@@ -562,6 +578,25 @@ textarea {
   min-height: 46px;
   padding: 10px 12px;
   border-radius: 8px;
+}
+
+.answer-lock {
+  display: block;
+  width: 100%;
+  padding: 10px 12px;
+  border-radius: 8px;
+  line-height: 1.5;
+}
+
+.answer-lock.locked {
+  border: 1px dashed rgba(63, 127, 189, 0.45);
+  background: #f6f9ff;
+  color: var(--muted);
+}
+
+.answer-lock.unlocked {
+  background: #e9f7ef;
+  color: #14623f;
 }
 
 .math-feedback.pass {
