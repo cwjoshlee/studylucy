@@ -283,7 +283,7 @@ const PROBLEMS = [
 ];
 
 const READING_PASS_SCORE = 85;
-const READING_LISTENING_LIMIT_MS = 120000;
+const READING_LISTENING_LIMIT_MS = 60000;
 const RECOGNITION_RESTART_DELAY_MS = 250;
 const PROGRESS_STORAGE_KEY = "sua-learning-progress-v3";
 
@@ -493,7 +493,7 @@ function startBrowserSpeechRecognition() {
   recognitionStartedAt = Date.now();
   els.startReading.classList.add("listening");
   els.startReading.innerHTML = '<span aria-hidden="true">■</span>읽기 완료';
-  els.recordingStatus.textContent = "최대 2분 동안 듣고 있어요. 다 읽으면 읽기 완료를 눌러주세요.";
+  els.recordingStatus.textContent = "최대 1분 동안 듣고 있어요. 다 읽으면 읽기 완료를 눌러주세요.";
   recognitionStopTimer = window.setTimeout(() => {
     els.recordingStatus.textContent = "읽기 시간이 끝나서 지금까지 들은 내용으로 채점해요.";
     stopBrowserSpeechRecognition();
