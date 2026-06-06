@@ -282,6 +282,9 @@ const PROBLEMS = [
   }
 ];
 
+const READING_PASS_SCORE = 85;
+const PROGRESS_STORAGE_KEY = "sua-learning-progress-v2";
+
 const els = {
   modeList: document.querySelector("#modeList"),
   unitName: document.querySelector("#unitName"),
@@ -515,7 +518,7 @@ function judgeTranscript(rawTranscript) {
   }
 
   const result = compareReading(problem, transcript);
-  markRead(problem.id);
+  setReadingPass(problem.id, result.passed);
   if (result.missed.length) {
     addReview(result.missed);
   }
@@ -539,24 +542,25 @@ function compareReading(problem, transcript) {
   const tokenScore = tokenHits.length / Math.max(problem.tokens.length, 1);
   const score = Math.round((similarity * 0.58 + tokenScore * 0.42) * 100);
 
+  const passed = score >= READING_PASS_SCORE && missed.length === 0;
   let level = "retry";
-  let label = "한 번 더";
-  let note = "천천히 한 글자씩 다시 읽어보자.";
+  let label = "읽기 FAIL";
+  let note = `빠진 표현 없이 ${READING_PASS_SCORE}점 이상이어야 PASS예요. 천천히 다시 읽어보자.`;
 
-  if (score >= 86 && missed.length === 0) {
+  if (passed) {
     level = "good";
-    label = "아주 좋아요";
+    label = "읽기 PASS";
     note = "문장을 끝까지 정확하게 읽었어요.";
   } else if (score >= 68 || missed.length <= 1) {
     level = "close";
-    label = "거의 됐어요";
-    note = "어려운 부분만 다시 보면 더 정확해져요.";
+    note = `거의 됐어요. 빠진 표현을 다시 읽고 ${READING_PASS_SCORE}점 이상을 만들어 보자.`;
   }
 
   return {
     level,
     label,
     note,
+    passed,
     score,
     transcript,
     expectedText: getExpectedReadingText(problem),
@@ -579,9 +583,16 @@ function renderFeedback(result) {
   els.missedTokens.innerHTML = "";
   renderReadingReviewText(result);
 
+  if (result.passed) {
+    const chip = document.createElement("span");
+    chip.textContent = "PASS";
+    els.missedTokens.appendChild(chip);
+    return;
+  }
+
   if (result.missed.length === 0) {
     const chip = document.createElement("span");
-    chip.textContent = "다 읽었어요";
+    chip.textContent = `${READING_PASS_SCORE}점 이상 필요`;
     els.missedTokens.appendChild(chip);
     return;
   }
@@ -718,8 +729,8 @@ function renderMathGateMessage(problem) {
 
   els.answerFeedback.className = `soft-feedback answer-lock ${isMathAnswerUnlocked(problem) ? "unlocked" : "locked"}`;
   els.answerFeedback.textContent = isMathAnswerUnlocked(problem)
-    ? "읽기 완료. 이제 답을 쓸 수 있어요."
-    : "먼저 지문과 문제를 소리 내어 읽으면 답을 쓸 수 있어요.";
+    ? "읽기 PASS. 이제 답을 쓸 수 있어요."
+    : `먼저 지문과 문제를 끝까지 읽어 PASS를 받아야 해요. 기준은 ${READING_PASS_SCORE}점 이상, 빠진 표현 없음이에요.`;
 }
 
 function getExpectedReadingText(problem) {
@@ -805,10 +816,15 @@ function levenshtein(a, b) {
   return rows[a.length][b.length];
 }
 
-function markRead(id) {
-  if (!progress.readIds.includes(id)) {
+function setReadingPass(id, passed) {
+  if (passed && !progress.readIds.includes(id)) {
     progress.readIds.push(id);
   }
+
+  if (!passed) {
+    progress.readIds = progress.readIds.filter((readId) => readId !== id);
+  }
+
   saveProgress();
 }
 
@@ -825,7 +841,7 @@ function addReview(tokens) {
 function renderProgress() {
   const percent = Math.round((progress.readIds.length / PROBLEMS.length) * 100);
   els.progressPercent.textContent = `${percent}%`;
-  els.progressText.textContent = `단락/문제 ${progress.readIds.length}개를 읽었어요.`;
+  els.progressText.textContent = `단락/문제 ${progress.readIds.length}개를 PASS했어요.`;
   els.progressRing.style.background = `conic-gradient(var(--green) ${percent * 3.6}deg, var(--mint) 0deg)`;
   els.reviewList.innerHTML = "";
 
@@ -845,8 +861,8 @@ function renderProgress() {
 
 function loadProgress() {
   try {
-    const saved = window.localStorage.getItem("sua-learning-progress");
-    return saved ? JSON.parse(saved) : { readIds: [], review: [] };
+    const saved = window.localStorage.getItem(PROGRESS_STORAGE_KEY);
+    return normalizeProgress(saved ? JSON.parse(saved) : null);
   } catch {
     return { readIds: [], review: [] };
   }
@@ -854,10 +870,17 @@ function loadProgress() {
 
 function saveProgress() {
   try {
-    window.localStorage.setItem("sua-learning-progress", JSON.stringify(progress));
+    window.localStorage.setItem(PROGRESS_STORAGE_KEY, JSON.stringify(progress));
   } catch {
     // Local storage can be disabled in some browsers; the app still works without it.
   }
+}
+
+function normalizeProgress(saved) {
+  return {
+    readIds: Array.isArray(saved?.readIds) ? saved.readIds : [],
+    review: Array.isArray(saved?.review) ? saved.review : []
+  };
 }
 
 function registerServiceWorker() {
