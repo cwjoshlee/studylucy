@@ -283,7 +283,7 @@ const PROBLEMS = [
 ];
 
 const READING_PASS_SCORE = 85;
-const PROGRESS_STORAGE_KEY = "sua-learning-progress-v2";
+const PROGRESS_STORAGE_KEY = "sua-learning-progress-v3";
 
 const els = {
   modeList: document.querySelector("#modeList"),
@@ -354,11 +354,12 @@ function bindEvents() {
     }
   });
   els.resetProgress.addEventListener("click", () => {
-    progress = { readIds: [], review: [] };
+    progress = { readIds: [], mathPassIds: [], review: [] };
     saveProgress();
     renderProgress();
     renderFeedback(null);
     updateMathAnswerGate(currentProblem());
+    updateNextGate(currentProblem());
   });
 }
 
@@ -415,7 +416,9 @@ function renderProblem() {
   els.mathAnswer.value = "";
   els.mathAnswerPanel.classList.toggle("hidden", typeof problem.answer !== "number");
   els.answerUnit.textContent = problem.unitLabel || "";
+  els.recordingStatus.textContent = "읽을 준비가 되었어요.";
   updateMathAnswerGate(problem);
+  updateNextGate(problem);
 }
 
 function setupSpeechRecognition() {
@@ -525,7 +528,10 @@ function judgeTranscript(rawTranscript) {
   renderProgress();
   renderFeedback(result);
   updateMathAnswerGate(problem);
-  els.recordingStatus.textContent = "Chrome 음성 인식 전사 결과로 바로 채점했어요.";
+  updateNextGate(problem);
+  els.recordingStatus.textContent = result.passed
+    ? "읽기 PASS예요."
+    : getNextGateMessage(problem);
 }
 
 function compareReading(problem, transcript) {
@@ -681,12 +687,15 @@ function checkMathAnswer() {
     return;
   }
 
+  const passed = value === problem.answer;
+  setMathPass(problem.id, passed);
   renderMathFeedback(
-    value === problem.answer ? "pass" : "fail",
-    value === problem.answer
-      ? `정답이에요. 정답은 ${formatAnswer(problem)}.`
+    passed ? "pass" : "fail",
+    passed
+      ? `정답이에요. 정답은 ${formatAnswer(problem)}. 이제 다음 문제로 갈 수 있어요.`
       : `다시 해보자. ${problem.checkHint || "지문에서 중요한 수를 다시 찾아보자."}`
   );
+  updateNextGate(problem);
 }
 
 function renderMathFeedback(result, message) {
@@ -733,6 +742,42 @@ function renderMathGateMessage(problem) {
     : `먼저 지문과 문제를 끝까지 읽어 PASS를 받아야 해요. 기준은 ${READING_PASS_SCORE}점 이상, 빠진 표현 없음이에요.`;
 }
 
+function updateNextGate(problem) {
+  const unlocked = canGoNext(problem);
+  els.nextProblem.disabled = !unlocked;
+  els.nextProblem.classList.toggle("locked", !unlocked);
+  els.nextProblem.title = unlocked ? "다음 문제" : getNextGateMessage(problem);
+  els.nextProblem.setAttribute("aria-disabled", String(!unlocked));
+}
+
+function canGoNext(problem) {
+  if (!isReadingPassed(problem)) {
+    return false;
+  }
+
+  if (typeof problem.answer === "number") {
+    return progress.mathPassIds.includes(problem.id);
+  }
+
+  return true;
+}
+
+function getNextGateMessage(problem) {
+  if (!isReadingPassed(problem)) {
+    return `읽기 PASS를 받아야 다음 문제로 갈 수 있어요. 기준은 ${READING_PASS_SCORE}점 이상, 빠진 표현 없음이에요.`;
+  }
+
+  if (typeof problem.answer === "number" && !progress.mathPassIds.includes(problem.id)) {
+    return "수학 답이 PASS여야 다음 문제로 갈 수 있어요.";
+  }
+
+  return "";
+}
+
+function isReadingPassed(problem) {
+  return progress.readIds.includes(problem.id);
+}
+
 function getExpectedReadingText(problem) {
   return [problem.text, problem.question].filter(Boolean).join(" ");
 }
@@ -743,6 +788,19 @@ function formatAnswer(problem) {
 }
 
 function goNext() {
+  const problem = currentProblem();
+  if (!canGoNext(problem)) {
+    const message = getNextGateMessage(problem);
+    if (typeof problem.answer === "number") {
+      els.answerFeedback.className = "soft-feedback answer-lock locked";
+      els.answerFeedback.textContent = message;
+    } else {
+      els.recordingStatus.textContent = message;
+    }
+    updateNextGate(problem);
+    return;
+  }
+
   const list = getActiveProblems();
   problemIndex = (problemIndex + 1) % list.length;
   renderProblem();
@@ -823,6 +881,19 @@ function setReadingPass(id, passed) {
 
   if (!passed) {
     progress.readIds = progress.readIds.filter((readId) => readId !== id);
+    progress.mathPassIds = progress.mathPassIds.filter((mathId) => mathId !== id);
+  }
+
+  saveProgress();
+}
+
+function setMathPass(id, passed) {
+  if (passed && !progress.mathPassIds.includes(id)) {
+    progress.mathPassIds.push(id);
+  }
+
+  if (!passed) {
+    progress.mathPassIds = progress.mathPassIds.filter((mathId) => mathId !== id);
   }
 
   saveProgress();
@@ -864,7 +935,7 @@ function loadProgress() {
     const saved = window.localStorage.getItem(PROGRESS_STORAGE_KEY);
     return normalizeProgress(saved ? JSON.parse(saved) : null);
   } catch {
-    return { readIds: [], review: [] };
+    return { readIds: [], mathPassIds: [], review: [] };
   }
 }
 
@@ -879,6 +950,7 @@ function saveProgress() {
 function normalizeProgress(saved) {
   return {
     readIds: Array.isArray(saved?.readIds) ? saved.readIds : [],
+    mathPassIds: Array.isArray(saved?.mathPassIds) ? saved.mathPassIds : [],
     review: Array.isArray(saved?.review) ? saved.review : []
   };
 }

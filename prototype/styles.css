@@ -479,6 +479,14 @@ textarea {
   color: var(--ink);
 }
 
+.secondary-button:disabled,
+.secondary-button.locked {
+  border-color: #aebecb;
+  background: #edf2f7;
+  color: var(--muted);
+  cursor: not-allowed;
+}
+
 .manual-panel {
   margin: 14px 0;
   padding: 14px;
