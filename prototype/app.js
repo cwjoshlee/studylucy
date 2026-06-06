@@ -335,6 +335,7 @@ let shouldRestartRecognition = false;
 let recognitionStopTimer = null;
 let recognitionStartedAt = 0;
 let speechTranscriptParts = [];
+let speechSessionResults = [];
 let speechInterimTranscript = "";
 let progress = loadProgress();
 
@@ -552,6 +553,7 @@ function scheduleRecognitionRestart() {
     return;
   }
 
+  commitSpeechSessionTranscript();
   window.setTimeout(() => {
     if (isListening && shouldRestartRecognition && !isFinishingRecognition) {
       startRecognitionEngine();
@@ -560,7 +562,6 @@ function scheduleRecognitionRestart() {
 }
 
 function collectSpeechTranscript(event) {
-  let finalText = "";
   let interimText = "";
   const startIndex = Number.isInteger(event.resultIndex) ? event.resultIndex : 0;
 
@@ -572,14 +573,10 @@ function collectSpeechTranscript(event) {
     }
 
     if (result.isFinal) {
-      finalText = `${finalText} ${transcript}`.trim();
+      speechSessionResults[index] = transcript;
     } else {
       interimText = `${interimText} ${transcript}`.trim();
     }
-  }
-
-  if (finalText) {
-    speechTranscriptParts.push(finalText);
   }
 
   speechInterimTranscript = interimText;
@@ -609,11 +606,47 @@ function finishSpeechRecognitionCapture() {
 
 function resetSpeechCapture() {
   speechTranscriptParts = [];
+  speechSessionResults = [];
   speechInterimTranscript = "";
 }
 
 function getCapturedSpeechTranscript() {
-  return cleanSpeechText([...speechTranscriptParts, speechInterimTranscript].filter(Boolean).join(" "));
+  commitSpeechSessionTranscript();
+  return cleanSpeechText(speechTranscriptParts.join(" "));
+}
+
+function commitSpeechSessionTranscript() {
+  const sessionText = cleanSpeechText([...speechSessionResults, speechInterimTranscript].filter(Boolean).join(" "));
+  if (sessionText) {
+    addSpeechTranscriptPart(sessionText);
+  }
+
+  speechSessionResults = [];
+  speechInterimTranscript = "";
+}
+
+function addSpeechTranscriptPart(text) {
+  const cleaned = cleanSpeechText(text);
+  const previous = speechTranscriptParts[speechTranscriptParts.length - 1] || "";
+  if (!cleaned) {
+    return;
+  }
+
+  if (!previous) {
+    speechTranscriptParts.push(cleaned);
+    return;
+  }
+
+  if (cleaned === previous || previous.endsWith(cleaned)) {
+    return;
+  }
+
+  if (cleaned.startsWith(previous)) {
+    speechTranscriptParts[speechTranscriptParts.length - 1] = cleaned;
+    return;
+  }
+
+  speechTranscriptParts.push(cleaned);
 }
 
 function cleanSpeechText(value) {
