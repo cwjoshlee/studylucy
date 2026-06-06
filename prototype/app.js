@@ -390,6 +390,7 @@ function renderModes() {
       problemIndex = 0;
       renderModes();
       renderProblem();
+      scrollPracticeIntoView();
     });
     els.modeList.appendChild(button);
   });
@@ -425,7 +426,7 @@ function renderProblem() {
   els.mathAnswer.value = "";
   els.mathAnswerPanel.classList.toggle("hidden", typeof problem.answer !== "number");
   els.answerUnit.textContent = problem.unitLabel || "";
-  els.recordingStatus.textContent = "읽을 준비가 되었어요.";
+  updateReadingAvailability();
   updateMathAnswerGate(problem);
   updateNextGate(problem);
 }
@@ -433,8 +434,7 @@ function renderProblem() {
 function setupSpeechRecognition() {
   const SpeechRecognition = window.SpeechRecognition || window.webkitSpeechRecognition;
   if (!SpeechRecognition) {
-    els.manualPanel.classList.remove("hidden");
-    els.recordingStatus.textContent = "이 브라우저에서는 자동 음성 인식이 어려워요. Chrome에서 다시 열거나 수동 입력을 사용해 주세요.";
+    showManualReadingFallback();
     return;
   }
 
@@ -464,6 +464,8 @@ function setupSpeechRecognition() {
 
     finishSpeechRecognitionCapture();
   });
+
+  updateReadingAvailability();
 }
 
 function startReading() {
@@ -481,9 +483,7 @@ function startReading() {
 
 function startBrowserSpeechRecognition() {
   if (!recognition) {
-    els.manualPanel.classList.remove("hidden");
-    els.manualTranscript.focus();
-    els.recordingStatus.textContent = "이 브라우저에서는 자동 음성 인식이 어려워요. Chrome에서 다시 열거나 수동 입력으로 확인해 주세요.";
+    showManualReadingFallback(true);
     return;
   }
 
@@ -507,6 +507,25 @@ function startBrowserSpeechRecognition() {
     setReadingButtonIdle();
     els.manualPanel.classList.remove("hidden");
     els.recordingStatus.textContent = "음성 인식을 다시 시작할 수 없어요. 잠시 후 다시 누르거나 수동 입력을 사용해 주세요.";
+  }
+}
+
+function updateReadingAvailability() {
+  if (!recognition) {
+    showManualReadingFallback();
+    return;
+  }
+
+  els.manualPanel.classList.add("hidden");
+  els.recordingStatus.textContent = "읽을 준비가 되었어요.";
+}
+
+function showManualReadingFallback(shouldFocus = false) {
+  els.manualPanel.classList.remove("hidden");
+  els.recordingStatus.textContent = "이 브라우저에서는 자동 음성 인식이 어려워요. Android Chrome에서 열거나 수동 입력으로 판정해 주세요.";
+
+  if (shouldFocus) {
+    els.manualTranscript.focus();
   }
 }
 
@@ -1038,6 +1057,16 @@ function goNext() {
   const list = getActiveProblems();
   problemIndex = (problemIndex + 1) % list.length;
   renderProblem();
+  scrollPracticeIntoView();
+}
+
+function scrollPracticeIntoView() {
+  window.requestAnimationFrame?.(() => {
+    document.querySelector(".practice-stage")?.scrollIntoView({
+      block: "start",
+      behavior: "smooth"
+    });
+  });
 }
 
 function normalizeText(value) {
