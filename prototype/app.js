@@ -285,7 +285,8 @@ const PROBLEMS = [
 const READING_PASS_SCORE = 85;
 const READING_LISTENING_LIMIT_MS = 60000;
 const RECOGNITION_RESTART_DELAY_MS = 250;
-const PROGRESS_STORAGE_KEY = "sua-learning-progress-v3";
+const PROGRESS_STORAGE_KEY = "sua-learning-progress-v4";
+const TODAY_KEY = getTodayKey();
 
 const els = {
   modeList: document.querySelector("#modeList"),
@@ -363,7 +364,7 @@ function bindEvents() {
     }
   });
   els.resetProgress.addEventListener("click", () => {
-    progress = { readIds: [], mathPassIds: [], review: [] };
+    progress = createEmptyProgress();
     saveProgress();
     renderProgress();
     renderFeedback(null);
@@ -397,10 +398,11 @@ function renderModes() {
 }
 
 function getActiveProblems() {
-  if (activeMode === "mixed") {
-    return PROBLEMS;
-  }
-  return PROBLEMS.filter((problem) => problem.mode === activeMode);
+  const baseProblems = activeMode === "mixed"
+    ? PROBLEMS
+    : PROBLEMS.filter((problem) => problem.mode === activeMode);
+
+  return getDailyProblems(baseProblems, `${TODAY_KEY}:${activeMode}`);
 }
 
 function currentProblem() {
@@ -1175,7 +1177,7 @@ function addReview(tokens) {
 function renderProgress() {
   const percent = Math.round((progress.readIds.length / PROBLEMS.length) * 100);
   els.progressPercent.textContent = `${percent}%`;
-  els.progressText.textContent = `단락/문제 ${progress.readIds.length}개를 PASS했어요.`;
+  els.progressText.textContent = `오늘 단락/문제 ${progress.readIds.length}개를 PASS했어요.`;
   els.progressRing.style.background = `conic-gradient(var(--green) ${percent * 3.6}deg, var(--mint) 0deg)`;
   els.reviewList.innerHTML = "";
 
@@ -1198,7 +1200,7 @@ function loadProgress() {
     const saved = window.localStorage.getItem(PROGRESS_STORAGE_KEY);
     return normalizeProgress(saved ? JSON.parse(saved) : null);
   } catch {
-    return { readIds: [], mathPassIds: [], review: [] };
+    return createEmptyProgress();
   }
 }
 
@@ -1211,11 +1213,65 @@ function saveProgress() {
 }
 
 function normalizeProgress(saved) {
+  if (saved?.dateKey !== TODAY_KEY) {
+    return createEmptyProgress();
+  }
+
   return {
+    dateKey: TODAY_KEY,
     readIds: Array.isArray(saved?.readIds) ? saved.readIds : [],
     mathPassIds: Array.isArray(saved?.mathPassIds) ? saved.mathPassIds : [],
     review: Array.isArray(saved?.review) ? saved.review : []
   };
+}
+
+function createEmptyProgress() {
+  return {
+    dateKey: TODAY_KEY,
+    readIds: [],
+    mathPassIds: [],
+    review: []
+  };
+}
+
+function getTodayKey(date = new Date()) {
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
+}
+
+function getDailyProblems(problems, seedKey) {
+  return seededShuffle(problems, hashSeed(seedKey));
+}
+
+function seededShuffle(items, seed) {
+  const shuffled = [...items];
+  let state = seed || 1;
+
+  for (let index = shuffled.length - 1; index > 0; index -= 1) {
+    state = nextSeed(state);
+    const swapIndex = state % (index + 1);
+    [shuffled[index], shuffled[swapIndex]] = [shuffled[swapIndex], shuffled[index]];
+  }
+
+  return shuffled;
+}
+
+function hashSeed(value) {
+  let hash = 2166136261;
+  const text = String(value || "");
+
+  for (let index = 0; index < text.length; index += 1) {
+    hash ^= text.charCodeAt(index);
+    hash = Math.imul(hash, 16777619);
+  }
+
+  return hash >>> 0;
+}
+
+function nextSeed(seed) {
+  return (Math.imul(seed, 1664525) + 1013904223) >>> 0;
 }
 
 function registerServiceWorker() {

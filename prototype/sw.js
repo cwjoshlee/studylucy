@@ -1,4 +1,4 @@
-const CACHE_NAME = "sua-learning-v18";
+const CACHE_NAME = "sua-learning-v19";
 const APP_SHELL = [
   "./",
   "./index.html",
