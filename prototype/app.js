@@ -283,6 +283,8 @@ const PROBLEMS = [
 ];
 
 const READING_PASS_SCORE = 85;
+const READING_LISTENING_LIMIT_MS = 120000;
+const RECOGNITION_RESTART_DELAY_MS = 250;
 const PROGRESS_STORAGE_KEY = "sua-learning-progress-v3";
 
 const els = {
@@ -328,6 +330,12 @@ let problemIndex = 0;
 let recognition = null;
 let isListening = false;
 let isProcessingReading = false;
+let isFinishingRecognition = false;
+let shouldRestartRecognition = false;
+let recognitionStopTimer = null;
+let recognitionStartedAt = 0;
+let speechTranscriptParts = [];
+let speechInterimTranscript = "";
 let progress = loadProgress();
 
 function boot() {
@@ -431,26 +439,29 @@ function setupSpeechRecognition() {
 
   recognition = new SpeechRecognition();
   recognition.lang = "ko-KR";
-  recognition.interimResults = false;
-  recognition.continuous = false;
+  recognition.interimResults = true;
+  recognition.continuous = true;
 
   recognition.addEventListener("result", (event) => {
-    const transcript = Array.from(event.results)
-      .map((result) => result[0].transcript)
-      .join(" ");
-    judgeTranscript(transcript);
+    collectSpeechTranscript(event);
   });
 
   recognition.addEventListener("end", () => {
-    isListening = false;
-    setReadingButtonIdle();
+    if (isListening && shouldRestartRecognition && !isFinishingRecognition) {
+      scheduleRecognitionRestart();
+      return;
+    }
+
+    finishSpeechRecognitionCapture();
   });
 
   recognition.addEventListener("error", () => {
-    isListening = false;
-    setReadingButtonIdle();
-    els.recordingStatus.textContent = "음성 인식 결과가 없어요. 다시 읽거나 수동 입력으로 확인해 주세요.";
-    els.manualPanel.classList.remove("hidden");
+    if (isListening && shouldRestartRecognition && !isFinishingRecognition) {
+      scheduleRecognitionRestart();
+      return;
+    }
+
+    finishSpeechRecognitionCapture();
   });
 }
 
@@ -475,15 +486,23 @@ function startBrowserSpeechRecognition() {
     return;
   }
 
+  resetSpeechCapture();
   isListening = true;
+  isFinishingRecognition = false;
+  shouldRestartRecognition = true;
+  recognitionStartedAt = Date.now();
   els.startReading.classList.add("listening");
-  els.startReading.innerHTML = '<span aria-hidden="true">■</span>듣기 중지';
-  els.recordingStatus.textContent = "Chrome 브라우저 음성 인식으로 듣고 있어요. 다 읽으면 잠깐 기다려 주세요.";
+  els.startReading.innerHTML = '<span aria-hidden="true">■</span>읽기 완료';
+  els.recordingStatus.textContent = "최대 2분 동안 듣고 있어요. 다 읽으면 읽기 완료를 눌러주세요.";
+  recognitionStopTimer = window.setTimeout(() => {
+    els.recordingStatus.textContent = "읽기 시간이 끝나서 지금까지 들은 내용으로 채점해요.";
+    stopBrowserSpeechRecognition();
+  }, READING_LISTENING_LIMIT_MS);
 
-  try {
-    recognition.start();
-  } catch {
+  if (!startRecognitionEngine()) {
     isListening = false;
+    shouldRestartRecognition = false;
+    clearRecognitionStopTimer();
     setReadingButtonIdle();
     els.manualPanel.classList.remove("hidden");
     els.recordingStatus.textContent = "음성 인식을 다시 시작할 수 없어요. 잠시 후 다시 누르거나 수동 입력을 사용해 주세요.";
@@ -491,14 +510,121 @@ function startBrowserSpeechRecognition() {
 }
 
 function stopBrowserSpeechRecognition() {
+  if (!isListening) {
+    return;
+  }
+
+  isFinishingRecognition = true;
+  shouldRestartRecognition = false;
+  clearRecognitionStopTimer();
+  els.startReading.disabled = true;
+  els.startReading.classList.add("processing");
+  els.recordingStatus.textContent = "읽은 내용을 정리하고 있어요.";
+
   if (recognition) {
-    recognition.stop();
+    try {
+      recognition.stop();
+    } catch {
+      finishSpeechRecognitionCapture();
+    }
   }
 }
 
 function setReadingButtonIdle() {
+  els.startReading.disabled = false;
   els.startReading.classList.remove("listening");
+  els.startReading.classList.remove("processing");
   els.startReading.innerHTML = '<span aria-hidden="true">●</span>읽기 시작';
+}
+
+function startRecognitionEngine() {
+  try {
+    recognition.start();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+function scheduleRecognitionRestart() {
+  if (Date.now() - recognitionStartedAt >= READING_LISTENING_LIMIT_MS) {
+    stopBrowserSpeechRecognition();
+    return;
+  }
+
+  window.setTimeout(() => {
+    if (isListening && shouldRestartRecognition && !isFinishingRecognition) {
+      startRecognitionEngine();
+    }
+  }, RECOGNITION_RESTART_DELAY_MS);
+}
+
+function collectSpeechTranscript(event) {
+  let finalText = "";
+  let interimText = "";
+  const startIndex = Number.isInteger(event.resultIndex) ? event.resultIndex : 0;
+
+  for (let index = startIndex; index < event.results.length; index += 1) {
+    const result = event.results[index];
+    const transcript = cleanSpeechText(result?.[0]?.transcript);
+    if (!transcript) {
+      continue;
+    }
+
+    if (result.isFinal) {
+      finalText = `${finalText} ${transcript}`.trim();
+    } else {
+      interimText = `${interimText} ${transcript}`.trim();
+    }
+  }
+
+  if (finalText) {
+    speechTranscriptParts.push(finalText);
+  }
+
+  speechInterimTranscript = interimText;
+  els.recordingStatus.textContent = "계속 듣고 있어요. 다 읽으면 읽기 완료를 눌러주세요.";
+}
+
+function finishSpeechRecognitionCapture() {
+  if (!isListening && !isFinishingRecognition) {
+    return;
+  }
+
+  const transcript = getCapturedSpeechTranscript();
+  isListening = false;
+  isFinishingRecognition = false;
+  shouldRestartRecognition = false;
+  clearRecognitionStopTimer();
+  setReadingButtonIdle();
+
+  if (transcript) {
+    judgeTranscript(transcript);
+    return;
+  }
+
+  els.recordingStatus.textContent = "음성 인식 결과가 없어요. 다시 읽거나 수동 입력으로 확인해 주세요.";
+  els.manualPanel.classList.remove("hidden");
+}
+
+function resetSpeechCapture() {
+  speechTranscriptParts = [];
+  speechInterimTranscript = "";
+}
+
+function getCapturedSpeechTranscript() {
+  return cleanSpeechText([...speechTranscriptParts, speechInterimTranscript].filter(Boolean).join(" "));
+}
+
+function cleanSpeechText(value) {
+  return String(value || "").trim().replace(/\s+/g, " ");
+}
+
+function clearRecognitionStopTimer() {
+  if (recognitionStopTimer) {
+    window.clearTimeout(recognitionStopTimer);
+    recognitionStopTimer = null;
+  }
 }
 
 function speakCurrentProblem() {
