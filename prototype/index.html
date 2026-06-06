@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#2d7a62">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="application-name" content="수아 학습">
+    <title>수아 학습</title>
+    <link rel="manifest" href="manifest.webmanifest">
+    <link rel="icon" href="assets/icon-192.png">
+    <link rel="apple-touch-icon" href="assets/apple-touch-icon.png">
+    <link rel="stylesheet" href="styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="topbar">
+        <div class="brand">
+          <div class="brand-mark" aria-hidden="true">수</div>
+          <div>
+            <p class="eyebrow">Korean + Math</p>
+            <h1>수아 학습</h1>
+          </div>
+        </div>
+        <div class="session-tools">
+          <label class="toggle">
+            <input id="hintToggle" type="checkbox" checked>
+            <span>English hint</span>
+          </label>
+          <button id="resetProgress" class="icon-button" type="button" title="기록 초기화" aria-label="기록 초기화">↺</button>
+        </div>
+      </header>
+
+      <main class="learning-layout">
+        <aside class="unit-panel" aria-label="학습 단원">
+          <div class="visual-card" aria-hidden="true">
+            <img class="study-visual" src="assets/study-desk.png" alt="">
+          </div>
+
+          <section class="progress-card">
+            <p class="section-label">오늘</p>
+            <div class="progress-ring" aria-label="오늘 진행률">
+              <span id="progressPercent">0%</span>
+            </div>
+            <p id="progressText">문장 0개를 읽었어요.</p>
+          </section>
+
+          <section>
+            <p class="section-label">연습</p>
+            <div id="modeList" class="mode-list"></div>
+          </section>
+        </aside>
+
+        <section class="practice-stage" aria-live="polite">
+          <div class="practice-header">
+            <div>
+              <p id="unitName" class="eyebrow">동화 읽기</p>
+              <h2 id="problemTitle">숲속 작은 등불 1</h2>
+            </div>
+            <div class="level-pill" id="levelPill">1단계</div>
+          </div>
+
+          <article class="reading-card">
+            <p id="readLabel" class="read-label">소리 내어 읽기</p>
+            <div id="readingText" class="reading-text"></div>
+            <p id="englishHint" class="english-hint"></p>
+          </article>
+
+          <section id="mathQuestionPanel" class="math-question-panel hidden">
+            <p class="read-label">문제</p>
+            <div id="mathQuestionText" class="math-question-text"></div>
+          </section>
+
+          <div id="mathAnswerPanel" class="answer-panel hidden">
+            <label for="mathAnswer">답 쓰기</label>
+            <div class="answer-row">
+              <input id="mathAnswer" inputmode="numeric" autocomplete="off" placeholder="숫자">
+              <span id="answerUnit" class="answer-unit" aria-hidden="true"></span>
+              <button id="checkAnswer" type="button">확인</button>
+            </div>
+            <p id="answerFeedback" class="soft-feedback"></p>
+          </div>
+
+          <div class="control-row">
+            <button id="startReading" class="primary-button" type="button">
+              <span aria-hidden="true">●</span>
+              읽기 시작
+            </button>
+            <button id="sampleVoice" class="secondary-button" type="button">
+              <span aria-hidden="true">▶</span>
+              듣기
+            </button>
+            <button id="nextProblem" class="secondary-button" type="button">
+              다음
+              <span aria-hidden="true">→</span>
+            </button>
+          </div>
+          <p id="recordingStatus" class="recording-status">읽을 준비가 되었어요.</p>
+
+          <div id="manualPanel" class="manual-panel hidden">
+            <label for="manualTranscript">마이크가 안 되면 읽은 내용을 적어주세요.</label>
+            <div class="manual-row">
+              <textarea id="manualTranscript" rows="3"></textarea>
+              <button id="manualJudge" type="button">판정</button>
+            </div>
+          </div>
+
+          <section id="feedbackPanel" class="feedback-panel hidden">
+            <div class="score-line">
+              <strong id="scoreLabel">좋아요</strong>
+              <span id="scoreValue">0점</span>
+            </div>
+            <p id="heardText"></p>
+            <div id="readingReviewText" class="reading-review-text"></div>
+            <div id="missedTokens" class="token-list"></div>
+            <p id="coachNote" class="coach-note"></p>
+            <p id="guardianNote" class="guardian-note"></p>
+          </section>
+        </section>
+
+        <aside class="routine-panel" aria-label="보호자 메모">
+          <section class="routine-card">
+            <p class="section-label">루틴</p>
+            <ol>
+              <li>동화 단락 2개</li>
+              <li>수학 이야기 문제 2개</li>
+              <li>어려웠던 문장 다시 읽기</li>
+            </ol>
+          </section>
+
+          <section class="routine-card">
+            <p class="section-label">다시 볼 것</p>
+            <ul id="reviewList" class="review-list">
+              <li>아직 기록이 없어요.</li>
+            </ul>
+          </section>
+
+          <section class="routine-card quiet-card">
+            <p class="section-label">보호자</p>
+            <p>이 화면은 진단이 아니라 읽기 연습 기록용입니다. 걱정되는 패턴이 계속 보이면 담임 선생님이나 전문가와 상의하세요.</p>
+          </section>
+        </aside>
+      </main>
+    </div>
+
+    <script src="app.js"></script>
+  </body>
+</html>
