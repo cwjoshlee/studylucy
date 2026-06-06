@@ -612,11 +612,11 @@ function resetSpeechCapture() {
 
 function getCapturedSpeechTranscript() {
   commitSpeechSessionTranscript();
-  return cleanSpeechText(speechTranscriptParts.join(" "));
+  return collapseSpeechSegments(speechTranscriptParts);
 }
 
 function commitSpeechSessionTranscript() {
-  const sessionText = cleanSpeechText([...speechSessionResults, speechInterimTranscript].filter(Boolean).join(" "));
+  const sessionText = collapseSpeechSegments([...speechSessionResults, speechInterimTranscript]);
   if (sessionText) {
     addSpeechTranscriptPart(sessionText);
   }
@@ -626,27 +626,62 @@ function commitSpeechSessionTranscript() {
 }
 
 function addSpeechTranscriptPart(text) {
+  addCollapsedSpeechPart(speechTranscriptParts, text);
+}
+
+function collapseSpeechSegments(segments) {
+  const collapsed = [];
+  segments.forEach((segment) => addCollapsedSpeechPart(collapsed, segment));
+  return cleanSpeechText(collapsed.join(" "));
+}
+
+function addCollapsedSpeechPart(parts, text) {
   const cleaned = cleanSpeechText(text);
-  const previous = speechTranscriptParts[speechTranscriptParts.length - 1] || "";
+  const previous = parts[parts.length - 1] || "";
   if (!cleaned) {
     return;
   }
 
   if (!previous) {
-    speechTranscriptParts.push(cleaned);
+    parts.push(cleaned);
     return;
   }
 
-  if (cleaned === previous || previous.endsWith(cleaned)) {
+  if (cleaned === previous || previous.includes(cleaned) || previous.endsWith(cleaned)) {
     return;
   }
 
-  if (cleaned.startsWith(previous)) {
-    speechTranscriptParts[speechTranscriptParts.length - 1] = cleaned;
+  if (cleaned.startsWith(previous) || cleaned.includes(previous)) {
+    parts[parts.length - 1] = cleaned;
     return;
   }
 
-  speechTranscriptParts.push(cleaned);
+  const merged = mergeOverlappingSpeech(previous, cleaned);
+  if (merged) {
+    parts[parts.length - 1] = merged;
+    return;
+  }
+
+  parts.push(cleaned);
+}
+
+function mergeOverlappingSpeech(previous, next) {
+  const previousWords = previous.split(" ");
+  const nextWords = next.split(" ");
+  const maxOverlap = Math.min(previousWords.length, nextWords.length);
+
+  for (let size = maxOverlap; size > 0; size -= 1) {
+    const previousTail = previousWords.slice(-size).join(" ");
+    const nextHead = nextWords.slice(0, size).join(" ");
+    if (previousTail === nextHead) {
+      return cleanSpeechText([
+        ...previousWords,
+        ...nextWords.slice(size)
+      ].join(" "));
+    }
+  }
+
+  return "";
 }
 
 function cleanSpeechText(value) {
@@ -674,7 +709,7 @@ function speakCurrentProblem() {
 
 function judgeTranscript(rawTranscript) {
   const problem = currentProblem();
-  const transcript = rawTranscript.trim();
+  const transcript = prepareTranscriptForJudging(rawTranscript, problem);
   if (!transcript) {
     return;
   }
@@ -691,6 +726,46 @@ function judgeTranscript(rawTranscript) {
   els.recordingStatus.textContent = result.passed
     ? "읽기 PASS예요."
     : getNextGateMessage(problem);
+}
+
+function prepareTranscriptForJudging(rawTranscript, problem) {
+  const transcript = cleanSpeechText(rawTranscript);
+  const expectedText = getExpectedReadingText(problem);
+  const transcriptWords = transcript.split(" ").filter(Boolean);
+  const expectedWords = cleanSpeechText(expectedText).split(" ").filter(Boolean);
+
+  if (transcriptWords.length <= Math.max(expectedWords.length * 2, expectedWords.length + 8)) {
+    return transcript;
+  }
+
+  return findBestTranscriptWindow(transcriptWords, expectedText, expectedWords.length);
+}
+
+function findBestTranscriptWindow(words, expectedText, expectedWordCount) {
+  const minSize = Math.max(4, expectedWordCount - 5);
+  const maxSize = Math.min(words.length, expectedWordCount + 10);
+  let bestText = words.join(" ");
+  let bestScore = -1;
+
+  for (let size = minSize; size <= maxSize; size += 1) {
+    for (let start = 0; start <= words.length - size; start += 1) {
+      const candidate = words.slice(start, start + size).join(" ");
+      const score = transcriptSimilarity(expectedText, candidate);
+      if (score > bestScore) {
+        bestScore = score;
+        bestText = candidate;
+      }
+    }
+  }
+
+  return cleanSpeechText(bestText);
+}
+
+function transcriptSimilarity(expectedText, candidateText) {
+  const expected = normalizeText(expectedText);
+  const candidate = normalizeText(candidateText);
+  const distance = levenshtein(toJamo(expected), toJamo(candidate));
+  return 1 - distance / Math.max(toJamo(expected).length, 1);
 }
 
 function compareReading(problem, transcript) {
