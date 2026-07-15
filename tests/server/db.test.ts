@@ -13,7 +13,7 @@ describe("database bootstrap", () => {
     migrate(db);
 
     expect(db.prepare("select count(*) as count from schema_migrations").get())
-      .toEqual({ count: 1 });
+      .toEqual({ count: 2 });
   });
 
   it("seeds the exact ten Korean and ten math items", () => {
