@@ -24,3 +24,45 @@ export const LearningItemPayloadSchema = z.discriminatedUnion("kind", [
 ]);
 
 export type LearningItemPayload = z.infer<typeof LearningItemPayloadSchema>;
+
+export const AttemptInputSchema = z.object({
+  clientAttemptId: z.string().min(12).max(80),
+  itemId: z.string().min(1),
+  contentVersion: z.number().int().positive(),
+  studyDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  readingScore: z.number().int().min(0).max(100),
+  missedTokens: z.array(z.string().min(1)).max(20),
+  mathAnswer: z.number().int().nullable(),
+  durationMs: z.number().int().min(0).max(3_600_000),
+  difficultyFeedback: z.enum(["easy", "thinking", "hard"]).nullable()
+});
+
+export type AttemptInput = z.infer<typeof AttemptInputSchema>;
+
+export type TodayPlan = {
+  date: string;
+  completedItemIds: string[];
+  items: Array<{
+    id: string;
+    version: number;
+    payload: LearningItemPayload;
+  }>;
+};
+
+export type GuardianProgress = {
+  completedItems: number;
+  totalAttempts: number;
+  readingPassRate: number;
+  mathPassRate: number;
+  recentReviewTokens: Array<{ token: string; count: number }>;
+};
+
+export type AttemptReceipt = {
+  id: string;
+  duplicate: boolean;
+  readingPass: boolean;
+  mathPass: boolean | null;
+  completed: boolean;
+};
+
+export type SyncResult = { sent: number; remaining: number };

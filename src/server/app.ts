@@ -5,6 +5,7 @@ import type Database from "better-sqlite3";
 import Fastify, { type FastifyInstance } from "fastify";
 import { registerAuthRoutes } from "./auth/routes";
 import type { AppConfig } from "./config";
+import { registerLearningRoutes } from "./learning/routes";
 import { createOriginGuard } from "./security/origin";
 import { trustFirstHopProxy } from "./security/proxy";
 
@@ -59,6 +60,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 
   app.addHook("preHandler", createOriginGuard(deps.config.appOrigin));
   registerAuthRoutes(app, deps);
+  registerLearningRoutes(app, deps);
   app.get("/api/health", async () => ({ status: "ok" as const }));
 
   return app;
