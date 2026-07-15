@@ -1,0 +1,26 @@
+import { z } from "zod";
+
+export const SetupRequest = z.object({
+  setupSecret: z.string().min(32),
+  guardianName: z.string().trim().min(1).max(40),
+  password: z.string().min(12).max(128),
+  studentName: z.string().trim().min(1).max(20)
+});
+
+export const GuardianLoginRequest = z.object({
+  password: z.string().min(1)
+});
+
+export const RegisterDeviceRequest = z.object({
+  name: z.string().trim().min(1).max(60)
+});
+
+export const StudentPinRequest = z.object({
+  pin: z.string().regex(/^\d{4}$/)
+});
+
+export type CurrentUser = {
+  id: string;
+  role: "guardian" | "student";
+  displayName: string;
+};

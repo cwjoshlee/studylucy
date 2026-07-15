@@ -1,4 +1,5 @@
 import type { FastifyInstance, InjectOptions } from "fastify";
+import { requireRole } from "../../src/server/auth/routes";
 import { buildApp } from "../../src/server/app";
 import { parseConfig } from "../../src/server/config";
 import { openDatabase } from "../../src/server/db/client";
@@ -58,8 +59,13 @@ export async function createTestHarness() {
     config,
     db,
     now: () => new Date("2026-07-15T03:00:00.000Z"),
-    randomToken: () => `test-token-${String(++sequence).padStart(4, "0")}`
+    randomToken: () => Buffer.alloc(32, ++sequence).toString("base64url")
   });
+  app.get(
+    "/api/auth/test-guardian-only",
+    { preHandler: requireRole("guardian") },
+    async () => ({ ok: true })
+  );
   return {
     app,
     config,

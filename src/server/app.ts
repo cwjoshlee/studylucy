@@ -3,6 +3,7 @@ import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
 import type Database from "better-sqlite3";
 import Fastify, { type FastifyInstance } from "fastify";
+import { registerAuthRoutes } from "./auth/routes";
 import type { AppConfig } from "./config";
 import { createOriginGuard } from "./security/origin";
 
@@ -33,6 +34,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   await app.register(rateLimit, { max: 120, timeWindow: "1 minute" });
 
   app.addHook("preHandler", createOriginGuard(deps.config.appOrigin));
+  registerAuthRoutes(app, deps);
   app.get("/api/health", async () => ({ status: "ok" as const }));
 
   return app;

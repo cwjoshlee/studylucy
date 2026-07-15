@@ -1,6 +1,6 @@
+import { randomBytes } from "node:crypto";
 import { existsSync } from "node:fs";
 import { loadEnvFile } from "node:process";
-import { nanoid } from "nanoid";
 import { buildApp } from "./app";
 import { parseConfig } from "./config";
 import { openDatabase } from "./db/client";
@@ -22,7 +22,7 @@ try {
     config,
     db,
     now: () => new Date(),
-    randomToken: nanoid
+    randomToken: () => randomBytes(32).toString("base64url")
   });
   let shuttingDown = false;
 
