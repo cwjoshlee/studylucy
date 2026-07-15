@@ -38,6 +38,13 @@ export class LearningService {
     };
   }
 
+  findDuplicateAttempt(
+    userId: string,
+    clientAttemptId: string
+  ): AttemptReceipt | null {
+    return this.repository.findDuplicateAttempt(userId, clientAttemptId);
+  }
+
   saveAttempt(userId: string, input: AttemptInput): AttemptReceipt {
     const receipt = this.repository.saveAttempt({
       ...input,

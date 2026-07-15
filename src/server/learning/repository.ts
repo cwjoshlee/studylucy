@@ -41,6 +41,18 @@ function receiptFromRow(row: AttemptRow, duplicate: boolean): AttemptReceipt {
 export class LearningRepository {
   constructor(private db: Database.Database) {}
 
+  findDuplicateAttempt(
+    userId: string,
+    clientAttemptId: string
+  ): AttemptReceipt | null {
+    const row = this.db.prepare(`
+      SELECT id, reading_pass AS readingPass, math_pass AS mathPass
+      FROM attempts
+      WHERE client_attempt_id = ? AND user_id = ?
+    `).get(clientAttemptId, userId) as AttemptRow | undefined;
+    return row === undefined ? null : receiptFromRow(row, true);
+  }
+
   listActiveItems(): ActiveLearningItem[] {
     const rows = this.db.prepare(`
       SELECT ci.id, ci.active_version AS version, cv.payload_json AS payloadJson
@@ -80,13 +92,12 @@ export class LearningRepository {
     createdAt: string;
   }): AttemptReceipt | null {
     return this.db.transaction(() => {
-      const existing = this.db.prepare(`
-        SELECT id, reading_pass AS readingPass, math_pass AS mathPass
-        FROM attempts
-        WHERE client_attempt_id = ?
-      `).get(input.clientAttemptId) as AttemptRow | undefined;
-      if (existing !== undefined) {
-        return receiptFromRow(existing, true);
+      const existing = this.findDuplicateAttempt(
+        input.userId,
+        input.clientAttemptId
+      );
+      if (existing !== null) {
+        return existing;
       }
 
       const content = this.db.prepare(`

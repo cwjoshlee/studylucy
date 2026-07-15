@@ -11,6 +11,9 @@ import {
 } from "./service";
 
 const StudyDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
+const ClientAttemptIdSchema = AttemptInputSchema.pick({
+  clientAttemptId: true
+});
 const TodayQuerySchema = z.object({ date: StudyDateSchema });
 const ProgressQuerySchema = z.object({
   from: StudyDateSchema,
@@ -57,6 +60,18 @@ export function registerLearningRoutes(
     "/api/student/attempts",
     { preHandler: requireRole("student") },
     async (request, reply) => {
+      const id = ClientAttemptIdSchema.safeParse(request.body);
+      if (id.success) {
+        const duplicate = service.findDuplicateAttempt(
+          request.currentUser!.id,
+          id.data.clientAttemptId
+        );
+        if (duplicate !== null) {
+          await reply.code(200).send(duplicate);
+          return;
+        }
+      }
+
       const body = AttemptInputSchema.safeParse(request.body);
       if (!body.success) {
         sendInvalidRequest(reply);

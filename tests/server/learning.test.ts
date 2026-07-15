@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { LearningRepository } from "../../src/server/learning/repository";
 import {
   createTestHarness,
   type TestClient
@@ -131,7 +132,7 @@ describe("learning API", () => {
         ...KOREAN_ATTEMPT,
         itemId: "math-01",
         contentVersion: 999,
-        readingScore: 0,
+        readingScore: 101,
         missedTokens: ["재전송 값은 무시"],
         mathAnswer: 999,
         readingPass: false,
@@ -146,6 +147,12 @@ describe("learning API", () => {
       mathPass: null,
       completed: true
     });
+    expect(
+      new LearningRepository(harness.db).findDuplicateAttempt(
+        "different-student",
+        KOREAN_ATTEMPT.clientAttemptId
+      )
+    ).toBeNull();
 
     const completedPlan = await student.request(
       "GET",
