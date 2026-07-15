@@ -22,6 +22,16 @@ const LOCK_DURATION_MS = 15 * 60 * 1_000;
 export class AuthRepository {
   constructor(private db: Database.Database) {}
 
+  isSetupComplete(): boolean {
+    const row = this.db.prepare(`
+      SELECT
+        SUM(CASE WHEN role = 'guardian' THEN 1 ELSE 0 END) AS guardians,
+        SUM(CASE WHEN role = 'student' THEN 1 ELSE 0 END) AS students
+      FROM users
+    `).get() as { guardians: number; students: number };
+    return row.guardians === 1 && row.students === 1;
+  }
+
   bootstrapFamily(input: {
     guardianId: string;
     guardianName: string;

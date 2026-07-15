@@ -36,6 +36,10 @@ export class AuthService {
     this.repository = new AuthRepository(deps.db);
   }
 
+  isSetupComplete(): boolean {
+    return this.repository.isSetupComplete();
+  }
+
   async bootstrapGuardian(input: {
     setupSecret: string;
     guardianName: string;

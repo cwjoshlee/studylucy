@@ -79,7 +79,7 @@ export function registerAuthRoutes(
     }
     try {
       await service.bootstrapGuardian(body);
-      await reply.code(201).send();
+      await reply.code(201).send({ status: "created" });
     } catch (error) {
       await handleAuthError(error, reply);
     }
@@ -112,7 +112,7 @@ export function registerAuthRoutes(
         ...sessionCookie,
         maxAge: 365 * 86_400
       });
-      await reply.code(201).send();
+      await reply.code(201).send({ status: "created" });
     }
   );
 
@@ -158,6 +158,10 @@ export function registerAuthRoutes(
 
   app.get("/api/auth/me", async (request, reply) => {
     if (request.currentUser === null) {
+      if (!service.isSetupComplete()) {
+        await reply.code(409).send({ code: "SETUP_REQUIRED" });
+        return;
+      }
       await reply.code(401).send({ code: "AUTH_REQUIRED" });
       return;
     }

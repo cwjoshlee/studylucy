@@ -83,4 +83,24 @@ describe("Fastify application shell", () => {
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({ ok: true });
   });
+
+  it("trusts forwarded client IPs only from a private first-hop proxy", async () => {
+    harness.app.get("/api/test-ip", async (request) => ({ ip: request.ip }));
+
+    const proxied = await harness.app.inject({
+      method: "GET",
+      url: "/api/test-ip",
+      remoteAddress: "172.20.0.2",
+      headers: { "x-forwarded-for": "198.51.100.44" }
+    });
+    expect(proxied.json()).toEqual({ ip: "198.51.100.44" });
+
+    const spoofed = await harness.app.inject({
+      method: "GET",
+      url: "/api/test-ip",
+      remoteAddress: "203.0.113.50",
+      headers: { "x-forwarded-for": "198.51.100.99" }
+    });
+    expect(spoofed.json()).toEqual({ ip: "203.0.113.50" });
+  });
 });
