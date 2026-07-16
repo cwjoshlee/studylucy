@@ -335,12 +335,15 @@ function LedgerPanel({ api }: { api: GuardianDashboardApi }) {
   const [draft, setDraft] = useState<LedgerFilterForm>(EMPTY_LEDGER_FILTERS);
   const applied = useRef<GuardianLedgerFilters>({ direction: "all" });
   const loadVersion = useRef(0);
+  const paginationReady = useRef(false);
   const [ledger, setLedger] = useState<GuardianStarLedger | null>(null);
   const [failed, setFailed] = useState(false);
   const [manualDelta, setManualDelta] = useState("");
   const [manualReason, setManualReason] = useState("");
   const [manualCommandId, setManualCommandId] = useState<string | null>(null);
   const [manualMessage, setManualMessage] = useState("");
+  const manualInFlight = useRef(false);
+  const [manualSaving, setManualSaving] = useState(false);
   const [reversalNotes, setReversalNotes] = useState<Record<string, string>>({});
   const [reversalErrors, setReversalErrors] = useState<Record<string, string>>({});
   const reversalInFlight = useRef(new Set<string>());
@@ -350,7 +353,10 @@ function LedgerPanel({ api }: { api: GuardianDashboardApi }) {
     query: GuardianLedgerFilters,
     append = false
   ): Promise<boolean> => {
+    if (append && !paginationReady.current) return true;
+    paginationReady.current = false;
     const requestVersion = ++loadVersion.current;
+    if (!append) setLedger(null);
     setFailed(false);
     try {
       const loaded = await api.getGuardianStars(query);
@@ -364,6 +370,8 @@ function LedgerPanel({ api }: { api: GuardianDashboardApi }) {
       if (loadVersion.current !== requestVersion) return true;
       setFailed(true);
       return false;
+    } finally {
+      if (loadVersion.current === requestVersion) paginationReady.current = true;
     }
   };
 
@@ -380,25 +388,30 @@ function LedgerPanel({ api }: { api: GuardianDashboardApi }) {
 
   const applyManualAdjustment = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (manualInFlight.current) return;
     const delta = Number(manualDelta);
     const reason = manualReason.trim();
     if (!Number.isInteger(delta) || delta === 0 || reason.length === 0) return;
     if (delta < 0 && !window.confirm("별을 직접 차감할까요?")) return;
     const clientCommandId = manualCommandId ?? crypto.randomUUID();
+    manualInFlight.current = true;
+    setManualSaving(true);
     setManualCommandId(clientCommandId);
     setManualMessage("");
     try {
-      const result = await api.applyManualStars({ delta, reason, clientCommandId });
-      setLedger((current) => current === null ? current : {
-        ...current,
-        summary: { ...current.summary, balance: result.event.balanceAfter },
-        events: [{ ...result.event, isReversed: false }, ...current.events]
-      });
+      await api.applyManualStars({ delta, reason, clientCommandId });
+      const reconciled = await load(applied.current);
       setManualCommandId(null);
       setManualDelta("");
       setManualReason("");
+      if (!reconciled) {
+        setManualMessage("별 조정은 저장했지만 최신 별 기록을 불러오지 못했어요.");
+      }
     } catch {
       setManualMessage("별 조정을 저장하지 못했어요. 다시 시도해 주세요.");
+    } finally {
+      manualInFlight.current = false;
+      setManualSaving(false);
     }
   };
 
@@ -441,6 +454,7 @@ function LedgerPanel({ api }: { api: GuardianDashboardApi }) {
         <label>
           별 수
           <input
+            disabled={manualSaving}
             max="100"
             min="-100"
             onChange={(event) => {
@@ -456,6 +470,7 @@ function LedgerPanel({ api }: { api: GuardianDashboardApi }) {
         <label>
           조정 사유
           <input
+            disabled={manualSaving}
             maxLength={200}
             onChange={(event) => {
               setManualReason(event.currentTarget.value);
@@ -467,7 +482,7 @@ function LedgerPanel({ api }: { api: GuardianDashboardApi }) {
             value={manualReason}
           />
         </label>
-        <button type="submit">별 조정 저장</button>
+        <button disabled={manualSaving} type="submit">별 조정 저장</button>
         {manualMessage !== "" ? <p role="status">{manualMessage}</p> : null}
       </form>
       <form className="guardian-filter" onSubmit={applyFilters}>

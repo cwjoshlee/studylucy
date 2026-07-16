@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GuardianDashboard } from "../../src/client/guardian/guardian-dashboard";
@@ -436,6 +436,109 @@ describe("GuardianDashboard", () => {
     expect(document.body.textContent).not.toContain("cursor-private-1");
   });
 
+  it("invalidates old ledger rows and cursor before a new filter resolves", async () => {
+    const user = userEvent.setup();
+    const oldEvent = {
+      id: "event-private-old-page",
+      requestedDelta: -1,
+      delta: -1,
+      balanceAfter: 11,
+      reason: "IDLE_TIMEOUT" as const,
+      reasonText: "이전 필터 기록",
+      studyDate: "2026-07-16",
+      itemId: null,
+      actorType: "system" as const,
+      createdAt: "2026-07-16T03:00:00.000Z",
+      reversesEventId: null,
+      isReversed: false
+    };
+    const newEvent = {
+      ...oldEvent,
+      id: "event-private-new-first-page",
+      requestedDelta: 2,
+      delta: 2,
+      balanceAfter: 13,
+      reason: "GUARDIAN_BONUS" as const,
+      reasonText: "새 필터 첫 페이지",
+      actorType: "guardian" as const
+    };
+    const staleNextEvent = {
+      ...newEvent,
+      id: "event-private-stale-next",
+      reasonText: "이전 커서로 건너뛴 기록"
+    };
+    const newFirstPage = deferred<{
+      summary: {
+        balance: number;
+        earnedToday: number;
+        deductedToday: number;
+        lastReason: string;
+      };
+      events: typeof newEvent[];
+      nextCursor: string | null;
+    }>();
+    const getGuardianStars = vi.fn((query?: { reason?: string; cursor?: string }) => {
+      if (query?.cursor === "cursor-private-old") {
+        return Promise.resolve({
+          summary: {
+            balance: 13,
+            earnedToday: 2,
+            deductedToday: 1,
+            lastReason: staleNextEvent.reasonText
+          },
+          events: [staleNextEvent],
+          nextCursor: null
+        });
+      }
+      if (query?.reason === "GUARDIAN_BONUS") return newFirstPage.promise;
+      return Promise.resolve({
+        summary: {
+          balance: 11,
+          earnedToday: 0,
+          deductedToday: 1,
+          lastReason: oldEvent.reasonText
+        },
+        events: [oldEvent],
+        nextCursor: "cursor-private-old"
+      });
+    });
+    const api = createGuardianApi({ getGuardianStars });
+    render(<GuardianDashboard api={api} />);
+
+    await user.click(screen.getByRole("tab", { name: "별 기록" }));
+    expect(await screen.findByText("이전 필터 기록")).toBeVisible();
+    const oldNext = screen.getByRole("button", { name: "다음 기록 100개" });
+    await user.selectOptions(screen.getByLabelText("사유"), "GUARDIAN_BONUS");
+
+    act(() => {
+      fireEvent.click(screen.getByRole("button", { name: "필터 적용" }));
+      fireEvent.click(oldNext);
+    });
+
+    expect(screen.queryByText("이전 필터 기록")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "다음 기록 100개" })).not.toBeInTheDocument();
+    expect(getGuardianStars).not.toHaveBeenCalledWith({
+      direction: "all",
+      reason: "GUARDIAN_BONUS",
+      cursor: "cursor-private-old"
+    });
+
+    newFirstPage.resolve({
+      summary: {
+        balance: 13,
+        earnedToday: 2,
+        deductedToday: 1,
+        lastReason: newEvent.reasonText
+      },
+      events: [newEvent],
+      nextCursor: null
+    });
+
+    expect(await screen.findByText("새 필터 첫 페이지")).toBeVisible();
+    expect(screen.queryByText("이전 커서로 건너뛴 기록")).not.toBeInTheDocument();
+    expect(screen.queryByText("이전 필터 기록")).not.toBeInTheDocument();
+  });
+
   it("adds a manual guardian bonus with an idempotency command", async () => {
     const user = userEvent.setup();
     const applyManualStars = vi.fn().mockResolvedValue({
@@ -544,6 +647,85 @@ describe("GuardianDashboard", () => {
     const secondCommandId = applyManualStars.mock.calls[1]?.[0].clientCommandId;
     expect(firstCommandId).toEqual(expect.any(String));
     expect(secondCommandId).toBe(firstCommandId);
+  });
+
+  it("serializes a manual adjustment and reloads the applied nonmatching filter", async () => {
+    const user = userEvent.setup();
+    const filteredEvent = {
+      id: "event-private-filtered-idle",
+      requestedDelta: -1,
+      delta: -1,
+      balanceAfter: 11,
+      reason: "IDLE_TIMEOUT" as const,
+      reasonText: "필터 유지 5분 무반응",
+      studyDate: "2026-07-16",
+      itemId: null,
+      actorType: "system" as const,
+      createdAt: "2026-07-16T03:00:00.000Z",
+      reversesEventId: null,
+      isReversed: false
+    };
+    const manualEvent = {
+      id: "event-private-filtered-out-bonus",
+      requestedDelta: 2,
+      delta: 2,
+      balanceAfter: 13,
+      reason: "GUARDIAN_BONUS" as const,
+      reasonText: "필터에 맞지 않는 보너스",
+      studyDate: "2026-07-16",
+      itemId: null,
+      actorType: "guardian" as const,
+      createdAt: "2026-07-16T04:00:00.000Z",
+      reversesEventId: null
+    };
+    const filteredLedger = {
+      summary: {
+        balance: 13,
+        earnedToday: 2,
+        deductedToday: 1,
+        lastReason: filteredEvent.reasonText
+      },
+      events: [filteredEvent],
+      nextCursor: null
+    };
+    const getGuardianStars = vi.fn().mockResolvedValue(filteredLedger);
+    const manualResult = deferred<AppliedStarResult>();
+    const applyManualStars = vi.fn().mockReturnValue(manualResult.promise);
+    const api = createGuardianApi({ getGuardianStars, applyManualStars });
+    render(<GuardianDashboard api={api} />);
+
+    await user.click(screen.getByRole("tab", { name: "별 기록" }));
+    expect(await screen.findByText("필터 유지 5분 무반응")).toBeVisible();
+    await user.selectOptions(screen.getByLabelText("사유"), "IDLE_TIMEOUT");
+    await user.click(screen.getByRole("button", { name: "필터 적용" }));
+    await waitFor(() => expect(getGuardianStars).toHaveBeenLastCalledWith({
+      direction: "all",
+      reason: "IDLE_TIMEOUT"
+    }));
+    const callsBeforeAdjustment = getGuardianStars.mock.calls.length;
+
+    await user.type(screen.getByLabelText("별 수"), "2");
+    await user.type(screen.getByLabelText("조정 사유"), "필터 외 보너스");
+    const save = screen.getByRole("button", { name: "별 조정 저장" });
+    act(() => {
+      fireEvent.click(save);
+      fireEvent.click(save);
+    });
+
+    expect(applyManualStars).toHaveBeenCalledOnce();
+    expect(save).toBeDisabled();
+
+    manualResult.resolve({ event: manualEvent, duplicate: false });
+
+    await waitFor(() => expect(getGuardianStars).toHaveBeenCalledTimes(
+      callsBeforeAdjustment + 1
+    ));
+    expect(getGuardianStars).toHaveBeenLastCalledWith({
+      direction: "all",
+      reason: "IDLE_TIMEOUT"
+    });
+    expect(screen.getByText("필터 유지 5분 무반응")).toBeVisible();
+    expect(screen.queryByText("필터에 맞지 않는 보너스")).not.toBeInTheDocument();
   });
 
   it("appends a confirmed reversal linked to the preserved original row", async () => {
