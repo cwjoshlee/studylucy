@@ -126,10 +126,16 @@ curl --fail --silent http://127.0.0.1:8787/api/health
 
 ## 9. 배포 승인 체크
 
-- [ ] 컨테이너 상태가 healthy이고 내부 health 응답이 정상이다.
-- [ ] 격리 smoke가 운영 프로젝트/데이터/포트를 건드리지 않고 성공했다.
-- [ ] `data`는 1000:1000/mode 700이고 `.env`는 mode 600이다.
-- [ ] 외부 HTTPS 443에서 앱만 열린다.
-- [ ] 외부 TCP 5001과 8787은 닫혀 있다.
-- [ ] 03:00 백업과 06:00 유지보수 작업이 종료 코드 0으로 시험 실행됐다.
-- [ ] `docs/phase1-acceptance.md`의 배포 관련 항목에 비밀값을 가린 증거를 기록했다.
+실제 Synology에서 측정하기 전에는 아래 상태를 `PASS`로 바꾸지 않는다.
+
+| 게이트 | 상태 | 필요한 증거 |
+|---|---|---|
+| 컨테이너 healthy + 내부 health | NOT RUN | 이미지 ID 앞 12자, KST 시각, 응답 |
+| `npm run smoke:container` 격리 실행/정리 | NOT RUN | 프로젝트명, 종료 코드, 정리 확인 |
+| `data` 1000:1000/mode 700, `.env` mode 600 | NOT RUN | 비밀값 없는 권한 출력 |
+| 외부 셀룰러망 HTTPS 443 앱/health | NOT RUN | KST 시각, 마스킹한 호스트, 결과 |
+| 외부 TCP 5001과 8787 차단 | NOT RUN | 포트별 실패 결과 |
+| `npm run smoke:restore -- [backup]` | NOT RUN | 백업 파일명, 비식별 행 수, 종료 코드 |
+| DSM 03:00 백업 예약 작업 | NOT RUN | 작업 ID, 수동 실행 시각, 종료 코드 |
+| DSM 06:00 유지보수 예약 작업 | NOT RUN | 작업 ID, 수동 실행 시각, 종료 코드 |
+| Galaxy Tab/두 기기/revoke 인수 | NOT RUN | `docs/phase1-acceptance.md` 증거 |

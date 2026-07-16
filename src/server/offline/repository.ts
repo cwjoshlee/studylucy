@@ -4,6 +4,7 @@ import {
   ActivityReceiptSchema,
   TodayPlanSchema,
   type ActivityReceipt,
+  type GuardianOfflineRejection,
   type TodayPlan
 } from "../../shared/learning";
 
@@ -165,6 +166,33 @@ export class OfflineRepository {
       JSON.stringify(stored),
       input.createdAt
     );
+  }
+
+  listRejectedActivities(
+    studentId: string,
+    limit: number
+  ): GuardianOfflineRejection[] {
+    return this.db.prepare(`
+      SELECT r.client_event_id AS id,
+             r.study_date AS studyDate,
+             r.item_id AS itemId,
+             COALESCE(
+               json_extract(cv.payload_json, '$.title'),
+               r.item_id
+             ) AS itemTitle,
+             r.kind,
+             r.code,
+             r.created_at AS createdAt
+      FROM offline_activity_receipts AS r
+      LEFT JOIN content_items AS ci ON ci.id = r.item_id
+      LEFT JOIN content_versions AS cv
+        ON cv.item_id = ci.id AND cv.version = ci.active_version
+      WHERE r.student_id = ?
+        AND r.status = 'rejected'
+        AND r.item_id IS NOT NULL
+      ORDER BY r.created_at DESC, r.client_event_id DESC
+      LIMIT ?
+    `).all(studentId, limit) as GuardianOfflineRejection[];
   }
 }
 

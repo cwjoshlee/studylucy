@@ -6,6 +6,7 @@ import type {
 import type {
   AttemptInput,
   AttemptReceipt,
+  GuardianOfflineRejections,
   GuardianProgress,
   LearningSessionReceipt,
   LearningSessionRequest,
@@ -212,6 +213,10 @@ export class ApiClient {
     return this.request("GET", `/api/guardian/progress?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
   }
 
+  getGuardianOfflineRejections(): Promise<GuardianOfflineRejections> {
+    return this.request("GET", "/api/guardian/offline-rejections?limit=100");
+  }
+
   getGuardianStars(filters: GuardianLedgerFilters = {}): Promise<GuardianStarLedger> {
     const query = new URLSearchParams();
     if (filters.from !== undefined) query.set("from", filters.from);
@@ -303,6 +308,7 @@ export type ClientApi = Pick<ApiClient,
   | "createRecoveryPlan"
   | "applyOfflineBatch"
   | "getGuardianProgress"
+  | "getGuardianOfflineRejections"
   | "getGuardianStars"
   | "getStarAdjustments"
   | "approveStarAdjustment"

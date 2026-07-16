@@ -16,8 +16,25 @@
 | 앱 커밋 SHA | 미실행 |
 | 호스트 | `[redacted].synology.me` |
 | 컨테이너 이미지 ID 앞 12자 | 미실행 |
+| 내부 `127.0.0.1:8787` health 시각/응답 | NOT RUN |
+| 외부 셀룰러망 HTTPS 443 시각/응답 | NOT RUN |
+| 외부 5001/8787 차단 확인 | NOT RUN |
+| 격리 Docker smoke 프로젝트/종료 코드 | NOT RUN |
+| 복원 smoke 백업 파일명/종료 코드 | NOT RUN |
+| DSM 03:00 백업 작업 ID/종료 코드 | NOT RUN |
+| DSM 06:00 유지보수 작업 ID/종료 코드 | NOT RUN |
 
 상태는 `PASS`, `FAIL`, `BLOCKED`, `NOT RUN` 중 하나만 사용한다. 자동 테스트 결과는 실제 NAS, 외부 네트워크와 두 기기 검증을 대신하지 않는다.
+
+## 로컬 브라우저 확인
+
+개발 Mac의 저장소 루트에서 Node 22로 앱을 시작한다.
+
+```sh
+npx --yes -p node@22 -p npm@11.11.0 -- npm run dev
+```
+
+같은 Mac에서 `http://127.0.0.1:5173/`를 열고, 별도 터미널에서 `curl --fail --silent http://127.0.0.1:8787/api/health`가 `{"status":"ok"}`를 반환하는지 확인한다. 이 로컬 확인은 Synology·외부 443·Galaxy Tab 항목의 PASS 근거가 아니다.
 
 ## 인수 항목
 
@@ -34,19 +51,35 @@
 | 9 | 재시작 catch-up을 두 번 실행해도 후보와 원장 행이 중복되지 않는다. | NOT RUN | 첫 실행/둘째 실행 행 수 |
 | 10 | 외부 HTTPS 443에서 앱과 health가 열리고 DSM 5001과 앱 8787 직접 접속은 실패한다. | NOT RUN | 셀룰러망 결과와 포트별 PASS/FAIL |
 | 11 | 저장소, SQLite와 운영 로그에 오디오, 전체 전사, PIN, 원시 토큰과 개인 경로가 없다. | NOT RUN | 검색 범위, 금지 패턴 0건, 검토자 |
+| 12 | A/B 두 기기에서 서로 다른 plan/epoch를 받은 뒤 B가 먼저 진행하고 A의 stale 풀이가 보존되며 stale 무반응은 차감 면제된다. | NOT RUN | 마스킹한 plan 접미사, cursor 전후, 원장 사유 |
+| 13 | A 해제 뒤 학생/학습 API가 차단되고, 재등록+PIN 후 recovery가 한 번만 생성되어 풀이만 복구되고 모든 무반응은 면제된다. | NOT RUN | 기기명 일부, 상태 코드, recovery 재시도 결과 |
+| 14 | Galaxy Tab 가로 화면에서 핵심 버튼·입력의 터치 대상이 모두 48px 이상이고 포커스 표시와 가로 스크롤 이상이 없다. | NOT RUN | viewport, 최솟값, 캡처 파일명 |
+| 15 | 백업 복사본 restore smoke와 컨테이너 smoke가 격리 실행되고, 실패/성공 뒤 임시 후보·컨테이너가 남지 않는다. | NOT RUN | 종료 코드, 비식별 행 수, 정리 확인 |
 
 ## 자동 검증 연결
 
 실제 인수 전에 다음 결과를 첨부한다.
 
-```text
-Node 22 npm ci:
-npm run check:
-focused integration tests:
-bash -n scripts/smoke-container.sh:
-isolated container smoke on Synology:
-git diff --check:
+```sh
+npx --yes -p node@22 -p npm@11.11.0 -- npm ci
+npx --yes -p node@22 -p npm@11.11.0 -- npm run check
+npx --yes -p node@22 -p npm@11.11.0 -- npm test -- tests/server/authority-integration.test.ts tests/client/auth-offline-lifecycle.test.tsx
+bash -n scripts/*.sh
+git diff --check
 ```
+
+자동 검증 기록(2026-07-17 로컬 개발 Mac):
+
+| 항목 | 상태 | 종료 코드/요약 |
+|---|---|---|
+| Node 22 `npm ci` | NOT RUN | - |
+| Node 22 `npm run check` | PASS | 종료 0, 30파일 340/340, typecheck/build 성공 |
+| focused integration | PASS | 종료 0, 13파일 235/235 |
+| `bash -n scripts/*.sh` | PASS | 종료 0 |
+| `git diff --check` | PASS | 종료 0 |
+| 로컬 생성 SQLite `smoke:restore` | PASS | 종료 0, 비식별 6개 행 수 출력, `BACKUP_RESTORE_SMOKE_OK` |
+| Synology `npm run smoke:container` | NOT RUN | Docker/프로젝트/종료 코드 필요 |
+| Synology `npm run smoke:restore -- [backup]` | NOT RUN | 백업 파일명/행 수/종료 코드 필요 |
 
 컨테이너 smoke는 Docker가 있는 Synology에서 `bash scripts/smoke-container.sh`로 실행한다. 이 명령은 동적 `sua-learning-smoke-*` 프로젝트, `compose.smoke.yaml`, 임시 `/data`와 `127.0.0.1:18787`만 사용하며 성공과 실패 모두에서 smoke 리소스만 제거한다. 운영 Compose 프로젝트, `./data`와 8787 바인딩에는 접근하지 않는다. 격리된 `GET /api/health`의 `{"status":"ok"}` 확인까지 성공해야 `PASS`로 기록한다.
 

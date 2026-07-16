@@ -8,6 +8,7 @@ import {
   TodayPlanSchema,
   type ActivityEvent,
   type AttemptInput,
+  type GuardianOfflineRejection,
   type LegacyAttemptInput,
   type LegacyIdleEventInput,
   type OfflineBatchInput,
@@ -646,6 +647,38 @@ export function listRejectedActivities(): Promise<RejectedActivity[]> {
     const rows = await transaction.objectStore("rejectedActivities").getAll();
     await transaction.done;
     return rows;
+  });
+}
+
+export function listGuardianOfflineRejections(): Promise<
+  GuardianOfflineRejection[]
+> {
+  return withDatabase(async (database) => {
+    const transaction = database.transaction([
+      "rejectedActivities",
+      "todayPlans"
+    ]);
+    const rows = await transaction.objectStore("rejectedActivities").getAll();
+    const plans = await transaction.objectStore("todayPlans").getAll();
+    await transaction.done;
+    const titles = new Map(
+      plans.flatMap((plan) => plan.items.map((item) => [
+        item.id,
+        item.payload.title
+      ] as const))
+    );
+    return rows.map((row) => ({
+      id: row.clientId,
+      studyDate: row.studyDate,
+      itemId: row.itemId,
+      itemTitle: titles.get(row.itemId) ?? "학습 항목",
+      kind: row.kind,
+      code: row.code,
+      createdAt: row.occurredAt ?? `${row.studyDate}T00:00:00+09:00`
+    })).sort((left, right) =>
+      right.createdAt.localeCompare(left.createdAt) ||
+      right.id.localeCompare(left.id)
+    );
   });
 }
 

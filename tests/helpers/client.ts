@@ -120,6 +120,7 @@ export function createFakeApi(overrides: Record<string, unknown> = {}) {
       mathPassRate: 75,
       recentReviewTokens: [{ token: "꽃잎", count: 2 }]
     }),
+    getGuardianOfflineRejections: vi.fn().mockResolvedValue({ rejections: [] }),
     getGuardianStars: vi.fn().mockResolvedValue({
       summary: {
         balance: 12,

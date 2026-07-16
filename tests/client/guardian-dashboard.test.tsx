@@ -6,6 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GuardianDashboard } from "../../src/client/guardian/guardian-dashboard";
 import { ApiError } from "../../src/client/api/client";
+import type { GuardianOfflineRejection } from "../../src/shared/learning";
 import type {
   AppliedStarResult,
   ProcessedStarAdjustment
@@ -22,6 +23,7 @@ function createGuardianApi(overrides: Record<string, unknown> = {}) {
       mathPassRate: 75,
       recentReviewTokens: [{ token: "꽃잎", count: 2 }]
     }),
+    getGuardianOfflineRejections: vi.fn().mockResolvedValue({ rejections: [] }),
     getGuardianStars: vi.fn().mockResolvedValue({
       summary: {
         balance: 12,
@@ -102,6 +104,58 @@ describe("GuardianDashboard", () => {
       /event-private|item-private|password|PIN|cookie|audio|transcript|삭제/i
     );
     expect(screen.queryByRole("tab", { name: "기기 관리" })).not.toBeInTheDocument();
+  });
+
+  it("merges server and current-browser redacted rejections without rendering private payload fields", async () => {
+    const server = {
+      id: "server-secret-id",
+      studyDate: "2026-07-16",
+      itemId: "server-secret-item",
+      itemTitle: "별빛 씨앗 주머니",
+      kind: "attempt" as const,
+      code: "PLAN_SUBMISSION_EXPIRED",
+      createdAt: "2026-07-16T03:10:00.000Z",
+      receipt_json: "server-receipt-secret",
+      answer: 15,
+      missedTokens: ["server-token-secret"],
+      transcript: "server-transcript-secret",
+      learningSessionId: "server-session-secret"
+    };
+    const local = {
+      id: "local-secret-id",
+      studyDate: "2026-07-16",
+      itemId: "local-secret-item",
+      itemTitle: "숲속 작은 등불",
+      kind: "idle" as const,
+      code: "LEGACY_AUTHORITY_UNAVAILABLE",
+      createdAt: "2026-07-16T03:09:00.000Z",
+      answer: "local-answer-secret",
+      transcript: "local-transcript-secret",
+      learningSessionId: "local-session-secret"
+    };
+    const api = createGuardianApi({
+      getGuardianOfflineRejections: vi.fn().mockResolvedValue({
+        rejections: [server]
+      })
+    });
+
+    render(
+      <GuardianDashboard
+        api={api}
+        loadLocalOfflineRejections={vi.fn().mockResolvedValue([
+          local as GuardianOfflineRejection
+        ])}
+      />
+    );
+
+    expect(await screen.findByText("동기화 확인 필요")).toBeVisible();
+    expect(screen.getByText("별빛 씨앗 주머니")).toBeVisible();
+    expect(screen.getByText("숲속 작은 등불")).toBeVisible();
+    expect(screen.getByText("풀이 · PLAN_SUBMISSION_EXPIRED")).toBeVisible();
+    expect(screen.getByText("무반응 · LEGACY_AUTHORITY_UNAVAILABLE")).toBeVisible();
+    expect(document.body.textContent).not.toMatch(
+      /secret-id|secret-item|receipt|answer|token-secret|transcript|session-secret/i
+    );
   });
 
   it("lists only safe device views and confirms current and other device revocation", async () => {

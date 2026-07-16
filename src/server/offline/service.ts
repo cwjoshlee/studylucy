@@ -1,9 +1,11 @@
 import type Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
+import { GuardianOfflineRejectionsSchema } from "../../shared/learning";
 import type {
   ActivityEvent,
   ActivityReceipt,
   AttemptInput,
+  GuardianOfflineRejections,
   LegacyIdleEventInput,
   OfflineBatchInput,
   OfflineBatchReceipt,
@@ -100,6 +102,17 @@ export class OfflineBatchService {
     this.issuedPlans = new IssuedPlanRepository(deps.db, deps.now);
     this.learning = new LearningRepository(deps.db);
     this.stars = new StarService(deps);
+  }
+
+  listGuardianRejections(limit: number): GuardianOfflineRejections {
+    const student = this.deps.db.prepare(`
+      SELECT id FROM users WHERE role = 'student' ORDER BY created_at, id LIMIT 1
+    `).get() as { id: string } | undefined;
+    return GuardianOfflineRejectionsSchema.parse({
+      rejections: student === undefined
+        ? []
+        : this.offline.listRejectedActivities(student.id, limit)
+    });
   }
 
   createRecoveryPlan(

@@ -1,4 +1,5 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
+import { z } from "zod";
 import {
   OfflineBatchInputSchema,
   RecoveryPlanRequestSchema
@@ -26,6 +27,21 @@ export function registerOfflineRoutes(
   deps: OfflineBatchServiceDeps
 ): void {
   const service = new OfflineBatchService(deps);
+
+  app.get(
+    "/api/guardian/offline-rejections",
+    { preHandler: requireRole("guardian") },
+    async (request, reply) => {
+      const query = z.object({
+        limit: z.coerce.number().int().min(1).max(100).default(100)
+      }).strict().safeParse(request.query);
+      if (!query.success) {
+        await reply.code(400).send({ code: "INVALID_REQUEST" });
+        return;
+      }
+      await reply.send(service.listGuardianRejections(query.data.limit));
+    }
+  );
 
   app.post(
     "/api/student/recovery-plans",

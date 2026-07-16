@@ -33,6 +33,7 @@
   .guardian-plan-loader, .guardian-metrics, .adjustment-values {
     grid-template-columns: minmax(0, 1fr);
   }
+  .guardian-sync-review li { grid-template-columns: minmax(0, 1fr); }
 }
 
 @media (prefers-reduced-motion: reduce) {

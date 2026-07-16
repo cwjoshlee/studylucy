@@ -191,6 +191,27 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   background: var(--mint);
   font-weight: 800;
 }
+.guardian-sync-review {
+  margin-top: 22px;
+  padding: 18px;
+  border: 2px solid #d29a00;
+  border-radius: var(--radius-medium);
+  background: #fff8dc;
+}
+.guardian-sync-review h3 { margin-top: 0; }
+.guardian-sync-review ul { display: grid; gap: 10px; margin-bottom: 0; }
+.guardian-sync-review li {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  gap: 4px 14px;
+  padding: 12px;
+  border-radius: 12px;
+  background: var(--cloud);
+}
+.guardian-sync-review li strong { grid-column: 1 / -1; }
+.guardian-sync-review li span, .guardian-sync-review li time {
+  color: var(--ink-soft);
+}
 .guardian-list { display: grid; gap: 16px; margin-top: 18px; }
 .guardian-card {
   display: grid;

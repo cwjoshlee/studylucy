@@ -60,4 +60,32 @@ describe("isolated container smoke configuration", () => {
     expect(tabletGuide).toContain("화면 방향: 가로 화면 기준");
     expect(tabletGuide).not.toContain("세로와 가로 모두 가능");
   });
+
+  it("installs restore cleanup before artifacts and validates only a copied candidate", async () => {
+    const [script, packageJson, guide] = await Promise.all([
+      source("scripts/restore-smoke.sh"),
+      source("package.json"),
+      source("ops/synology/restore-backup.md")
+    ]);
+    const trapIndex = script.indexOf("trap cleanup EXIT");
+    const mktempIndex = script.indexOf("mktemp");
+    const copyIndex = script.indexOf('cp -p -- "$BACKUP" "$CANDIDATE"');
+    const sqliteIndex = script.indexOf('sqlite3 "$CANDIDATE"');
+
+    expect(trapIndex).toBeGreaterThan(-1);
+    expect(mktempIndex).toBeGreaterThan(trapIndex);
+    expect(copyIndex).toBeGreaterThan(mktempIndex);
+    expect(sqliteIndex).toBeGreaterThan(copyIndex);
+    expect(script).toContain('rm -f -- "$CANDIDATE" "${CANDIDATE}-wal" "${CANDIDATE}-shm"');
+    expect(script).not.toMatch(/docker|sua-learning\.db|\bmv\b|\bchown\b/);
+    expect(script).toContain("BACKUP_RESTORE_SMOKE_OK");
+
+    const scripts = JSON.parse(packageJson).scripts;
+    expect(scripts["smoke:container"]).toBe("bash scripts/smoke-container.sh");
+    expect(scripts["smoke:restore"]).toBe("bash scripts/restore-smoke.sh");
+    expect(guide).toContain("npm run smoke:restore --");
+    expect(guide).toContain("컨테이너를 반드시 멈춘 상태");
+    expect(guide).not.toContain("fail_candidate()");
+    expect(guide.indexOf("cp -- \"$BACKUP\" \"$CANDIDATE\"")).toBe(-1);
+  });
 });

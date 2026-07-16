@@ -255,6 +255,21 @@ describe("ApiClient", () => {
     );
   });
 
+  it("requests the bounded guardian offline-rejection projection", async () => {
+    const projection = { rejections: [] };
+    const fetcher = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify(projection),
+      { status: 200, headers: { "content-type": "application/json" } }
+    ));
+    const api = new ApiClient(fetcher);
+
+    await expect(api.getGuardianOfflineRejections()).resolves.toEqual(projection);
+    expect(fetcher).toHaveBeenCalledWith(
+      "/api/guardian/offline-rejections?limit=100",
+      expect.objectContaining({ method: "GET" })
+    );
+  });
+
   it("maps guardian star and plan mutations to their protected API routes", async () => {
     const fetcher = vi.fn().mockImplementation(() => Promise.resolve(new Response(
       JSON.stringify({}),

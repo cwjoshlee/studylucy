@@ -1,6 +1,9 @@
 import { useEffect, useRef, useState } from "react";
 import type { TrustedDeviceView } from "../../shared/auth";
-import type { GuardianProgress } from "../../shared/learning";
+import type {
+  GuardianOfflineRejection,
+  GuardianProgress
+} from "../../shared/learning";
 import type {
   GuardianStarLedger,
   GuardianDailyPlan,
@@ -13,9 +16,11 @@ import type {
   GuardianLedgerFilters
 } from "../api/client";
 import { ApiError } from "../api/client";
+import { listGuardianOfflineRejections } from "../offline/db";
 
 type GuardianDashboardApi = Pick<ApiClient,
   | "getGuardianProgress"
+  | "getGuardianOfflineRejections"
   | "getGuardianStars"
   | "applyManualStars"
   | "reverseStarEvent"
@@ -33,6 +38,7 @@ type GuardianDashboardApi = Pick<ApiClient,
 type DashboardData = {
   progress: GuardianProgress;
   ledger: GuardianStarLedger;
+  rejections: GuardianOfflineRejection[];
 };
 
 const TABS = ["진도", "별 기록", "차감 승인", "학습 계획", "백업"] as const;
@@ -83,11 +89,13 @@ function progressRange(): { from: string; to: string } {
 export function GuardianDashboard({
   api,
   onEnterStudentMode,
-  onLogout
+  onLogout,
+  loadLocalOfflineRejections = listGuardianOfflineRejections
 }: {
   api: GuardianDashboardApi;
   onEnterStudentMode?: () => Promise<void>;
   onLogout?: () => Promise<void>;
+  loadLocalOfflineRejections?: () => Promise<GuardianOfflineRejection[]>;
 }) {
   const [data, setData] = useState<DashboardData | null>(null);
   const [failed, setFailed] = useState(false);
@@ -100,10 +108,23 @@ export function GuardianDashboard({
     const range = progressRange();
     void Promise.all([
       api.getGuardianProgress(range.from, range.to),
-      api.getGuardianStars()
+      api.getGuardianStars(),
+      api.getGuardianOfflineRejections().then(({ rejections }) => rejections),
+      loadLocalOfflineRejections().catch(() => [])
     ]).then(
-      ([progress, ledger]) => {
-        if (active) setData({ progress, ledger });
+      ([progress, ledger, serverRejections, localRejections]) => {
+        if (active) {
+          const rejections = [...serverRejections, ...localRejections]
+            .map(redactedRejection)
+            .filter((entry, index, all) => all.findIndex((candidate) =>
+              candidate.id === entry.id
+            ) === index)
+            .sort((left, right) =>
+              right.createdAt.localeCompare(left.createdAt) ||
+              right.id.localeCompare(left.id)
+            );
+          setData({ progress, ledger, rejections });
+        }
       },
       () => {
         if (active) setFailed(true);
@@ -112,7 +133,7 @@ export function GuardianDashboard({
     return () => {
       active = false;
     };
-  }, [api]);
+  }, [api, loadLocalOfflineRejections]);
 
   return (
     <div className="guardian-shell">
@@ -345,10 +366,46 @@ function ProgressPanel({
                 </ul>
               )}
             </section>
+            {data.rejections.length > 0 ? (
+              <section
+                className="guardian-sync-review"
+                aria-labelledby="offline-rejections-title"
+              >
+                <h3 id="offline-rejections-title">동기화 확인 필요</h3>
+                <ul>
+                  {data.rejections.map((rejection) => (
+                    <li key={rejection.id}>
+                      <strong>{rejection.itemTitle}</strong>
+                      <span>
+                        {rejection.kind === "attempt" ? "풀이" : "무반응"}
+                        {" · "}{rejection.code}
+                      </span>
+                      <time dateTime={rejection.studyDate}>
+                        {rejection.studyDate}
+                      </time>
+                    </li>
+                  ))}
+                </ul>
+              </section>
+            ) : null}
           </>
         ) : null}
     </>
   );
+}
+
+function redactedRejection(
+  input: GuardianOfflineRejection
+): GuardianOfflineRejection {
+  return {
+    id: input.id,
+    studyDate: input.studyDate,
+    itemId: input.itemId,
+    itemTitle: input.itemTitle,
+    kind: input.kind,
+    code: input.code,
+    createdAt: input.createdAt
+  };
 }
 
 function BackupPanel({ api }: { api: GuardianDashboardApi }) {

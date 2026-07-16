@@ -12,6 +12,8 @@
     "start": "node dist/server/index.js",
     "backup": "node dist/server/backup-cli.js",
     "daily-maintenance": "node dist/server/daily-maintenance-cli.js",
+    "smoke:container": "bash scripts/smoke-container.sh",
+    "smoke:restore": "bash scripts/restore-smoke.sh",
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",

@@ -93,6 +93,28 @@ export type GuardianProgress = {
   recentReviewTokens: Array<{ token: string; count: number }>;
 };
 
+export const GuardianOfflineRejectionSchema = z.object({
+  id: z.string().min(1),
+  studyDate: StudyDateSchema,
+  itemId: z.string().min(1),
+  itemTitle: z.string().min(1),
+  kind: z.enum(["attempt", "idle"]),
+  code: z.string().min(1),
+  createdAt: z.string().datetime({ offset: true })
+}).strict();
+
+export type GuardianOfflineRejection = z.infer<
+  typeof GuardianOfflineRejectionSchema
+>;
+
+export const GuardianOfflineRejectionsSchema = z.object({
+  rejections: z.array(GuardianOfflineRejectionSchema)
+}).strict();
+
+export type GuardianOfflineRejections = z.infer<
+  typeof GuardianOfflineRejectionsSchema
+>;
+
 export const StarAwardReceiptSchema = z.object({
   awarded: z.boolean(),
   amount: z.number().int().nonnegative(),
