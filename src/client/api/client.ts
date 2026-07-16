@@ -50,7 +50,7 @@ export class ApiClient {
     path: string,
     body?: unknown
   ): Promise<T> {
-    const response = await this.fetcher(path, {
+    const response = await this.fetcher.call(globalThis, path, {
       method,
       credentials: "same-origin",
       headers: {

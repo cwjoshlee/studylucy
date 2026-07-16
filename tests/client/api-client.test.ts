@@ -2,6 +2,20 @@ import { describe, expect, it, vi } from "vitest";
 import { ApiClient, ApiError } from "../../src/client/api/client";
 
 describe("ApiClient", () => {
+  it("invokes browser fetch with the global receiver", async () => {
+    const fetcher = function (
+      this: unknown,
+      _input: RequestInfo | URL,
+      _init?: RequestInit
+    ): Promise<Response> {
+      if (this !== globalThis) throw new TypeError("Illegal invocation");
+      return Promise.resolve(new Response(null, { status: 204 }));
+    };
+    const api = new ApiClient(fetcher);
+
+    await expect(api.logout()).resolves.toBeUndefined();
+  });
+
   it("sends JSON with same-origin credentials", async () => {
     const fetcher = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
     const api = new ApiClient(fetcher);
