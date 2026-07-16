@@ -70,6 +70,9 @@ export class StarRepository {
   constructor(private db: Database.Database) {}
 
   apply(input: ApplyStarInput): AppliedStarResult {
+    if (input.sourceKey.startsWith("reversal:")) {
+      throw new Error("SOURCE_KEY_RESERVED");
+    }
     return this.db.transaction(() => this.applyInTransaction(input)).immediate();
   }
 
@@ -128,6 +131,9 @@ export class StarRepository {
       WHERE source_key = ?
     `).get(input.sourceKey) as StarEventRow | undefined;
     if (existing !== undefined) {
+      if (existing.reversesEventId !== reversesEventId) {
+        throw new Error("SOURCE_KEY_CONFLICT");
+      }
       return { event: eventFromRow(existing), duplicate: true };
     }
 

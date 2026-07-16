@@ -171,6 +171,106 @@ describe("append-only star ledger", () => {
     }
   });
 
+  it("reserves reversal source keys for linked reversals", () => {
+    const earned = repository.apply({
+      studentId: STUDENT_ID,
+      delta: 3,
+      reason: "GUARDIAN_BONUS",
+      reasonText: "취소할 별",
+      studyDate: STUDY_DATE,
+      actorType: "guardian",
+      actorUserId: GUARDIAN_ID,
+      sourceKey: "guardian:guardian-1:reserved-reversal-source",
+      createdAt: CREATED_AT
+    });
+
+    expect(() =>
+      repository.apply({
+        studentId: STUDENT_ID,
+        delta: 7,
+        reason: "GUARDIAN_BONUS",
+        reasonText: "예약된 키 선점 시도",
+        studyDate: STUDY_DATE,
+        actorType: "guardian",
+        actorUserId: GUARDIAN_ID,
+        sourceKey: `reversal:${earned.event.id}`,
+        createdAt: "2026-07-16T03:30:00.000Z"
+      })
+    ).toThrowError("SOURCE_KEY_RESERVED");
+    expect(db.prepare("SELECT COUNT(*) AS count FROM star_events").get())
+      .toEqual({ count: 1 });
+    expect(db.prepare(`
+      SELECT balance
+      FROM student_star_balances
+      WHERE student_id = ?
+    `).get(STUDENT_ID)).toEqual({ balance: 3 });
+
+    const reversed = repository.reverse(
+      earned.event.id,
+      GUARDIAN_ID,
+      "정상 취소",
+      new Date("2026-07-16T04:00:00.000Z")
+    );
+
+    expect(reversed).toMatchObject({
+      duplicate: false,
+      event: {
+        requestedDelta: -3,
+        delta: -3,
+        balanceAfter: 0,
+        reason: "REVERSAL",
+        reversesEventId: earned.event.id
+      }
+    });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM star_events").get())
+      .toEqual({ count: 2 });
+  });
+
+  it("rejects an unrelated event already using a reversal source key", () => {
+    const earned = repository.apply({
+      studentId: STUDENT_ID,
+      delta: 2,
+      reason: "GUARDIAN_BONUS",
+      reasonText: "취소할 별",
+      studyDate: STUDY_DATE,
+      actorType: "guardian",
+      actorUserId: GUARDIAN_ID,
+      sourceKey: "guardian:guardian-1:conflicting-reversal-source",
+      createdAt: CREATED_AT
+    });
+    db.prepare(`
+      INSERT INTO star_events (
+        id, student_id, requested_delta, delta, balance_after,
+        reason_code, reason_text, study_date, actor_type, actor_user_id,
+        source_key, reverses_event_id, created_at
+      ) VALUES (?, ?, 0, 0, 2, 'GUARDIAN_ADJUSTMENT', ?, ?, 'guardian', ?, ?, NULL, ?)
+    `).run(
+      "unrelated-reserved-source-event",
+      STUDENT_ID,
+      "직접 삽입된 충돌 이벤트",
+      STUDY_DATE,
+      GUARDIAN_ID,
+      `reversal:${earned.event.id}`,
+      "2026-07-16T03:30:00.000Z"
+    );
+
+    expect(() =>
+      repository.reverse(
+        earned.event.id,
+        GUARDIAN_ID,
+        "충돌 키로 취소",
+        new Date("2026-07-16T04:00:00.000Z")
+      )
+    ).toThrowError("SOURCE_KEY_CONFLICT");
+    expect(db.prepare("SELECT COUNT(*) AS count FROM star_events").get())
+      .toEqual({ count: 2 });
+    expect(db.prepare(`
+      SELECT balance
+      FROM student_star_balances
+      WHERE student_id = ?
+    `).get(STUDENT_ID)).toEqual({ balance: 2 });
+  });
+
   it("rejects direct SQL updates and leaves the event unchanged", () => {
     const applied = repository.apply({
       studentId: STUDENT_ID,
