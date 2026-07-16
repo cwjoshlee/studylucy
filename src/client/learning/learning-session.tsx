@@ -96,6 +96,7 @@ function LearningSessionView({
   const [speechListening, setSpeechListening] = useState(false);
   const controllerRef = useRef<InactivityController | null>(null);
   const speechRef = useRef<SpeechController | null>(null);
+  const learningControlsPaused = waiting || idleUi?.phase === "paused";
 
   const recordActivity = useCallback((activity: InactivityActivity) => {
     controllerRef.current?.recordActivity(activity);
@@ -125,6 +126,7 @@ function LearningSessionView({
       });
     } finally {
       setWaiting(false);
+      controllerRef.current?.resume("server-wait");
     }
   }, [api, idFactory, item.id, learningSessionId, studyDate]);
 
@@ -204,6 +206,7 @@ function LearningSessionView({
   }, [api, buildAttempt]);
 
   const judgeTranscript = useCallback((transcript: string) => {
+    if (learningControlsPaused) return;
     const result = judgeReading(item, transcript);
     setReadingResult(result);
     recordActivity("speech-result");
@@ -212,7 +215,7 @@ function LearningSessionView({
     } else if (!result.passed) {
       setNextUnlocked(false);
     }
-  }, [item, recordActivity, saveReadingAttempt]);
+  }, [item, learningControlsPaused, recordActivity, saveReadingAttempt]);
 
   useEffect(() => {
     const speech = createSpeechController({
@@ -231,7 +234,11 @@ function LearningSessionView({
 
   async function checkMathAnswer(event: FormEvent): Promise<void> {
     event.preventDefault();
-    if (item.kind !== "math-story" || readingResult?.passed !== true || waiting) return;
+    if (
+      item.kind !== "math-story" ||
+      readingResult?.passed !== true ||
+      learningControlsPaused
+    ) return;
     if (!/^-?\d+$/.test(mathAnswer.trim())) {
       setMathFeedback("숫자로 답을 써 보세요.");
       return;
@@ -260,10 +267,11 @@ function LearningSessionView({
     recordActivity(activity);
     if (activity === "생각 중이에요") setDifficultyFeedback("thinking");
     setIdleUi(null);
-    controllerRef.current?.resume();
+    controllerRef.current?.resume("deduction");
   }
 
   function toggleSpeech(): void {
+    if (learningControlsPaused) return;
     recordActivity("touch");
     if (speechListening) {
       speechRef.current?.finish();
@@ -290,7 +298,7 @@ function LearningSessionView({
         <button
           type="button"
           onClick={toggleSpeech}
-          disabled={!isSpeechRecognitionSupported() || waiting}
+          disabled={!isSpeechRecognitionSupported() || learningControlsPaused}
         >
           {speechListening ? "읽기 완료" : "읽기 시작"}
         </button>
@@ -306,10 +314,10 @@ function LearningSessionView({
             <textarea
               value={manualTranscript}
               onChange={(event) => setManualTranscript(event.target.value)}
-              disabled={waiting}
+              disabled={learningControlsPaused}
             />
           </label>
-          <button type="submit" disabled={waiting || manualTranscript.trim() === ""}>
+          <button type="submit" disabled={learningControlsPaused || manualTranscript.trim() === ""}>
             읽기 판정하기
           </button>
         </form>
@@ -336,11 +344,11 @@ function LearningSessionView({
                 setMathAnswer(event.target.value);
                 recordActivity("answer");
               }}
-              disabled={readingResult?.passed !== true || waiting}
+              disabled={readingResult?.passed !== true || learningControlsPaused}
             />
           </label>
           <span>{item.unitLabel}</span>
-          <button type="submit" disabled={readingResult?.passed !== true || waiting}>답 확인</button>
+          <button type="submit" disabled={readingResult?.passed !== true || learningControlsPaused}>답 확인</button>
         </form>
       ) : null}
       {mathFeedback ? <p role="status">{mathFeedback}</p> : null}
@@ -374,11 +382,12 @@ function LearningSessionView({
         starAward={attemptReceipt?.starAward ?? null}
         reducedMotion={reducedMotion}
         onPlay={() => controllerRef.current?.pause("celebration")}
+        onComplete={() => controllerRef.current?.resume("celebration")}
       />
 
       <button
         type="button"
-        disabled={!nextUnlocked || waiting || idleUi?.phase === "paused"}
+        disabled={!nextUnlocked || learningControlsPaused}
         onClick={() => {
           recordActivity("continue");
           onNext?.();

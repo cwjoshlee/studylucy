@@ -28,7 +28,7 @@ describe("InactivityController", () => {
     controller.pause("document-hidden");
     vi.advanceTimersByTime(600_000);
     expect(events).toEqual(["hint", "confirm"]);
-    controller.resume();
+    controller.resume("document-hidden");
     vi.advanceTimersByTime(60_000);
     expect(events).toEqual(["hint", "confirm", "deduct"]);
   });
@@ -72,7 +72,7 @@ describe("InactivityController", () => {
     controller.pause(reason);
     vi.advanceTimersByTime(600_000);
     expect(events).toEqual([]);
-    controller.resume();
+    controller.resume(reason);
     vi.advanceTimersByTime(999);
     expect(events).toEqual([]);
     vi.advanceTimersByTime(1);
@@ -115,7 +115,7 @@ describe("InactivityController", () => {
     expect(events).toHaveLength(3);
 
     controller.recordActivity("touch");
-    controller.resume();
+    controller.resume("deduction");
     vi.advanceTimersByTime(120_000);
     expect(events.map((event) => event.type)).toEqual([
       "hint",
@@ -124,5 +124,25 @@ describe("InactivityController", () => {
       "active",
       "hint"
     ]);
+  });
+
+  it("releases only the deduction latch on explicit post-deduction resume", () => {
+    const events: string[] = [];
+    const controller = createInactivityController({
+      onEvent: (event) => events.push(event.type)
+    });
+    controller.start();
+    vi.advanceTimersByTime(300_000);
+    controller.pause("document-hidden");
+    controller.recordActivity("continue");
+    events.length = 0;
+
+    controller.resume("deduction");
+    vi.advanceTimersByTime(600_000);
+    expect(events).toEqual([]);
+
+    controller.resume("document-hidden");
+    vi.advanceTimersByTime(120_000);
+    expect(events).toEqual(["hint"]);
   });
 });

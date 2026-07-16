@@ -30,7 +30,7 @@ export type InactivityEvent =
 export type InactivityController = {
   start(): void;
   pause(reason: InactivityPauseReason): void;
-  resume(reason?: InactivityPauseReason): void;
+  resume(reason: InactivityPauseReason | "deduction"): void;
   recordActivity(activity: InactivityActivity): void;
   stop(): void;
 };
@@ -136,8 +136,7 @@ export function createInactivityController({
         return;
       }
       const wasPaused = isPaused();
-      if (reason === undefined) {
-        pauseReasons.clear();
+      if (reason === "deduction") {
         deductionPaused = false;
       } else {
         pauseReasons.delete(reason);

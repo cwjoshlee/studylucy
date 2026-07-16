@@ -71,6 +71,22 @@ function createLearningApi() {
   };
 }
 
+function supportSpeechRecognition(): void {
+  class FakeRecognition {
+    lang = "";
+    interimResults = false;
+    continuous = false;
+    start = vi.fn();
+    stop = vi.fn();
+    abort = vi.fn();
+    addEventListener = vi.fn();
+  }
+  Object.defineProperty(window, "SpeechRecognition", {
+    configurable: true,
+    value: FakeRecognition
+  });
+}
+
 async function submitManualTranscript(transcript: string): Promise<void> {
   const user = userEvent.setup();
   await user.type(screen.getByLabelText("읽은 내용 직접 입력"), transcript);
@@ -80,6 +96,7 @@ async function submitManualTranscript(transcript: string): Promise<void> {
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
+  Reflect.deleteProperty(window, "SpeechRecognition");
 });
 
 describe("LearningSession", () => {
@@ -178,6 +195,96 @@ describe("LearningSession", () => {
     expect(first.learningSessionId).toBe(second.learningSessionId);
     expect(first.clientIdleEventId).not.toBe(second.clientIdleEventId);
   });
+
+  it("disables every learning control after deduction until explicit resume", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-16T01:00:00.000Z"));
+    supportSpeechRecognition();
+    const api = createLearningApi();
+    render(<LearningSession item={mathItem} api={api} studyDate="2026-07-16" />);
+
+    fireEvent.change(screen.getByLabelText("읽은 내용 직접 입력"), {
+      target: { value: `${mathItem.text} ${mathItem.question}` }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "읽기 판정하기" }));
+    expect(screen.getByLabelText("답 쓰기")).toBeEnabled();
+    fireEvent.change(screen.getByLabelText("답 쓰기"), {
+      target: { value: "5" }
+    });
+
+    await act(async () => {
+      vi.advanceTimersByTime(300_000);
+      await Promise.resolve();
+    });
+    expect(screen.getByRole("button", { name: "학습 계속하기" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "읽기 시작" })).toBeDisabled();
+    expect(screen.getByLabelText("읽은 내용 직접 입력")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "읽기 판정하기" })).toBeDisabled();
+    expect(screen.getByLabelText("답 쓰기")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "답 확인" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "다음 문제" })).toBeDisabled();
+    fireEvent.submit(screen.getByLabelText("답 쓰기").closest("form")!);
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(api.saveAttempt).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "학습 계속하기" }));
+    expect(screen.getByRole("button", { name: "읽기 시작" })).toBeEnabled();
+    expect(screen.getByLabelText("읽은 내용 직접 입력")).toBeEnabled();
+    expect(screen.getByLabelText("답 쓰기")).toBeEnabled();
+    expect(screen.getByRole("button", { name: "답 확인" })).toBeEnabled();
+  });
+
+  it("preserves screen lock while celebration ends then continues the 2/4/5-minute lifecycle", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-16T01:00:00.000Z"));
+    const api = createLearningApi();
+    api.saveAttempt.mockResolvedValue(receipt({
+      starAward: {
+        awarded: true,
+        amount: 1,
+        balance: 8,
+        eventId: "star-learning-session-completion-1"
+      }
+    }));
+    render(<LearningSession item={readingItem} api={api} studyDate="2026-07-16" />);
+
+    fireEvent.change(screen.getByLabelText("읽은 내용 직접 입력"), {
+      target: { value: readingItem.text }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "읽기 판정하기" }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByText("별 1개를 모았어요")).toBeVisible();
+    fireEvent(window, new Event("pagehide"));
+
+    await act(async () => {
+      vi.advanceTimersByTime(2_000);
+    });
+    expect(screen.queryByText("별 1개를 모았어요")).not.toBeInTheDocument();
+    await act(async () => {
+      vi.advanceTimersByTime(120_000);
+    });
+    expect(screen.queryByText("힘들면 힌트를 열어 봐요.")).not.toBeInTheDocument();
+
+    fireEvent(window, new Event("pageshow"));
+    await act(async () => {
+      vi.advanceTimersByTime(120_000);
+    });
+    expect(screen.getByText("힘들면 힌트를 열어 봐요.")).toBeVisible();
+    await act(async () => {
+      vi.advanceTimersByTime(120_000);
+    });
+    expect(screen.getByText("계속 할 수 있을까요?")).toBeVisible();
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+      await Promise.resolve();
+    });
+    expect(api.sendIdleEvent).toHaveBeenCalledOnce();
+  });
 });
 
 describe("StarCelebration", () => {
@@ -222,6 +329,24 @@ describe("StarCelebration", () => {
       eventId: "star-not-awarded-1"
     }} />);
 
+    expect(screen.queryByRole("status", { name: "별 보상" })).not.toBeInTheDocument();
+  });
+
+  it("completes once and removes the celebration after its display window", () => {
+    vi.useFakeTimers();
+    const onComplete = vi.fn();
+    render(<StarCelebration starAward={{
+      awarded: true,
+      amount: 1,
+      balance: 10,
+      eventId: "star-celebration-completion-1"
+    }} onComplete={onComplete} />);
+
+    act(() => vi.advanceTimersByTime(1_999));
+    expect(onComplete).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(1));
+    expect(onComplete).toHaveBeenCalledOnce();
+    expect(onComplete).toHaveBeenCalledWith("star-celebration-completion-1");
     expect(screen.queryByRole("status", { name: "별 보상" })).not.toBeInTheDocument();
   });
 });

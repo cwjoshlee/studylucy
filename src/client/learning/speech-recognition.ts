@@ -185,9 +185,10 @@ export function createSpeechController(
   };
 }
 
-export function collapseSpeechSegments(segments: readonly string[]): string {
+export function collapseSpeechSegments(segments: string[]): string {
+  const sourceSegments = segments.splice(0, segments.length);
   const collapsed: string[] = [];
-  for (const segment of segments) addCollapsedSpeechPart(collapsed, segment);
+  for (const segment of sourceSegments) addCollapsedSpeechPart(collapsed, segment);
   return cleanSpeechText(collapsed.join(" "));
 }
 
