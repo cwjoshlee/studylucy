@@ -3,8 +3,10 @@ import {
   LearningItemPayloadSchema,
   type AttemptInput,
   type AttemptReceipt,
-  type LearningItemPayload
+  type LearningItemPayload,
+  type StarAwardReceipt
 } from "../../shared/learning";
+import { StarRepository } from "../stars/repository";
 
 export type ActiveLearningItem = {
   id: string;
@@ -24,6 +26,10 @@ type AttemptRow = {
   id: string;
   readingPass: number;
   mathPass: number | null;
+  starAwarded: number;
+  starAmount: number;
+  starBalance: number;
+  starEventId: string | null;
 };
 
 function receiptFromRow(row: AttemptRow, duplicate: boolean): AttemptReceipt {
@@ -34,21 +40,38 @@ function receiptFromRow(row: AttemptRow, duplicate: boolean): AttemptReceipt {
     duplicate,
     readingPass,
     mathPass,
-    completed: readingPass && (mathPass ?? true)
+    completed: readingPass && (mathPass ?? true),
+    starAward: {
+      awarded: row.starAwarded === 1,
+      amount: row.starAmount,
+      balance: row.starBalance,
+      eventId: row.starEventId
+    }
   };
 }
 
 export class LearningRepository {
-  constructor(private db: Database.Database) {}
+  private stars: StarRepository;
+
+  constructor(private db: Database.Database) {
+    this.stars = new StarRepository(db);
+  }
 
   findDuplicateAttempt(
     userId: string,
     clientAttemptId: string
   ): AttemptReceipt | null {
     const row = this.db.prepare(`
-      SELECT id, reading_pass AS readingPass, math_pass AS mathPass
-      FROM attempts
-      WHERE client_attempt_id = ? AND user_id = ?
+      SELECT a.id,
+             a.reading_pass AS readingPass,
+             a.math_pass AS mathPass,
+             r.awarded AS starAwarded,
+             r.amount AS starAmount,
+             r.balance AS starBalance,
+             r.event_id AS starEventId
+      FROM attempts AS a
+      JOIN attempt_star_receipts AS r ON r.attempt_id = a.id
+      WHERE a.client_attempt_id = ? AND a.user_id = ?
     `).get(clientAttemptId, userId) as AttemptRow | undefined;
     return row === undefined ? null : receiptFromRow(row, true);
   }
@@ -150,12 +173,90 @@ export class LearningRepository {
         input.createdAt
       );
 
+      const completed = readingPass && (mathPass ?? true);
+      const starAward = this.createStarAwardReceipt({
+        studentId: input.userId,
+        studyDate: input.studyDate,
+        itemId: input.itemId,
+        attemptId: input.id,
+        completed,
+        createdAt: input.createdAt
+      });
+      this.db.prepare(`
+        INSERT INTO attempt_star_receipts (
+          attempt_id, awarded, amount, balance, event_id
+        ) VALUES (?, ?, ?, ?, ?)
+      `).run(
+        input.id,
+        starAward.awarded ? 1 : 0,
+        starAward.amount,
+        starAward.balance,
+        starAward.eventId
+      );
+
       return receiptFromRow({
         id: input.id,
         readingPass: readingPass ? 1 : 0,
-        mathPass: mathPass === null ? null : mathPass ? 1 : 0
+        mathPass: mathPass === null ? null : mathPass ? 1 : 0,
+        starAwarded: starAward.awarded ? 1 : 0,
+        starAmount: starAward.amount,
+        starBalance: starAward.balance,
+        starEventId: starAward.eventId
       }, false);
-    })();
+    }).immediate();
+  }
+
+  private createStarAwardReceipt(input: {
+    studentId: string;
+    studyDate: string;
+    itemId: string;
+    attemptId: string;
+    completed: boolean;
+    createdAt: string;
+  }): StarAwardReceipt {
+    const required = this.db.prepare(`
+      SELECT 1
+      FROM daily_requirements
+      WHERE student_id = ? AND study_date = ? AND item_id = ?
+    `).get(input.studentId, input.studyDate, input.itemId) !== undefined;
+
+    if (!input.completed || !required) {
+      return {
+        awarded: false,
+        amount: 0,
+        balance: this.getStarBalance(input.studentId),
+        eventId: null
+      };
+    }
+
+    const applied = this.stars.apply({
+      studentId: input.studentId,
+      delta: 1,
+      reason: "REQUIRED_ITEM_COMPLETED",
+      reasonText: "필수 학습을 완료했어요",
+      studyDate: input.studyDate,
+      itemId: input.itemId,
+      attemptId: input.attemptId,
+      actorType: "system",
+      sourceKey:
+        `required:${input.studentId}:${input.studyDate}:${input.itemId}`,
+      createdAt: input.createdAt
+    });
+    return {
+      awarded: !applied.duplicate,
+      amount: applied.duplicate ? 0 : 1,
+      balance: this.getStarBalance(input.studentId),
+      eventId: applied.event.id
+    };
+  }
+
+  private getStarBalance(studentId: string): number {
+    const row = this.db.prepare(`
+      SELECT balance
+      FROM student_star_balances
+      WHERE student_id = ?
+    `).get(studentId) as { balance: number } | undefined;
+    return row?.balance ?? 0;
   }
 
   listProgressAttempts(from: string, to: string): ProgressAttempt[] {

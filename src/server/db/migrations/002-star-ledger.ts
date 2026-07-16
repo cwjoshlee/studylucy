@@ -62,6 +62,21 @@ export const starLedgerMigration = {
       BEGIN
         SELECT RAISE(ABORT, 'STAR_EVENTS_APPEND_ONLY');
       END;
+      CREATE TABLE attempt_star_receipts (
+        attempt_id TEXT PRIMARY KEY REFERENCES attempts(id),
+        awarded INTEGER NOT NULL CHECK (awarded IN (0,1)),
+        amount INTEGER NOT NULL CHECK (amount IN (0,1)),
+        balance INTEGER NOT NULL CHECK (balance >= 0),
+        event_id TEXT REFERENCES star_events(id),
+        CHECK (
+          (awarded = 1 AND amount = 1 AND event_id IS NOT NULL)
+          OR (awarded = 0 AND amount = 0)
+        )
+      );
+      INSERT INTO attempt_star_receipts (
+        attempt_id, awarded, amount, balance, event_id
+      )
+      SELECT id, 0, 0, 0, NULL FROM attempts;
       CREATE TABLE idle_events (
         id TEXT PRIMARY KEY,
         student_id TEXT NOT NULL REFERENCES users(id),

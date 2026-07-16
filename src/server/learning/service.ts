@@ -7,6 +7,7 @@ import type {
   GuardianProgress,
   TodayPlan
 } from "../../shared/learning";
+import { DailyPlanService } from "../stars/daily-plan";
 import { LearningRepository } from "./repository";
 
 export class LearningError extends Error {
@@ -25,15 +26,19 @@ export type LearningServiceDeps = {
 
 export class LearningService {
   private repository: LearningRepository;
+  private dailyPlan: DailyPlanService;
 
   constructor(private deps: LearningServiceDeps) {
     this.repository = new LearningRepository(deps.db);
+    this.dailyPlan = new DailyPlanService(deps.db, deps.now);
   }
 
   getTodayPlan(userId: string, date: string): TodayPlan {
+    const requiredPlan = this.dailyPlan.ensure(userId, date);
     return {
       date,
       completedItemIds: this.repository.listCompletedItemIds(userId, date),
+      ...requiredPlan,
       items: getDailyItems(this.repository.listActiveItems(), date)
     };
   }
@@ -46,6 +51,7 @@ export class LearningService {
   }
 
   saveAttempt(userId: string, input: AttemptInput): AttemptReceipt {
+    this.dailyPlan.ensure(userId, input.studyDate);
     const receipt = this.repository.saveAttempt({
       ...input,
       id: randomUUID(),

@@ -1,4 +1,5 @@
 import { z } from "zod";
+import type { StudentStarSummary } from "./stars";
 
 const BaseItem = z.object({
   id: z.string().min(1),
@@ -42,6 +43,8 @@ export type AttemptInput = z.infer<typeof AttemptInputSchema>;
 export type TodayPlan = {
   date: string;
   completedItemIds: string[];
+  requiredItemIds: string[];
+  stars: StudentStarSummary;
   items: Array<{
     id: string;
     version: number;
@@ -57,12 +60,20 @@ export type GuardianProgress = {
   recentReviewTokens: Array<{ token: string; count: number }>;
 };
 
+export type StarAwardReceipt = {
+  awarded: boolean;
+  amount: number;
+  balance: number;
+  eventId: string | null;
+};
+
 export type AttemptReceipt = {
   id: string;
   duplicate: boolean;
   readingPass: boolean;
   mathPass: boolean | null;
   completed: boolean;
+  starAward: StarAwardReceipt;
 };
 
 export type SyncResult = { sent: number; remaining: number };
