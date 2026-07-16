@@ -1,8 +1,11 @@
 import cookie from "@fastify/cookie";
 import helmet from "@fastify/helmet";
 import rateLimit from "@fastify/rate-limit";
+import fastifyStatic from "@fastify/static";
 import type Database from "better-sqlite3";
 import Fastify, { type FastifyInstance } from "fastify";
+import { existsSync } from "node:fs";
+import { join, resolve } from "node:path";
 import { registerAuthRoutes } from "./auth/routes";
 import type { AppConfig } from "./config";
 import { registerLearningRoutes } from "./learning/routes";
@@ -15,6 +18,7 @@ export type AppDeps = {
   db: Database.Database;
   now: () => Date;
   randomToken: () => string;
+  clientDistDir?: string;
 };
 
 function isInvalidJsonError(error: unknown): boolean {
@@ -64,6 +68,28 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   registerLearningRoutes(app, deps);
   registerStarRoutes(app, deps);
   app.get("/api/health", async () => ({ status: "ok" as const }));
+
+  const clientDistDir = deps.clientDistDir ?? resolve(process.cwd(), "dist/client");
+  if (existsSync(join(clientDistDir, "index.html"))) {
+    await app.register(fastifyStatic, {
+      root: clientDistDir,
+      wildcard: false
+    });
+    app.setNotFoundHandler(async (request, reply) => {
+      const path = request.url.split("?", 1)[0] ?? request.url;
+      const acceptsHtml = request.headers.accept?.includes("text/html") ?? false;
+      if (
+        request.method === "GET" &&
+        path !== "/api" &&
+        !path.startsWith("/api/") &&
+        acceptsHtml
+      ) {
+        await reply.type("text/html; charset=utf-8").sendFile("index.html");
+        return;
+      }
+      await reply.code(404).send({ code: "NOT_FOUND" });
+    });
+  }
 
   return app;
 }

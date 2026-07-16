@@ -72,6 +72,7 @@ export class TestClient {
 
 export async function createTestHarness(options: {
   nodeEnv?: "test" | "production";
+  clientDistDir?: string;
 } = {}) {
   const db = openDatabase(":memory:");
   migrate(db);
@@ -86,7 +87,8 @@ export async function createTestHarness(options: {
     config,
     db,
     now: () => new Date(currentTime),
-    randomToken: () => Buffer.alloc(32, ++sequence).toString("base64url")
+    randomToken: () => Buffer.alloc(32, ++sequence).toString("base64url"),
+    clientDistDir: options.clientDistDir
   });
   app.get(
     "/api/auth/test-guardian-only",
