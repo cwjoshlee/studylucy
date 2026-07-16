@@ -3,9 +3,7 @@ import type BetterSqlite3 from "better-sqlite3";
 import { randomUUID } from "node:crypto";
 import { copyFile, mkdir, readdir, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
-
-const MANAGED_BACKUP_PATTERN =
-  /^sua-learning-\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2}-\d{3}Z\.sqlite$/;
+import { isCanonicalBackupFilename } from "./validation";
 
 export type BackupRun = {
   status: "success" | "failure";
@@ -81,7 +79,7 @@ async function removeSidecars(path: string): Promise<void> {
 async function rotateDirectory(path: string, keep: number): Promise<void> {
   await mkdir(path, { recursive: true });
   const expired = (await readdir(path))
-    .filter((filename) => MANAGED_BACKUP_PATTERN.test(filename))
+    .filter(isCanonicalBackupFilename)
     .sort((left, right) => right.localeCompare(left))
     .slice(keep);
   await Promise.all(expired.map((filename) =>

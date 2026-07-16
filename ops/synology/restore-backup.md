@@ -7,6 +7,7 @@
 패키지 디렉터리에서 실행한다. `BACKUP`에는 복구할 일간 또는 주간 백업 하나를 지정한다.
 
 ```sh
+set -eu
 cd /volume1/docker/sua-learning
 BACKUP=./data/backups/daily/sua-learning-YYYY-MM-DDTHH-mm-ss-sssZ.sqlite
 STAMP=$(date +%Y%m%dT%H%M%S)
@@ -15,6 +16,12 @@ CANDIDATE=./data/restore-candidate-${STAMP}.sqlite
 test -f "$BACKUP"
 test ! -e "$CANDIDATE"
 cp -- "$BACKUP" "$CANDIDATE"
+
+fail_candidate() {
+  rm -f -- "$CANDIDATE" "${CANDIDATE}-wal" "${CANDIDATE}-shm"
+  printf '%s\n' "$1" >&2
+  exit 1
+}
 ```
 
 이 단계에서는 앱 컨테이너를 계속 실행해도 된다. 운영 DB가 아니라 새 후보 파일만 읽는다.
@@ -25,10 +32,10 @@ cp -- "$BACKUP" "$CANDIDATE"
 
 ```sh
 INTEGRITY=$(sqlite3 "$CANDIDATE" 'PRAGMA integrity_check;')
-test "$INTEGRITY" = "ok"
+test "$INTEGRITY" = "ok" || fail_candidate BACKUP_INTEGRITY_FAILED
 
 FOREIGN_KEY_ERRORS=$(sqlite3 "$CANDIDATE" 'SELECT COUNT(*) FROM pragma_foreign_key_check;')
-test "$FOREIGN_KEY_ERRORS" = "0"
+test "$FOREIGN_KEY_ERRORS" = "0" || fail_candidate BACKUP_FOREIGN_KEY_FAILED
 
 BALANCE_ERRORS=$(sqlite3 "$CANDIDATE" <<'SQL'
 WITH student_ids AS (
@@ -57,10 +64,10 @@ FROM reconciled
 WHERE stored_balance IS NULL OR stored_balance <> ledger_balance;
 SQL
 )
-test "$BALANCE_ERRORS" = "0"
+test "$BALANCE_ERRORS" = "0" || fail_candidate BACKUP_LEDGER_RECONCILIATION_FAILED
 ```
 
-복구 전후 비교를 위해 학습 시도, 별 원장, 잔액, 대기 승인 건수도 기록한다. 이 출력에는 사용자 이름이나 내부 레코드 내용이 포함되지 않는다.
+복구 전후 비교를 위해 학습 시도, 별 원장, 잔액, 대기 승인, 일일 계획 설정, 일일 필수 항목 건수도 기록한다. 이 출력에는 사용자 이름이나 내부 레코드 내용이 포함되지 않는다.
 
 ```sh
 sqlite3 "$CANDIDATE" <<'SQL'
@@ -68,7 +75,83 @@ SELECT 'attempts', COUNT(*) FROM attempts;
 SELECT 'star_events', COUNT(*) FROM star_events;
 SELECT 'student_star_balances', COUNT(*) FROM student_star_balances;
 SELECT 'pending_star_adjustments', COUNT(*) FROM pending_star_adjustments;
+SELECT 'daily_plan_settings', COUNT(*) FROM daily_plan_settings;
+SELECT 'daily_requirements', COUNT(*) FROM daily_requirements;
 SQL
+```
+
+다음 세 검사는 후보 DB 안에서 임시 사용자와 원장 행을 트랜잭션으로 만든 뒤 의도적으로 금지된 변경을 시도한다. 각 `sqlite3` 프로세스가 예상 오류로 끝나면 열린 트랜잭션 전체가 자동 롤백되어 후보 데이터는 바뀌지 않는다. 다른 오류이거나 금지된 변경이 성공하면 복구를 중단한다.
+
+```sh
+if UPDATE_PROBE=$(sqlite3 -bail "$CANDIDATE" 2>&1 <<SQL
+BEGIN;
+INSERT INTO users (id, role, display_name, created_at)
+VALUES ('__restore_update_user_${STAMP}', 'student', 'constraint probe',
+  '2000-01-01T00:00:00.000Z');
+INSERT INTO star_events (
+  id, student_id, requested_delta, delta, balance_after, reason_code,
+  reason_text, study_date, actor_type, source_key, created_at
+) VALUES (
+  '__restore_update_event_${STAMP}', '__restore_update_user_${STAMP}',
+  0, 0, 0, 'NO_BALANCE_AUDIT', 'constraint probe', '2000-01-01',
+  'system', '__restore_update_source_${STAMP}', '2000-01-01T00:00:00.000Z'
+);
+UPDATE star_events
+SET reason_text = 'forbidden update'
+WHERE id = '__restore_update_event_${STAMP}';
+ROLLBACK;
+SQL
+); then
+  fail_candidate BACKUP_APPEND_ONLY_UPDATE_MISSING
+fi
+case "$UPDATE_PROBE" in
+  *"STAR_EVENTS_APPEND_ONLY"*) ;;
+  *) fail_candidate BACKUP_APPEND_ONLY_UPDATE_PROBE_FAILED ;;
+esac
+
+if DELETE_PROBE=$(sqlite3 -bail "$CANDIDATE" 2>&1 <<SQL
+BEGIN;
+INSERT INTO users (id, role, display_name, created_at)
+VALUES ('__restore_delete_user_${STAMP}', 'student', 'constraint probe',
+  '2000-01-01T00:00:00.000Z');
+INSERT INTO star_events (
+  id, student_id, requested_delta, delta, balance_after, reason_code,
+  reason_text, study_date, actor_type, source_key, created_at
+) VALUES (
+  '__restore_delete_event_${STAMP}', '__restore_delete_user_${STAMP}',
+  0, 0, 0, 'NO_BALANCE_AUDIT', 'constraint probe', '2000-01-01',
+  'system', '__restore_delete_source_${STAMP}', '2000-01-01T00:00:00.000Z'
+);
+DELETE FROM star_events WHERE id = '__restore_delete_event_${STAMP}';
+ROLLBACK;
+SQL
+); then
+  fail_candidate BACKUP_APPEND_ONLY_DELETE_MISSING
+fi
+case "$DELETE_PROBE" in
+  *"STAR_EVENTS_APPEND_ONLY"*) ;;
+  *) fail_candidate BACKUP_APPEND_ONLY_DELETE_PROBE_FAILED ;;
+esac
+
+if BALANCE_PROBE=$(sqlite3 -bail "$CANDIDATE" 2>&1 <<SQL
+BEGIN;
+INSERT INTO users (id, role, display_name, created_at)
+VALUES ('__restore_balance_user_${STAMP}', 'student', 'constraint probe',
+  '2000-01-01T00:00:00.000Z');
+INSERT INTO student_star_balances (student_id, balance, updated_at)
+VALUES ('__restore_balance_user_${STAMP}', -1, '2000-01-01T00:00:00.000Z');
+ROLLBACK;
+SQL
+); then
+  fail_candidate BACKUP_NONNEGATIVE_BALANCE_MISSING
+fi
+case "$BALANCE_PROBE" in
+  *"CHECK constraint failed"*) ;;
+  *) fail_candidate BACKUP_NONNEGATIVE_BALANCE_PROBE_FAILED ;;
+esac
+
+POST_PROBE_INTEGRITY=$(sqlite3 "$CANDIDATE" 'PRAGMA integrity_check;')
+test "$POST_PROBE_INTEGRITY" = "ok" || fail_candidate BACKUP_POST_PROBE_INTEGRITY_FAILED
 ```
 
 검사 하나라도 실패하면 후보 파일을 삭제하고 여기서 중단한다. 운영 DB를 교체하지 않는다.
@@ -106,7 +189,7 @@ docker compose start app
 curl --fail --silent http://127.0.0.1:8787/api/health
 ```
 
-헬스 체크 후 보호자 화면에서 백업 상태와 별 잔액을 확인하고, 2단계의 네 가지 건수를 다시 비교한다. 문제가 있으면 다음처럼 앱을 다시 멈춘 상태에서 `ROLLBACK` 파일과 함께 보존한 WAL 쌍으로 되돌린다.
+헬스 체크 후 보호자 화면에서 백업 상태와 별 잔액을 확인하고, 2단계의 여섯 가지 건수를 다시 비교한다. 문제가 있으면 다음처럼 앱을 다시 멈춘 상태에서 `ROLLBACK` 파일과 함께 보존한 WAL 쌍으로 되돌린다.
 
 ```sh
 docker compose stop app

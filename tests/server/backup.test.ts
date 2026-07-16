@@ -33,6 +33,17 @@ function populateBackupFixture(db: Database.Database): void {
     VALUES (?, 'guardian', '보호자', ?), (?, 'student', '수아', ?)
   `).run(GUARDIAN_ID, CREATED_AT, STUDENT_ID, CREATED_AT);
   db.prepare(`
+    INSERT INTO daily_plan_settings (
+      student_id, study_date, korean_target, math_target, is_rest_day,
+      updated_by, updated_at
+    ) VALUES (?, '2026-07-19', 3, 2, 0, ?, ?)
+  `).run(STUDENT_ID, GUARDIAN_ID, CREATED_AT);
+  db.prepare(`
+    INSERT INTO daily_requirements (
+      student_id, study_date, item_id, subject, sort_order, created_at
+    ) VALUES (?, '2026-07-19', 'ko-01', 'korean', 1, ?)
+  `).run(STUDENT_ID, CREATED_AT);
+  db.prepare(`
     INSERT INTO attempts (
       id, client_attempt_id, user_id, item_id, content_version, study_date,
       reading_score, reading_pass, missed_tokens_json, math_answer_json,
@@ -112,6 +123,52 @@ describe("consistent SQLite backup", () => {
         requested_stars: 2,
         status: "pending"
       });
+      expect(copy.prepare(`
+        SELECT student_id, study_date, korean_target, math_target,
+          is_rest_day, updated_by
+        FROM daily_plan_settings
+      `).get()).toEqual({
+        student_id: STUDENT_ID,
+        study_date: "2026-07-19",
+        korean_target: 3,
+        math_target: 2,
+        is_rest_day: 0,
+        updated_by: GUARDIAN_ID
+      });
+      expect(copy.prepare(`
+        SELECT student_id, study_date, item_id, subject, sort_order
+        FROM daily_requirements
+      `).get()).toEqual({
+        student_id: STUDENT_ID,
+        study_date: "2026-07-19",
+        item_id: "ko-01",
+        subject: "korean",
+        sort_order: 1
+      });
+
+      const eventBefore = copy.prepare(
+        "SELECT id, reason_text FROM star_events WHERE id = ?"
+      ).get("star-event-backup");
+      expect(() => copy.prepare(
+        "UPDATE star_events SET reason_text = 'tampered' WHERE id = ?"
+      ).run("star-event-backup")).toThrowError(/STAR_EVENTS_APPEND_ONLY/);
+      expect(() => copy.prepare(
+        "DELETE FROM star_events WHERE id = ?"
+      ).run("star-event-backup")).toThrowError(/STAR_EVENTS_APPEND_ONLY/);
+      expect(copy.prepare(
+        "SELECT id, reason_text FROM star_events WHERE id = ?"
+      ).get("star-event-backup")).toEqual(eventBefore);
+
+      expect(() => copy.prepare(`
+        UPDATE student_star_balances
+        SET balance = -1
+        WHERE student_id = ?
+      `).run(STUDENT_ID)).toThrowError(/CHECK constraint failed/);
+      expect(copy.prepare(`
+        SELECT balance
+        FROM student_star_balances
+        WHERE student_id = ?
+      `).get(STUDENT_ID)).toEqual({ balance: 3 });
     } finally {
       copy.close();
     }
@@ -161,6 +218,43 @@ describe("consistent SQLite backup", () => {
       "notes.txt",
       ...Array.from({ length: 8 }, (_, index) => name(index + 3))
     ]);
+  });
+
+  it("excludes impossible, malformed, and partial filenames from retention", async () => {
+    const backupDir = join(directory, "backups");
+    const dailyDir = join(backupDir, "daily");
+    const weeklyDir = join(backupDir, "weekly");
+    mkdirSync(dailyDir, { recursive: true });
+    mkdirSync(weeklyDir, { recursive: true });
+    const name = (day: number) =>
+      `sua-learning-2026-06-${String(day).padStart(2, "0")}T03-00-00-000Z.sqlite`;
+    const excluded = [
+      "sua-learning-2026-02-30T03-00-00-000Z.sqlite",
+      "sua-learning-2026-06-17T03-00.sqlite",
+      "sua-learning-2026-06-17T03-00-00-000Z.sqlite.part",
+      "sua-learning-9999-99-99T99-99-99-999Z.sqlite"
+    ];
+    for (let day = 1; day <= 16; day += 1) {
+      writeFileSync(join(dailyDir, name(day)), `daily-${day}`);
+    }
+    for (let day = 1; day <= 10; day += 1) {
+      writeFileSync(join(weeklyDir, name(day)), `weekly-${day}`);
+    }
+    for (const filename of excluded) {
+      writeFileSync(join(dailyDir, filename), "excluded daily");
+      writeFileSync(join(weeklyDir, filename), "excluded weekly");
+    }
+
+    await rotateBackups(backupDir);
+
+    expect(readdirSync(dailyDir).sort()).toEqual([
+      ...excluded,
+      ...Array.from({ length: 14 }, (_, index) => name(index + 3))
+    ].sort());
+    expect(readdirSync(weeklyDir).sort()).toEqual([
+      ...excluded,
+      ...Array.from({ length: 8 }, (_, index) => name(index + 3))
+    ].sort());
   });
 
   it("records a path failure using only a normalized error code", async () => {
@@ -332,6 +426,87 @@ describe("guardian backup status", () => {
     expect(response.body).not.toMatch(
       /\/Users\/|private|internal-|EACCES|PIN|2580|token|raw-secret|error/i
     );
+  });
+
+  it("ignores poisoned timestamps and resolves the latest canonical status", async () => {
+    const guardian = await loggedInGuardian();
+    harness.db.prepare(`
+      INSERT INTO backup_runs (id, status, path, error_code, created_at)
+      VALUES
+        (?, 'failure', NULL, 'BACKUP_COPY_FAILED', ?),
+        (?, 'success', ?, NULL, ?),
+        (?, 'failure', ?, ?, ?),
+        (?, 'failure', NULL, 'BACKUP_COPY_FAILED', ?)
+    `).run(
+      "valid-older",
+      "2026-07-18T03:00:00.000Z",
+      "valid-latest",
+      "/private/backups/sua-learning-2026-07-19T03-00-00-000Z.sqlite",
+      CREATED_AT,
+      "poisoned-path-timestamp",
+      "/Users/private/PIN-2580.sqlite",
+      "raw token=secret-value",
+      "zzzz /Users/private token=secret-value PIN=2580",
+      "poisoned-impossible-timestamp",
+      "9999-99-99T99:99:99.999Z"
+    );
+
+    const response = await guardian.request(
+      "GET",
+      "/api/guardian/backup-status"
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      status: "success",
+      finishedAt: CREATED_AT,
+      filename: "sua-learning-2026-07-19T03-00-00-000Z.sqlite"
+    });
+    expect(response.body).not.toMatch(
+      /\/Users\/|PIN|2580|token|secret-value|9999-99|poisoned/
+    );
+  });
+
+  it("returns never-run when every stored timestamp is noncanonical", async () => {
+    const guardian = await loggedInGuardian();
+    harness.db.prepare(`
+      INSERT INTO backup_runs (id, status, path, error_code, created_at)
+      VALUES
+        ('invalid-impossible', 'failure', NULL, 'BACKUP_COPY_FAILED',
+          '2026-02-30T03:00:00.000Z'),
+        ('invalid-partial', 'success', 'sua-learning-2026-07-19T03-00-00-000Z.sqlite',
+          NULL, '2026-07-19T03:00:00Z')
+    `).run();
+
+    const response = await guardian.request(
+      "GET",
+      "/api/guardian/backup-status"
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({ status: "never-run" });
+  });
+
+  it("omits a noncanonical backup filename from an otherwise valid success", async () => {
+    const guardian = await loggedInGuardian();
+    harness.db.prepare(`
+      INSERT INTO backup_runs (id, status, path, error_code, created_at)
+      VALUES ('invalid-filename', 'success', ?, NULL, ?)
+    `).run(
+      "/private/sua-learning-9999-99-99T99-99-99-999Z.sqlite",
+      CREATED_AT
+    );
+
+    const response = await guardian.request(
+      "GET",
+      "/api/guardian/backup-status"
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual({
+      status: "success",
+      finishedAt: CREATED_AT
+    });
   });
 });
 
