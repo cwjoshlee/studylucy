@@ -99,6 +99,61 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   border-radius: var(--radius-medium);
   background: var(--mint);
 }
+.learning-companion {
+  display: grid;
+  grid-template-columns: minmax(72px, 104px) minmax(0, 1fr);
+  align-items: center;
+  gap: 16px;
+  min-width: 0;
+  padding: 12px 14px;
+  border: 2px solid var(--line);
+  border-radius: var(--radius-medium);
+  background: var(--cream);
+}
+.learning-companion .companion-avatar {
+  width: min(104px, 100%);
+  height: auto;
+  aspect-ratio: 1;
+}
+.learning-companion .companion-bubble {
+  min-width: 0;
+  border-color: var(--line);
+  color: var(--ink-soft);
+  font-size: .96rem;
+}
+.learning-companion .companion-bubble strong {
+  color: var(--ink-soft);
+  font-size: .88rem;
+}
+.learning-companion [data-cue-tone="support"] { background: var(--mint); }
+.learning-companion [data-cue-tone="status"] { background: var(--cream); }
+.learning-companion [data-cue-tone="humor"]::after {
+  content: "✦";
+  flex: 0 0 auto;
+  color: var(--star);
+  font-size: 1.15rem;
+}
+.manual-reading-check {
+  padding: 12px 14px;
+  border: 2px solid var(--line);
+  border-radius: var(--radius-medium);
+  background: var(--cloud);
+}
+.manual-reading-check summary {
+  min-height: var(--touch-min);
+  align-content: center;
+  color: var(--lavender-deep);
+  cursor: pointer;
+  font-weight: 900;
+}
+.manual-reading-check[open] summary { margin-bottom: 12px; }
+[aria-label="낱말 힌트"] {
+  display: grid;
+  gap: 12px;
+  padding: 16px;
+  border-radius: var(--radius-medium);
+  background: var(--cream);
+}
 
 .problem-breakdown {
   display: grid;
@@ -403,7 +458,23 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 }
 .companion-bubble strong { flex: 0 0 auto; color: var(--grape); }
 .companion-bubble--support { background: var(--mint); }
-.companion-bubble--status { background: var(--sky); }
+.companion-bubble--status { background: var(--cream); }
+
+.star-celebration {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: fit-content;
+  padding: 10px 14px;
+  border-radius: var(--radius-medium);
+  background: #fff3bd;
+}
+.star-celebration__particles {
+  display: flex;
+  gap: 4px;
+  color: #ad7900;
+}
 
 .friend-trail {
   display: grid;

@@ -974,6 +974,7 @@ describe("가족 로그인과 학생 홈", () => {
       await user.click(await screen.findByRole("button", {
         name: "바람과 꽃 시작하기"
       }));
+      await user.click(screen.getByText("직접 입력으로 확인하기"));
       await user.type(
         screen.getByLabelText("읽은 내용 직접 입력"),
         "바람과 꽃"
@@ -1038,6 +1039,7 @@ describe("가족 로그인과 학생 홈", () => {
     await markStudentAuthenticated();
     render(<App api={api} />);
     await user.click(await screen.findByRole("button", { name: "바람과 꽃 시작하기" }));
+    await user.click(screen.getByText("직접 입력으로 확인하기"));
     await user.type(screen.getByLabelText("읽은 내용 직접 입력"), "바람과 꽃");
     await user.click(screen.getByRole("button", { name: "읽기 판정하기" }));
 
@@ -1134,10 +1136,11 @@ describe("가족 로그인과 학생 홈", () => {
     await markStudentAuthenticated();
     render(<App api={api} />);
     await user.click(await screen.findByRole("button", { name: "바람과 꽃 시작하기" }));
+    await user.click(screen.getByText("직접 입력으로 확인하기"));
     await user.type(screen.getByLabelText("읽은 내용 직접 입력"), "바람과 꽃");
     await user.click(screen.getByRole("button", { name: "읽기 판정하기" }));
 
-    expect(await screen.findByText("학습 기록을 동기화 대기 중이에요. 연결되면 확인할게요.")).toBeVisible();
+    expect(await screen.findByText("학습 기록이 아직 여행 중이에요. 연결되면 확인할게요.")).toBeVisible();
     await expect(listQueuedAttempts()).resolves.toHaveLength(1);
     expect(screen.getByRole("button", { name: "다음 문제" })).toBeEnabled();
     expect(screen.getByText("동기화 대기")).toBeVisible();
@@ -1502,6 +1505,7 @@ describe("가족 로그인과 학생 홈", () => {
     expect(components).toContain(":focus-visible");
     expect(layout).toContain(".student-learning-view");
     expect(components).toContain(".learning-session");
+    expect(components).toContain(".learning-companion");
     expect(components).toMatch(/\.learning-session textarea\s*\{[^}]*min-height:\s*120px/s);
     expect(responsive).toMatch(/@media\s*\(max-width:\s*950px\)/);
     expect(responsive).toMatch(/max-width:\s*850px/);
@@ -1510,6 +1514,7 @@ describe("가족 로그인과 학생 홈", () => {
     expect(responsive).toContain('"right"');
     expect(responsive).not.toMatch(/\.student-shell__right\s*\{[^}]*display:\s*none/s);
     expect(responsive).toMatch(/@media\s*\(prefers-reduced-motion:\s*reduce\)/);
+    expect(responsive).toContain(".learning-companion .companion-avatar");
     expect(components).toMatch(/\.companion-bubble\s*\{[^}]*overflow-wrap:\s*anywhere/s);
     expect(components).toMatch(
       /\.account-menu button,\s*\.device-management button\s*\{[^}]*min-height:\s*48px/s

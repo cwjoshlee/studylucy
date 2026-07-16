@@ -15,6 +15,8 @@ import type {
 import type { ReadingResult } from "../../shared/reading";
 import type { IdleEventInput, IdleEventResult } from "../../shared/stars";
 import type { ApiClient } from "../api/client";
+import { LearningCompanion } from "../companions/learning-companion";
+import type { CompanionMoment } from "../companions/cues";
 import { StarCelebration } from "../delight/star-celebration";
 import {
   preserveFailedAttempt,
@@ -27,6 +29,7 @@ import {
   type InactivityEvent
 } from "./inactivity-controller";
 import { judgeReading } from "./reading-judge";
+import { ProblemBreakdown } from "./problem-breakdown-view";
 import {
   createSpeechController,
   isSpeechRecognitionSupported,
@@ -120,8 +123,13 @@ function LearningSessionView({
   const [readingResult, setReadingResult] = useState<ReadingResult | null>(null);
   const [mathAnswer, setMathAnswer] = useState("");
   const [mathFeedback, setMathFeedback] = useState("");
+  const [mathRetryCount, setMathRetryCount] = useState(0);
   const [nextUnlocked, setNextUnlocked] = useState(false);
   const [waiting, setWaiting] = useState(false);
+  const [saveUiState, setSaveUiState] = useState<
+    "idle" | "saving" | "queued" | "failed"
+  >("idle");
+  const [showNextCue, setShowNextCue] = useState(false);
   const [idleUi, setIdleUi] = useState<IdleUi>(null);
   const [showHint, setShowHint] = useState(false);
   const [difficultyFeedback, setDifficultyFeedback] = useState<AttemptInput["difficultyFeedback"]>(null);
@@ -195,6 +203,7 @@ function LearningSessionView({
       setIdleUi({ phase: "paused", message: IDLE_RESULT_TEXT[result.outcome] });
     } catch (error) {
       if (isExplicitClientError(error)) {
+        setAuthority({ phase: "unavailable" });
         onExit?.();
         return;
       }
@@ -286,11 +295,15 @@ function LearningSessionView({
 
   const saveReadingAttempt = useCallback(async (result: ReadingResult) => {
     controllerRef.current?.pause("server-wait");
+    setSaveUiState("saving");
+    setShowNextCue(false);
     setWaiting(true);
     const input = buildAttempt(result, null);
     try {
       const receipt = await api.saveAttempt(input);
       setAttemptReceipt(receipt);
+      setSaveUiState("idle");
+      if (receipt.completed && !receipt.duplicate) setShowNextCue(false);
       onActivityCursor?.(receipt.activityCursor);
       setNextUnlocked(receipt.completed);
       if (!receipt.readingPass) {
@@ -298,21 +311,34 @@ function LearningSessionView({
       }
     } catch (error) {
       if (isExplicitClientError(error)) {
+        setAuthority({ phase: "unavailable" });
         onExit?.();
         return;
       }
       const queued = await preserveFailedAttempt(error, input).catch(() => false);
+      setSaveUiState(queued ? "queued" : "failed");
       setNextUnlocked(queued);
       setProvisional(queued);
       if (queued) onProvisional?.();
       setMathFeedback(queued
-        ? "학습 기록을 동기화 대기 중이에요. 연결되면 확인할게요."
+        ? "학습 기록이 아직 여행 중이에요. 연결되면 확인할게요."
         : "학습 기록을 저장하지 못했어요. 다시 시도해 주세요.");
     } finally {
       setWaiting(false);
       controllerRef.current?.resume("server-wait");
     }
   }, [api, buildAttempt, onActivityCursor, onExit, onProvisional]);
+
+  useEffect(() => {
+    if (!attemptReceipt?.completed || attemptReceipt.duplicate) return;
+    const receiptId = attemptReceipt.id;
+    const timer = setTimeout(() => {
+      setShowNextCue((current) =>
+        attemptReceipt.id === receiptId ? true : current
+      );
+    }, 1_000);
+    return () => clearTimeout(timer);
+  }, [attemptReceipt?.completed, attemptReceipt?.duplicate, attemptReceipt?.id]);
 
   const judgeTranscript = useCallback((transcript: string) => {
     if (learningControlsPaused) return;
@@ -354,27 +380,35 @@ function LearningSessionView({
     }
     recordActivity("answer");
     controllerRef.current?.pause("server-wait");
+    setSaveUiState("saving");
+    setShowNextCue(false);
     setWaiting(true);
     const input = buildAttempt(readingResult, Number(mathAnswer));
     try {
       const receipt = await api.saveAttempt(input);
       setAttemptReceipt(receipt);
+      setSaveUiState("idle");
+      if (receipt.completed && !receipt.duplicate) setShowNextCue(false);
       onActivityCursor?.(receipt.activityCursor);
       const passed = receipt.readingPass && receipt.mathPass === true;
       setNextUnlocked(receipt.completed && passed);
+      if (!passed) setMathRetryCount((count) => count + 1);
       setMathFeedback(passed ? "정답이에요." : "답을 다시 생각해 봐요.");
     } catch (error) {
       if (isExplicitClientError(error)) {
+        setAuthority({ phase: "unavailable" });
         onExit?.();
         return;
       }
       const queued = await preserveFailedAttempt(error, input).catch(() => false);
+      setSaveUiState(queued ? "queued" : "failed");
       const locallyComplete = queued && Number(mathAnswer) === item.answer;
+      if (!locallyComplete) setMathRetryCount((count) => count + 1);
       setNextUnlocked(locallyComplete);
       setProvisional(locallyComplete);
       if (locallyComplete) onProvisional?.();
       setMathFeedback(queued
-        ? "답을 동기화 대기 중이에요. 연결되면 확인할게요."
+        ? "학습 기록이 아직 여행 중이에요. 연결되면 확인할게요."
         : "답을 확인하지 못했어요. 다시 시도해 주세요.");
     } finally {
       setWaiting(false);
@@ -401,6 +435,18 @@ function LearningSessionView({
     setSpeechListening(true);
   }
 
+  const companionMoment: CompanionMoment =
+    idleUi?.phase === "paused" ? "idle-paused" :
+    idleUi?.phase === "confirm" ? "idle-confirm" :
+    idleUi?.phase === "hint" ? "thinking" :
+    waiting || saveUiState !== "idle" ? "save-wait" :
+    attemptReceipt?.completed && !attemptReceipt.duplicate && !showNextCue ? "correct" :
+    nextUnlocked && showNextCue ? "next" :
+    readingResult !== null && !readingResult.passed ? "retry" :
+    mathRetryCount > 0 && !nextUnlocked ? "retry" :
+    authority.phase === "offline-unissued" ? "offline" :
+    "lesson-open";
+
   return (
     <section
       className="learning-session"
@@ -413,10 +459,40 @@ function LearningSessionView({
           대시보드로 돌아가기
         </button>
       ) : null}
+      {authority.phase !== "unavailable" ? (
+        <LearningCompanion
+          moment={companionMoment}
+          studyDate={studyDate}
+          item={item}
+          saveState={saveUiState === "idle" ? undefined : saveUiState}
+        />
+      ) : null}
       <p className="subject-chip">{item.subject === "korean" ? "국어" : "수학"} · {item.unit}</p>
       <h2>{item.title}</h2>
-      <p>{item.text}</p>
-      {item.kind === "math-story" ? <p>{item.question}</p> : null}
+      <ProblemBreakdown
+        item={item}
+        mathRetryCount={mathRetryCount}
+        showMathScaffold={mathRetryCount > 0 && !nextUnlocked}
+      />
+      <button
+        type="button"
+        aria-expanded={showHint}
+        aria-controls="learning-word-hint"
+        onClick={() => {
+          setShowHint((current) => !current);
+          recordActivity("hint");
+        }}
+      >낱말 힌트</button>
+      {showHint ? (
+        <section id="learning-word-hint" role="region" aria-label="낱말 힌트">
+          <p>{item.hint}</p>
+          <div className="learning-clues">
+            {item.tokens.map((token, index) => (
+              <span key={`${token}-${index}`}>{token}</span>
+            ))}
+          </div>
+        </section>
+      ) : null}
 
       <div aria-label="읽기 연습">
         <button
@@ -429,27 +505,30 @@ function LearningSessionView({
         {!isSpeechRecognitionSupported() ? (
           <p>이 브라우저에서는 수동 입력으로 읽기를 확인해 주세요.</p>
         ) : null}
-        <form onSubmit={(event) => {
-          event.preventDefault();
-          if (manualTranscript.trim()) judgeTranscript(manualTranscript);
-        }}>
-          <label>
-            읽은 내용 직접 입력
-            <textarea
-              value={manualTranscript}
-              onChange={(event) => setManualTranscript(event.target.value)}
-              disabled={learningControlsPaused}
-            />
-          </label>
-          <button type="submit" disabled={learningControlsPaused || manualTranscript.trim() === ""}>
-            읽기 판정하기
-          </button>
-        </form>
+        <details className="manual-reading-check">
+          <summary>직접 입력으로 확인하기</summary>
+          <form onSubmit={(event) => {
+            event.preventDefault();
+            if (manualTranscript.trim()) judgeTranscript(manualTranscript);
+          }}>
+            <label>
+              읽은 내용 직접 입력
+              <textarea
+                value={manualTranscript}
+                onChange={(event) => setManualTranscript(event.target.value)}
+                disabled={learningControlsPaused}
+              />
+            </label>
+            <button type="submit" disabled={learningControlsPaused || manualTranscript.trim() === ""}>
+              읽기 판정하기
+            </button>
+          </form>
+        </details>
       </div>
 
       {readingResult ? (
         <div role="status" aria-label="읽기 결과">
-          <strong>{readingResult.passed ? "읽기 PASS" : "읽기 FAIL"}</strong>
+          <strong>{readingResult.passed ? "읽기가 잘 도착했어요" : "한 번 더 읽어 볼 낱말이 있어요"}</strong>
           <span> {readingResult.score}점</span>
           {readingResult.missedTokens.length > 0 ? (
             <p>다시 읽을 표현: {readingResult.missedTokens.join(", ")}</p>
@@ -475,7 +554,7 @@ function LearningSessionView({
           <button type="submit" disabled={readingResult?.passed !== true || learningControlsPaused}>답 확인</button>
         </form>
       ) : null}
-      {mathFeedback ? <p role="status">{mathFeedback}</p> : null}
+      {mathFeedback && saveUiState === "idle" ? <p role="status">{mathFeedback}</p> : null}
       {provisional ? <p className="provisional-label" role="status">동기화 대기</p> : null}
 
       {idleUi?.phase === "hint" ? (
@@ -501,8 +580,6 @@ function LearningSessionView({
           <button type="button" onClick={() => resumeAfterIdle("continue")}>학습 계속하기</button>
         </aside>
       ) : null}
-      {showHint ? <p>{item.hint}</p> : null}
-
       <StarCelebration
         starAward={attemptReceipt?.starAward ?? null}
         reducedMotion={reducedMotion}

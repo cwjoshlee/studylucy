@@ -34,6 +34,14 @@
     text-align: center;
   }
   .student-shell__left .friend-stage__cast .companion-avatar { grid-row: auto; }
+  .learning-companion {
+    grid-template-columns: 72px minmax(0, 1fr);
+    gap: 12px;
+  }
+  .learning-companion .companion-avatar {
+    width: 72px;
+    height: 72px;
+  }
 }
 
 @media (max-width: 700px) {
@@ -62,4 +70,7 @@
     scroll-behavior: auto !important;
     transition: none !important;
   }
+  .learning-companion *,
+  .star-celebration * { transform: none !important; }
+  .star-celebration__particles { display: none !important; }
 }

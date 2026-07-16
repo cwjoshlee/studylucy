@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import "fake-indexeddb/auto";
-import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { deleteDB } from "idb";
 import {
@@ -42,13 +42,19 @@ const mathItem: LearningItemPayload = {
   title: "별을 세어요",
   level: "1단계",
   readLabel: "수학 지문 읽기",
-  text: "별 세 개와 별 두 개가 있어요.",
+  text: "별 3개와 별 2개가 있어요.",
   question: "별은 모두 몇 개일까요?",
   hint: "두 수를 더해 봐요.",
-  tokens: ["별", "세 개", "두 개", "모두"],
+  tokens: ["별", "3개", "2개", "모두"],
   answer: 5,
   unitLabel: "개",
   checkHint: "3과 2를 더해 봐요.",
+  delight: {
+    companion: "momo",
+    mishap: "모모의 주판이 살짝 흔들렸어요.",
+    openingCue: "모모가 숫자 단서를 펼쳤어요. 차근차근 찾아볼까요?",
+    celebrationCue: "모모와 함께 계산을 끝냈어요! 봉봉이 축하하러 왔어요."
+  },
   kind: "math-story"
 };
 
@@ -62,6 +68,12 @@ const readingItem: LearningItemPayload = {
   text: "작은 씨앗이 밝은 해를 보았어요.",
   hint: "천천히 읽어 봐요.",
   tokens: ["작은 씨앗", "밝은 해", "보았어요"],
+  delight: {
+    companion: "toto",
+    mishap: "또또의 수첩이 살짝 젖었어요.",
+    openingCue: "또또가 낱말 수첩을 펼쳤어요. 함께 읽어 볼까요?",
+    celebrationCue: "또또와 함께 낱말을 모두 읽었어요! 봉봉이 축하하러 왔어요."
+  },
   kind: "korean-reading"
 };
 
@@ -142,8 +154,17 @@ function supportSpeechRecognition(): void {
 
 async function submitManualTranscript(transcript: string): Promise<void> {
   const user = userEvent.setup();
+  await user.click(screen.getByText("직접 입력으로 확인하기"));
   await user.type(screen.getByLabelText("읽은 내용 직접 입력"), transcript);
   await user.click(screen.getByRole("button", { name: "읽기 판정하기" }));
+}
+
+function companionBubble(): HTMLElement {
+  return screen.getByRole("status", { name: "마법 친구 말풍선" });
+}
+
+function expectNoProtectedHumor(element: HTMLElement): void {
+  expect(element).not.toHaveTextContent(/딸꾹|양말|포도알|비눗방울|우당탕/);
 }
 
 function offlineId(prefix: "learning-session" | "attempt" | "idle-event"): string {
@@ -181,6 +202,272 @@ afterEach(() => {
 });
 
 describe("LearningSession", () => {
+  it.each([
+    [readingPlanItem, "수달 또또", readingItem.delight!.openingCue],
+    [mathPlanItem, "너구리 모모", mathItem.delight!.openingCue]
+  ] as const)("opens %s with its subject friend and exact content cue", (item, friend, openingCue) => {
+    render(<LearningSession
+      item={item}
+      api={createLearningApi()}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+    />);
+
+    const bubble = companionBubble();
+    expect(bubble).toHaveTextContent(friend);
+    expect(bubble).toHaveTextContent(openingCue);
+  });
+
+  it("keeps reading retry supportive, names missed tokens, and never exposes PASS or FAIL", async () => {
+    render(<LearningSession
+      item={readingPlanItem}
+      api={createLearningApi()}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+    />);
+
+    await submitManualTranscript("작은 씨앗이 해를 보았어요.");
+
+    const result = screen.getByRole("status", { name: "읽기 결과" });
+    expect(within(result).getByText("한 번 더 읽어 볼 낱말이 있어요")).toBeVisible();
+    expect(result).toHaveTextContent("밝은 해");
+    expect(screen.queryByText(/PASS|FAIL/)).not.toBeInTheDocument();
+    const bubble = companionBubble();
+    expect(bubble).toHaveAttribute("data-cue-tone", "support");
+    expectNoProtectedHumor(bubble);
+  });
+
+  it("advances through all four existing math retry scaffolds without humor", async () => {
+    const api = createLearningApi();
+    api.saveAttempt.mockResolvedValue(receipt({ mathPass: false, completed: false }));
+    const user = userEvent.setup();
+    render(<LearningSession
+      item={mathPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+    />);
+    await submitManualTranscript(`${mathItem.text} ${mathItem.question}`);
+
+    const expectedScaffolds = [
+      mathItem.checkHint,
+      "두 수 3과 2를 찾아 표시해 봐요.",
+      "어떤 계산을 할지 말해 봐요.",
+      "말한 방법으로 차근차근 계산해 봐요."
+    ];
+    for (const expected of expectedScaffolds) {
+      await user.clear(screen.getByLabelText("답 쓰기"));
+      await user.type(screen.getByLabelText("답 쓰기"), "4");
+      await user.click(screen.getByRole("button", { name: "답 확인" }));
+      const scaffold = await screen.findByRole("status", { name: "수학 도움" });
+      await waitFor(() => expect(scaffold).toHaveTextContent(expected));
+      expectNoProtectedHumor(scaffold);
+      const bubble = companionBubble();
+      expect(bubble).toHaveAttribute("data-cue-tone", "support");
+      expectNoProtectedHumor(bubble);
+    }
+  });
+
+  it("shows one authoritative Bongbong celebration cue then the exact next cue at one second", async () => {
+    vi.useFakeTimers();
+    const api = createLearningApi();
+    api.saveAttempt.mockResolvedValue(receipt({
+      id: "attempt-celebration-transition-1",
+      starAward: {
+        awarded: true,
+        amount: 1,
+        balance: 8,
+        eventId: "star-celebration-transition-1"
+      }
+    }));
+    render(<LearningSession
+      item={readingPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+    />);
+    fireEvent.click(screen.getByText("직접 입력으로 확인하기"));
+    fireEvent.change(screen.getByLabelText("읽은 내용 직접 입력"), {
+      target: { value: readingItem.text }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "읽기 판정하기" }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(companionBubble()).toHaveTextContent(readingItem.delight!.celebrationCue);
+    expect(companionBubble()).toHaveTextContent("아기용 봉봉");
+    expect(screen.getAllByText("별 1개를 모았어요")).toHaveLength(1);
+
+    act(() => vi.advanceTimersByTime(999));
+    expect(companionBubble()).toHaveTextContent(readingItem.delight!.celebrationCue);
+    act(() => vi.advanceTimersByTime(1));
+    expect(companionBubble()).toHaveTextContent(
+      "다음 마법 걸음으로 가요. 루미가 도망간 양말을 잡아 둘게요."
+    );
+    expect(screen.queryByText("별 1개를 모았어요")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    [false, false],
+    [true, true]
+  ])("shows a non-star completion cue only for completed=%s duplicate=%s", async (completed, duplicate) => {
+    const api = createLearningApi();
+    api.saveAttempt.mockResolvedValue(receipt({ completed, duplicate }));
+    render(<LearningSession
+      item={readingPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+    />);
+
+    await submitManualTranscript(readingItem.text);
+
+    expect(screen.queryByText(/별 1개를 모았어요/)).not.toBeInTheDocument();
+    expect(companionBubble()).not.toHaveTextContent(readingItem.delight!.celebrationCue);
+  });
+
+  it("may show a completion cue without making a star claim", async () => {
+    const api = createLearningApi();
+    api.saveAttempt.mockResolvedValue(receipt({
+      id: "attempt-complete-without-star-1",
+      completed: true,
+      duplicate: false,
+      starAward: { awarded: false, amount: 0, balance: 7, eventId: null }
+    }));
+    render(<LearningSession
+      item={readingPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+    />);
+
+    await submitManualTranscript(readingItem.text);
+
+    expect(companionBubble()).toHaveTextContent(readingItem.delight!.celebrationCue);
+    expect(screen.queryByText(/별 1개를 모았어요/)).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["locally complete Korean", readingPlanItem, readingItem.text, null],
+    ["incorrect math", mathPlanItem, `${mathItem.text} ${mathItem.question}`, "4"]
+  ] as const)("keeps queued %s work in a non-humorous save state", async (_label, item, transcript, answer) => {
+    const api = createLearningApi();
+    api.saveAttempt.mockRejectedValue(new TypeError("offline"));
+    const user = userEvent.setup();
+    render(<LearningSession
+      item={item}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      idFactory={offlineId}
+    />);
+    await submitManualTranscript(transcript);
+    if (answer !== null) {
+      await user.type(screen.getByLabelText("답 쓰기"), answer);
+      await user.click(screen.getByRole("button", { name: "답 확인" }));
+    }
+
+    await waitFor(() => {
+      expect(companionBubble()).toHaveTextContent(
+        "학습 기록이 아직 여행 중이에요. 연결되면 확인할게요."
+      );
+    });
+    const bubble = companionBubble();
+    expect(bubble).toHaveAttribute("data-cue-tone", "status");
+    expect(bubble).not.toHaveTextContent(/저장했어요|별을 받았어요/);
+    expectNoProtectedHumor(bubble);
+  });
+
+  it("keeps a total local-preservation failure in a non-humorous failed save state", async () => {
+    const api = createLearningApi();
+    api.saveAttempt.mockRejectedValue(new Error("not retryable"));
+    render(<LearningSession
+      item={readingPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+    />);
+
+    await submitManualTranscript(readingItem.text);
+
+    await waitFor(() => {
+      expect(companionBubble()).toHaveTextContent(
+        "학습 기록을 안전하게 보관하지 못했어요. 다시 시도해 주세요."
+      );
+    });
+    const bubble = companionBubble();
+    expect(bubble).toHaveAttribute("data-cue-tone", "status");
+    expectNoProtectedHumor(bubble);
+  });
+
+  it("maps the 2, 4, and 5 minute idle states to protected companion cues", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-16T01:00:00.000Z"));
+    const api = createLearningApi();
+    render(<LearningSession
+      item={readingPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+    />);
+    await flushLearningSessionIssue();
+
+    act(() => vi.advanceTimersByTime(120_000));
+    expect(companionBubble()).toHaveTextContent("힌트를 살짝 열어도 괜찮아요.");
+    expect(companionBubble()).toHaveAttribute("data-cue-tone", "support");
+    expectNoProtectedHumor(companionBubble());
+
+    act(() => vi.advanceTimersByTime(120_000));
+    expect(companionBubble()).toHaveAttribute("data-cue-tone", "support");
+    expectNoProtectedHumor(companionBubble());
+
+    await act(async () => {
+      vi.advanceTimersByTime(60_000);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(companionBubble()).toHaveAttribute("data-cue-tone", "support");
+    expectNoProtectedHumor(companionBubble());
+  });
+
+  it("keeps manual reading as a collapsed details fallback", () => {
+    render(<LearningSession
+      item={readingPlanItem}
+      api={createLearningApi()}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+    />);
+
+    const summary = screen.getByText("직접 입력으로 확인하기");
+    const details = summary.closest("details");
+    expect(details).not.toBeNull();
+    expect(details).not.toHaveAttribute("open");
+  });
+
+  it("reveals the existing word hint and token chips immediately without revealing the answer", async () => {
+    const user = userEvent.setup();
+    render(<LearningSession
+      item={mathPlanItem}
+      api={createLearningApi()}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+    />);
+
+    const button = screen.getByRole("button", { name: "낱말 힌트" });
+    expect(button).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("region", { name: "낱말 힌트" })).not.toBeInTheDocument();
+
+    await user.click(button);
+
+    expect(button).toHaveAttribute("aria-expanded", "true");
+    const region = screen.getByRole("region", { name: "낱말 힌트" });
+    expect(region).toHaveTextContent(mathItem.hint);
+    for (const token of mathItem.tokens) expect(region).toHaveTextContent(token);
+    expect(within(region).queryByText(String(mathItem.answer))).not.toBeInTheDocument();
+  });
+
   it("requires an issued plan item as the final session item contract", () => {
     expectTypeOf<LearningSessionProps["item"]>()
       .toEqualTypeOf<TodayPlan["items"][number]>();
@@ -369,7 +656,7 @@ describe("LearningSession", () => {
 
     expect(screen.getByLabelText("답 쓰기")).toBeDisabled();
     await submitManualTranscript(`${mathItem.text} ${mathItem.question}`);
-    expect(screen.getByText("읽기 PASS")).toBeVisible();
+    expect(screen.getByText("읽기가 잘 도착했어요")).toBeVisible();
     expect(screen.getByLabelText("답 쓰기")).toBeEnabled();
   });
 
@@ -503,6 +790,8 @@ describe("LearningSession", () => {
     await submitManualTranscript(readingItem.text);
 
     await waitFor(() => expect(onExit).toHaveBeenCalledOnce());
+    expect(screen.queryByRole("status", { name: "마법 친구 말풍선" }))
+      .not.toBeInTheDocument();
     await expect(listQueuedAttempts()).resolves.toEqual([]);
   });
 
@@ -623,6 +912,8 @@ describe("LearningSession", () => {
     });
 
     expect(onExit).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("status", { name: "마법 친구 말풍선" }))
+      .not.toBeInTheDocument();
     await expect(listActivities()).resolves.toEqual([]);
     await expect(listQueuedIdleEvents()).resolves.toEqual([]);
   });
@@ -740,6 +1031,7 @@ describe("LearningSession", () => {
     render(<LearningSession item={mathPlanItem} api={api} planId="plan-daily-1" studyDate="2026-07-16" />);
     await flushLearningSessionIssue();
 
+    fireEvent.click(screen.getByText("직접 입력으로 확인하기"));
     fireEvent.change(screen.getByLabelText("읽은 내용 직접 입력"), {
       target: { value: `${mathItem.text} ${mathItem.question}` }
     });
@@ -788,6 +1080,7 @@ describe("LearningSession", () => {
     render(<LearningSession item={readingPlanItem} api={api} planId="plan-daily-1" studyDate="2026-07-16" />);
     await flushLearningSessionIssue();
 
+    fireEvent.click(screen.getByText("직접 입력으로 확인하기"));
     fireEvent.change(screen.getByLabelText("읽은 내용 직접 입력"), {
       target: { value: readingItem.text }
     });

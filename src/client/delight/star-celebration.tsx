@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { StarAwardReceipt } from "../../shared/learning";
+import { CompanionAvatar } from "../companions/companion-avatar";
 
 const celebratedEventIds = new Set<string>();
 const CELEBRATION_DISPLAY_MS = 1_000;
@@ -67,6 +68,7 @@ export function StarCelebration({
           ))}
         </span>
       ) : null}
+      <CompanionAvatar id="bongbong" size="small" decorative />
       <strong>별 1개를 모았어요</strong>
     </div>
   );
