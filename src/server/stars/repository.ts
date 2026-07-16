@@ -76,6 +76,14 @@ export class StarRepository {
     return this.db.transaction(() => this.applyInTransaction(input)).immediate();
   }
 
+  findBySource(sourceKey: string): StarEvent | null {
+    const row = this.db.prepare(`
+      ${STAR_EVENT_SELECT}
+      WHERE source_key = ?
+    `).get(sourceKey) as StarEventRow | undefined;
+    return row === undefined ? null : eventFromRow(row);
+  }
+
   reverse(
     eventId: string,
     guardianId: string,

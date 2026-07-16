@@ -2,6 +2,11 @@ import type Database from "better-sqlite3";
 import { getDailyItems } from "../../shared/daily-order";
 import { LearningItemPayloadSchema } from "../../shared/learning";
 import type { StudentStarSummary } from "../../shared/stars";
+import type {
+  DailyPlanInput,
+  GuardianDailyPlan
+} from "../../shared/stars";
+import { kstStudyDate } from "./kst";
 
 export type RequiredPlan = {
   requiredItemIds: string[];
@@ -91,6 +96,79 @@ export class DailyPlanService {
         stars: this.getStarSummary(studentId, studyDate)
       };
     }).immediate();
+  }
+
+  getGuardianPlan(studentId: string, studyDate: string): GuardianDailyPlan {
+    const plan = this.ensure(studentId, studyDate);
+    const settings = this.getSettings(studentId, studyDate);
+    return {
+      studyDate,
+      koreanTarget: settings.koreanTarget,
+      mathTarget: settings.mathTarget,
+      isRestDay: settings.isRestDay === 1,
+      requiredItemIds: plan.requiredItemIds
+    };
+  }
+
+  updateGuardianPlan(
+    studentId: string,
+    studyDate: string,
+    input: DailyPlanInput,
+    guardianId: string
+  ): GuardianDailyPlan {
+    return this.db.transaction(() => {
+      if (studyDate < kstStudyDate(this.now())) {
+        throw new Error("PLAN_LOCKED");
+      }
+      const locked = this.db.prepare(`
+        SELECT 1 FROM star_events
+        WHERE student_id = ? AND study_date = ?
+          AND reason_code = 'REQUIRED_ITEM_COMPLETED'
+        LIMIT 1
+      `).get(studentId, studyDate);
+      if (locked !== undefined) {
+        throw new Error("PLAN_LOCKED");
+      }
+      const updatedAt = this.now().toISOString();
+      this.db.prepare(`
+        INSERT INTO daily_plan_settings (
+          student_id, study_date, korean_target, math_target,
+          is_rest_day, updated_by, updated_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(student_id, study_date) DO UPDATE SET
+          korean_target = excluded.korean_target,
+          math_target = excluded.math_target,
+          is_rest_day = excluded.is_rest_day,
+          updated_by = excluded.updated_by,
+          updated_at = excluded.updated_at
+      `).run(
+        studentId,
+        studyDate,
+        input.koreanTarget,
+        input.mathTarget,
+        input.isRestDay ? 1 : 0,
+        guardianId,
+        updatedAt
+      );
+      this.db.prepare(`
+        DELETE FROM daily_requirements
+        WHERE student_id = ? AND study_date = ?
+      `).run(studentId, studyDate);
+      return this.getGuardianPlan(studentId, studyDate);
+    }).immediate();
+  }
+
+  private getSettings(
+    studentId: string,
+    studyDate: string
+  ): DailyPlanSettingsRow {
+    return this.db.prepare(`
+      SELECT korean_target AS koreanTarget,
+             math_target AS mathTarget,
+             is_rest_day AS isRestDay
+      FROM daily_plan_settings
+      WHERE student_id = ? AND study_date = ?
+    `).get(studentId, studyDate) as DailyPlanSettingsRow;
   }
 
   private listRequirementIds(studentId: string, studyDate: string): string[] {

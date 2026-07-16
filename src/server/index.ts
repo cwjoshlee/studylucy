@@ -6,6 +6,7 @@ import { parseConfig } from "./config";
 import { openDatabase } from "./db/client";
 import { migrate } from "./db/migrate";
 import { seedInitialContent } from "./db/seed";
+import { runMissedPlanCatchUp } from "./stars/maintenance";
 
 if (existsSync(".env")) {
   loadEnvFile(".env");
@@ -17,6 +18,7 @@ const db = openDatabase(config.databasePath);
 try {
   migrate(db);
   seedInitialContent(db);
+  runMissedPlanCatchUp(db, new Date());
 
   const app = await buildApp({
     config,

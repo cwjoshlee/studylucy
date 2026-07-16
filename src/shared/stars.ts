@@ -38,3 +38,76 @@ export type AppliedStarResult = {
   event: StarEvent;
   duplicate: boolean;
 };
+
+export const IdleEventInputSchema = z.object({
+  clientIdleEventId: z.string().min(12).max(80),
+  learningSessionId: z.string().min(12).max(80),
+  itemId: z.string().min(1),
+  studyDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  idleStartedAt: z.string().datetime(),
+  occurredAt: z.string().datetime()
+});
+
+export type IdleEventInput = z.infer<typeof IdleEventInputSchema>;
+
+export type IdleEventResult = {
+  id: string;
+  outcome: "applied" | "capped" | "no-balance";
+  starEventId: string | null;
+  duplicate: boolean;
+};
+
+export const ManualStarInputSchema = z.object({
+  delta: z.number().int().min(-100).max(100)
+    .refine((value) => value !== 0),
+  reason: z.string().trim().min(1).max(200),
+  clientCommandId: z.string().min(12).max(80)
+});
+
+export const ApprovalInputSchema = z.object({
+  approvedStars: z.number().int().min(0).max(2),
+  note: z.string().trim().max(200).default("")
+});
+
+export const NoteInputSchema = z.object({
+  note: z.string().trim().min(1).max(200)
+});
+
+export const DailyPlanInputSchema = z.object({
+  koreanTarget: z.number().int().min(0).max(10),
+  mathTarget: z.number().int().min(0).max(10),
+  isRestDay: z.boolean()
+});
+
+export type ManualStarInput = z.infer<typeof ManualStarInputSchema>;
+export type ApprovalInput = z.infer<typeof ApprovalInputSchema>;
+export type DailyPlanInput = z.infer<typeof DailyPlanInputSchema>;
+
+export type GuardianDailyPlan = DailyPlanInput & {
+  studyDate: string;
+  requiredItemIds: string[];
+};
+
+export type PendingStarAdjustment = {
+  id: string;
+  studyDate: string;
+  itemId: string;
+  requestedStars: number;
+  approvedStars: number | null;
+  appliedStars: number | null;
+  status: "pending" | "approved" | "waived";
+  note: string | null;
+  starEventId: string | null;
+  createdAt: string;
+  processedAt: string | null;
+};
+
+export type ProcessedStarAdjustment = PendingStarAdjustment & {
+  duplicate: boolean;
+};
+
+export type GuardianStarLedger = {
+  summary: StudentStarSummary;
+  events: StarEvent[];
+  nextCursor: string | null;
+};

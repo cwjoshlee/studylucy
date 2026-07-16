@@ -8,6 +8,7 @@ import type { AppConfig } from "./config";
 import { registerLearningRoutes } from "./learning/routes";
 import { createOriginGuard } from "./security/origin";
 import { trustFirstHopProxy } from "./security/proxy";
+import { registerStarRoutes } from "./stars/routes";
 
 export type AppDeps = {
   config: AppConfig;
@@ -61,6 +62,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   app.addHook("preHandler", createOriginGuard(deps.config.appOrigin));
   registerAuthRoutes(app, deps);
   registerLearningRoutes(app, deps);
+  registerStarRoutes(app, deps);
   app.get("/api/health", async () => ({ status: "ok" as const }));
 
   return app;
