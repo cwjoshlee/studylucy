@@ -110,4 +110,16 @@ describe("magical companion components", () => {
       0
     )).toBeLessThanOrEqual(600_000);
   });
+
+  it("emits generated SVG lines without trailing whitespace", async () => {
+    const sources = await Promise.all(
+      (["lumi", "toto", "momo", "bongbong"] as const).map((id) =>
+        readFile(resolve(`public/assets/companions/${id}.svg`), "utf8")
+      )
+    );
+
+    for (const source of sources) {
+      expect(source).not.toMatch(/[ \t]+$/mu);
+    }
+  });
 });

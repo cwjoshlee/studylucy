@@ -5,7 +5,7 @@ const outline = "#5a4a6f";
 const wrap = (body) => `<?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240">
   <g stroke="${outline}" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
-    ${body}
+    ${body.trim()}
   </g>
 </svg>\n`;
 

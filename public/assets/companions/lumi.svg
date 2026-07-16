@@ -1,7 +1,6 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240">
   <g stroke="#5a4a6f" stroke-width="5" stroke-linecap="round" stroke-linejoin="round">
-    
     <path fill="#a98bd7" d="M62 217c5-47 29-72 58-72s53 25 58 72z"/>
     <ellipse fill="#fff1dc" cx="120" cy="126" rx="61" ry="57"/>
     <ellipse fill="#f7eaff" cx="87" cy="58" rx="22" ry="48" transform="rotate(-10 87 58)"/>
@@ -15,6 +14,5 @@
     <path fill="none" d="m190 127-27 75"/>
     <path fill="#d8f2ff" d="M184 39q19-8 29 6l-8 18q-18-3-31 8l-8-17q9-10 18-15z"/>
     <path fill="none" d="m177 49 27 7m-31 4 27 7"/>
-  
   </g>
 </svg>
