@@ -25,6 +25,7 @@ type GuardianDashboardApi = Pick<ApiClient,
   | "getGuardianDailyPlan"
   | "updateGuardianDailyPlan"
   | "getBackupStatus"
+  | "registerDevice"
   | "listTrustedDevices"
   | "revokeTrustedDevice"
 >;
@@ -50,6 +51,26 @@ function studyDate(date: Date): string {
     month: "2-digit",
     day: "2-digit"
   }).format(date);
+}
+
+const deviceDateFormatter = new Intl.DateTimeFormat("ko-KR", {
+  timeZone: "Asia/Seoul",
+  year: "numeric",
+  month: "numeric",
+  day: "numeric",
+  hour: "2-digit",
+  minute: "2-digit",
+  hourCycle: "h23"
+});
+
+function formatDeviceDate(value: string): string {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return "확인할 수 없음";
+
+  const parts = deviceDateFormatter.formatToParts(date);
+  const part = (type: Intl.DateTimeFormatPartTypes) =>
+    parts.find((item) => item.type === type)?.value ?? "";
+  return `${part("year")}년 ${Number(part("month"))}월 ${Number(part("day"))}일 ${part("hour")}:${part("minute")}`;
 }
 
 function progressRange(): { from: string; to: string } {
@@ -179,6 +200,8 @@ function DeviceManagement({
   const [devices, setDevices] = useState<TrustedDeviceView[] | null>(null);
   const [failed, setFailed] = useState(false);
   const [revoking, setRevoking] = useState<string | null>(null);
+  const [registering, setRegistering] = useState(false);
+  const [deviceName, setDeviceName] = useState("수아 태블릿");
 
   useEffect(() => {
     let active = true;
@@ -213,6 +236,23 @@ function DeviceManagement({
     }
   };
 
+  const registerCurrent = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const name = deviceName.trim();
+    if (name.length === 0) return;
+
+    setRegistering(true);
+    setFailed(false);
+    try {
+      await api.registerDevice(name);
+      setDevices(await api.listTrustedDevices());
+    } catch {
+      setFailed(true);
+    } finally {
+      setRegistering(false);
+    }
+  };
+
   return (
     <section className="device-management" aria-labelledby="device-management-title">
       <div className="device-management__heading">
@@ -221,6 +261,20 @@ function DeviceManagement({
           닫기
         </button>
       </div>
+      <form className="device-management__register" onSubmit={registerCurrent}>
+        <label>
+          현재 브라우저 이름
+          <input
+            maxLength={60}
+            onChange={(event) => setDeviceName(event.target.value)}
+            required
+            value={deviceName}
+          />
+        </label>
+        <button disabled={registering || revoking !== null} type="submit">
+          {registering ? "등록 중" : "현재 브라우저 등록"}
+        </button>
+      </form>
       {devices === null && !failed ? <p aria-busy="true">기기를 불러오고 있어요.</p> : null}
       {failed ? <p role="alert">기기 정보를 불러오지 못했어요.</p> : null}
       {devices?.length === 0 ? <p>등록된 기기가 없어요.</p> : null}
@@ -232,6 +286,12 @@ function DeviceManagement({
                 <strong>{device.name}</strong>
                 <span>{device.current ? "현재 기기" : "다른 기기"}</span>
                 <span>{device.status === "active" ? "사용 가능" : "해제됨"}</span>
+                <span>등록: {formatDeviceDate(device.createdAt)}</span>
+                <span>
+                  마지막 사용: {device.lastUsedAt === null
+                    ? "기록 없음"
+                    : formatDeviceDate(device.lastUsedAt)}
+                </span>
               </div>
               {device.status === "active" ? (
                 <button

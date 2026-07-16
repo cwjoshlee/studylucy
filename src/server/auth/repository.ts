@@ -16,6 +16,7 @@ export type RequestAuthContext = {
   user: CurrentUser | null;
   trustedDeviceId: string | null;
   deviceStatus: "missing" | "unknown" | "active" | "revoked";
+  sessionStatus: "missing" | "invalid" | "valid";
 };
 
 type AuthFailureRecord = {
@@ -239,7 +240,12 @@ export class AuthRepository {
       ? "missing"
       : device?.status ?? "unknown";
     if (sessionTokenHash === null) {
-      return { user: null, trustedDeviceId, deviceStatus };
+      return {
+        user: null,
+        trustedDeviceId,
+        deviceStatus,
+        sessionStatus: "missing"
+      };
     }
 
     const row = this.db.prepare(`
@@ -253,7 +259,15 @@ export class AuthRepository {
     `).get(sessionTokenHash, now) as (
       CurrentUser & { sessionTrustedDeviceId: string | null }
     ) | undefined;
-    const user = row !== undefined && (
+    if (row === undefined) {
+      return {
+        user: null,
+        trustedDeviceId,
+        deviceStatus,
+        sessionStatus: "invalid"
+      };
+    }
+    const user = (
       row.role === "guardian" || (
         deviceStatus === "active" &&
         row.sessionTrustedDeviceId === trustedDeviceId
@@ -261,7 +275,7 @@ export class AuthRepository {
     )
       ? { id: row.id, role: row.role, displayName: row.displayName }
       : null;
-    return { user, trustedDeviceId, deviceStatus };
+    return { user, trustedDeviceId, deviceStatus, sessionStatus: "valid" };
   }
 
   isLocked(key: string, now: Date): boolean {

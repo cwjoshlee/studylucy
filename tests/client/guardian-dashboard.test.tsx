@@ -59,6 +59,14 @@ function createGuardianApi(overrides: Record<string, unknown> = {}) {
     }),
     updateGuardianDailyPlan: vi.fn(),
     getBackupStatus: vi.fn().mockResolvedValue({ status: "never-run" as const }),
+    registerDevice: vi.fn().mockResolvedValue({
+      publicId: "public-current",
+      name: "현재 태블릿",
+      createdAt: "2026-07-15T03:00:00.000Z",
+      lastUsedAt: null,
+      status: "active" as const,
+      current: true
+    }),
     listTrustedDevices: vi.fn().mockResolvedValue([]),
     revokeTrustedDevice: vi.fn(),
     ...overrides
@@ -128,6 +136,10 @@ describe("GuardianDashboard", () => {
     await user.click(screen.getByRole("button", { name: "기기 관리" }));
     expect(await screen.findByText("현재 태블릿")).toBeVisible();
     expect(screen.getByText("거실 태블릿")).toBeVisible();
+    expect(screen.getByText("등록: 2026년 7월 15일 12:00")).toBeVisible();
+    expect(screen.getByText("마지막 사용: 2026년 7월 16일 12:00")).toBeVisible();
+    expect(screen.getByText("마지막 사용: 기록 없음")).toBeVisible();
+    expect(document.body.textContent).not.toContain("2026-07-15T03:00:00.000Z");
     expect(document.body.textContent).not.toMatch(/public-current|public-other|token|hash/i);
 
     await user.click(screen.getByRole("button", { name: "거실 태블릿 기기 해제" }));
@@ -140,6 +152,61 @@ describe("GuardianDashboard", () => {
     );
     await waitFor(() => expect(revokeTrustedDevice).toHaveBeenCalledWith("public-current"));
     expect(screen.getAllByText("해제됨")).toHaveLength(2);
+    confirm.mockRestore();
+  });
+
+  it("re-registers a revoked current browser and refreshes the authoritative device list", async () => {
+    const user = userEvent.setup();
+    const current = {
+      publicId: "public-old",
+      name: "기존 태블릿",
+      createdAt: "2026-07-15T03:00:00.000Z",
+      lastUsedAt: "2026-07-16T03:00:00.000Z",
+      status: "active" as const,
+      current: true
+    };
+    const revokedCurrent = { ...current, status: "revoked" as const };
+    const revokedOld = { ...revokedCurrent, current: false };
+    const replacement = {
+      publicId: "public-new",
+      name: "다시 등록한 태블릿",
+      createdAt: "2026-07-16T04:00:00.000Z",
+      lastUsedAt: null,
+      status: "active" as const,
+      current: true
+    };
+    const listTrustedDevices = vi.fn()
+      .mockResolvedValueOnce([current])
+      .mockResolvedValueOnce([revokedOld, replacement]);
+    const revokeTrustedDevice = vi.fn().mockResolvedValue(revokedCurrent);
+    const registerDevice = vi.fn().mockResolvedValue(replacement);
+    const api = createGuardianApi({
+      listTrustedDevices,
+      registerDevice,
+      revokeTrustedDevice
+    });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<GuardianDashboard api={api} />);
+
+    await user.click(screen.getByRole("button", { name: "계정 메뉴" }));
+    await user.click(screen.getByRole("button", { name: "기기 관리" }));
+    await user.click(await screen.findByRole("button", {
+      name: "기존 태블릿 기기 해제"
+    }));
+    expect(await screen.findByText("해제됨")).toBeVisible();
+
+    const name = screen.getByLabelText("현재 브라우저 이름");
+    await user.clear(name);
+    await user.type(name, "다시 등록한 태블릿");
+    const register = screen.getByRole("button", { name: "현재 브라우저 등록" });
+    await user.click(register);
+
+    await waitFor(() => expect(registerDevice).toHaveBeenCalledWith("다시 등록한 태블릿"));
+    await waitFor(() => expect(listTrustedDevices).toHaveBeenCalledTimes(2));
+    const newCurrent = (await screen.findByText("다시 등록한 태블릿")).closest("li")!;
+    const oldDevice = screen.getByText("기존 태블릿").closest("li")!;
+    expect(within(newCurrent).getByText("현재 기기")).toBeVisible();
+    expect(within(oldDevice).getByText("다른 기기")).toBeVisible();
     confirm.mockRestore();
   });
 
@@ -1231,6 +1298,9 @@ describe("GuardianDashboard", () => {
 
     expect(components).toMatch(
       /button,\s*input,\s*select,\s*textarea\s*\{[^}]*min-height:\s*var\(--touch-min\)/s
+    );
+    expect(components).toMatch(
+      /\.account-menu button,\s*\.device-management button\s*\{[^}]*min-height:\s*48px/s
     );
     expect(layout).toContain(".guardian-shell");
     expect(layout).toContain(".guardian-tabs");

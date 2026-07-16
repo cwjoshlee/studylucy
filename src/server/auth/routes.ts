@@ -15,14 +15,19 @@ declare module "fastify" {
     currentUser: CurrentUser | null;
     currentTrustedDeviceId: string | null;
     currentDeviceStatus: "missing" | "unknown" | "active" | "revoked";
+    currentSessionStatus: "missing" | "invalid" | "valid";
   }
 }
 
 export function requireRole(role: CurrentUser["role"]) {
   return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
     if (request.currentUser === null) {
-      if (request.currentDeviceStatus === "revoked") {
+      if (role === "student" && request.currentDeviceStatus === "revoked") {
         await reply.code(403).send({ code: "DEVICE_REVOKED" });
+        return;
+      }
+      if (role === "student" && request.currentSessionStatus === "valid") {
+        await reply.code(403).send({ code: "DEVICE_NOT_TRUSTED" });
         return;
       }
       await reply.code(401).send({ code: "AUTH_REQUIRED" });
@@ -74,6 +79,7 @@ export function registerAuthRoutes(
   app.decorateRequest("currentUser", null);
   app.decorateRequest("currentTrustedDeviceId", null);
   app.decorateRequest("currentDeviceStatus", "missing");
+  app.decorateRequest("currentSessionStatus", "missing");
   app.addHook("preHandler", async (request) => {
     const context = service.getRequestAuthContext(
       request.cookies.sua_session,
@@ -82,6 +88,7 @@ export function registerAuthRoutes(
     request.currentUser = context.user;
     request.currentTrustedDeviceId = context.trustedDeviceId;
     request.currentDeviceStatus = context.deviceStatus;
+    request.currentSessionStatus = context.sessionStatus;
   });
 
   app.post("/api/auth/setup", async (request, reply) => {

@@ -667,4 +667,89 @@ describe("family authentication", () => {
     expect((await first.request("GET", "/api/auth/me")).statusCode).toBe(401);
     expect((await second.request("GET", "/api/auth/me")).statusCode).toBe(200);
   });
+
+  it("distinguishes missing, unknown, and revoked devices from genuine student session failures", async () => {
+    const guardian = harness.client();
+    await bootstrapFamily(harness, guardian);
+    await loginGuardian(guardian);
+    const registered = await guardian.request(
+      "POST",
+      "/api/guardian/devices/current",
+      { name: "권한 구분 태블릿" }
+    );
+    const publicId = (registered.json() as TrustedDeviceView).publicId;
+    const deviceToken = guardian.cookie("sua_device")!;
+    await guardian.request("PUT", "/api/auth/student-pin", { pin: "2580" });
+
+    const student = harness.client();
+    student.setCookie("sua_device", deviceToken);
+    expect((await student.request("POST", "/api/auth/student/login", {
+      pin: "2580"
+    })).statusCode).toBe(200);
+    const sessionToken = student.cookie("sua_session")!;
+
+    const anonymous = await harness.client().request("GET", "/api/student/stars");
+    expect(anonymous.statusCode).toBe(401);
+    expect(anonymous.json()).toEqual({ code: "AUTH_REQUIRED" });
+
+    const activeDeviceWithoutSession = harness.client();
+    activeDeviceWithoutSession.setCookie("sua_device", deviceToken);
+    const missingSession = await activeDeviceWithoutSession.request(
+      "GET",
+      "/api/student/stars"
+    );
+    expect(missingSession.statusCode).toBe(401);
+    expect(missingSession.json()).toEqual({ code: "AUTH_REQUIRED" });
+
+    const missingDevice = harness.client();
+    missingDevice.setCookie("sua_session", sessionToken);
+    const missingDeviceResponse = await missingDevice.request(
+      "GET",
+      "/api/student/stars"
+    );
+    expect(missingDeviceResponse.statusCode).toBe(403);
+    expect(missingDeviceResponse.json()).toEqual({ code: "DEVICE_NOT_TRUSTED" });
+
+    const unknownDevice = harness.client();
+    unknownDevice.setCookie("sua_session", sessionToken);
+    unknownDevice.setCookie("sua_device", "unknown-device-token");
+    const unknownDeviceResponse = await unknownDevice.request(
+      "GET",
+      "/api/student/stars"
+    );
+    expect(unknownDeviceResponse.statusCode).toBe(403);
+    expect(unknownDeviceResponse.json()).toEqual({ code: "DEVICE_NOT_TRUSTED" });
+
+    harness.db.prepare(`
+      UPDATE sessions
+      SET expires_at = '2026-07-15T02:59:59.999Z'
+      WHERE user_id IN (SELECT id FROM users WHERE role = 'student')
+    `).run();
+    const expiredSession = await student.request("GET", "/api/student/stars");
+    expect(expiredSession.statusCode).toBe(401);
+    expect(expiredSession.json()).toEqual({ code: "AUTH_REQUIRED" });
+
+    const expiredWithoutDevice = harness.client();
+    expiredWithoutDevice.setCookie("sua_session", sessionToken);
+    const expiredWithoutDeviceResponse = await expiredWithoutDevice.request(
+      "GET",
+      "/api/student/stars"
+    );
+    expect(expiredWithoutDeviceResponse.statusCode).toBe(401);
+    expect(expiredWithoutDeviceResponse.json()).toEqual({ code: "AUTH_REQUIRED" });
+
+    expect((await student.request("POST", "/api/auth/student/login", {
+      pin: "2580"
+    })).statusCode).toBe(200);
+
+    expect((await guardian.request(
+      "POST",
+      `/api/guardian/devices/${publicId}/revoke`
+    )).statusCode).toBe(200);
+    const revokedDevice = await student.request("GET", "/api/student/stars");
+    expect(revokedDevice.statusCode).toBe(403);
+    expect(revokedDevice.json()).toEqual({ code: "DEVICE_REVOKED" });
+    expect((await guardian.request("GET", "/api/guardian/devices")).statusCode)
+      .toBe(200);
+  });
 });
