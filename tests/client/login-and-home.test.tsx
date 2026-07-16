@@ -8,12 +8,22 @@ import { deleteDB } from "idb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../../src/client/app";
 import { ApiError } from "../../src/client/api/client";
+import type { ActivityEvent } from "../../src/shared/learning";
 import { TodayStars } from "../../src/client/delight/today-stars";
 import {
   OFFLINE_DB_NAME,
+  cacheIssuedPlan,
+  clearOfflineAuthority,
+  getDeviceState,
+  handleDeviceActionRequired,
+  listActivities,
   listQueuedAttempts,
+  loadCachedTodayPlan,
+  markStudentAuthenticated,
   queueAttempt,
   removeQueuedAttempt,
+  setRecoveryBlocked,
+  storeOfflineLease,
   storeConfirmedStars
 } from "../../src/client/offline/db";
 import { syncPending } from "../../src/client/offline/sync";
@@ -21,10 +31,118 @@ import { createFakeApi } from "../helpers/client";
 
 afterEach(cleanup);
 beforeEach(async () => {
+  vi.useRealTimers();
   await deleteDB(OFFLINE_DB_NAME);
 });
 
 describe("가족 로그인과 학생 홈", () => {
+  it("cold-starts only from a ready unexpired same-KST-day student lease after a network TypeError", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-16T02:00:00.000Z"));
+    const seeded = createFakeApi();
+    const cachedPlan = await seeded.getToday();
+    await markStudentAuthenticated();
+    await cacheIssuedPlan(cachedPlan, cachedPlan.stars);
+    await storeOfflineLease({
+      offlineAccessUntil: "2026-07-16T14:59:59.999Z",
+      user: { id: "student-1", role: "student", displayName: "수아" }
+    });
+    const api = createFakeApi({
+      me: vi.fn().mockRejectedValue(new TypeError("offline")),
+      getToday: vi.fn().mockRejectedValue(new TypeError("offline")),
+      getStudentStars: vi.fn().mockRejectedValue(new TypeError("offline")),
+      createLearningSession: vi.fn().mockRejectedValue(new TypeError("offline"))
+    });
+
+    render(<App api={api} />);
+
+    expect(await screen.findByText("오프라인 학습 중")).toBeVisible();
+    expect(screen.getByRole("heading", { name: "오늘의 학습" })).toBeVisible();
+    expect(screen.getByText("모은 별 7개")).toBeVisible();
+    expect(api.studentLogin).not.toHaveBeenCalled();
+  });
+
+  it("never treats an explicit 401 as offline even when a valid cache and lease exist", async () => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-16T02:00:00.000Z"));
+    const seeded = createFakeApi();
+    const cachedPlan = await seeded.getToday();
+    await markStudentAuthenticated();
+    await cacheIssuedPlan(cachedPlan, cachedPlan.stars);
+    await storeOfflineLease({
+      offlineAccessUntil: "2026-07-16T14:59:59.999Z",
+      user: { id: "student-1", role: "student", displayName: "수아" }
+    });
+    const api = createFakeApi({
+      me: vi.fn().mockRejectedValue(new ApiError(401, "AUTH_REQUIRED"))
+    });
+
+    render(<App api={api} />);
+
+    expect(await screen.findByRole("heading", {
+      name: "수아 PIN으로 들어가기"
+    })).toBeVisible();
+    expect(screen.queryByText("오프라인 학습 중")).not.toBeInTheDocument();
+    await expect(getDeviceState()).resolves.toBe("auth-required");
+    await expect(loadCachedTodayPlan(cachedPlan.date)).resolves.toBeUndefined();
+  });
+
+  it.each([
+    ["expired lease", "2026-07-15T14:59:59.999Z", "2026-07-16"],
+    ["wrong-day plan", "2026-07-16T14:59:59.999Z", "2026-07-15"]
+  ])("rejects offline cold start for %s", async (_label, offlineAccessUntil, date) => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2026-07-16T02:00:00.000Z"));
+    const seeded = createFakeApi();
+    const cachedPlan = { ...(await seeded.getToday()), date };
+    await markStudentAuthenticated();
+    await cacheIssuedPlan(cachedPlan, cachedPlan.stars);
+    await storeOfflineLease({
+      offlineAccessUntil,
+      user: { id: "student-1", role: "student", displayName: "수아" }
+    });
+    const api = createFakeApi({
+      me: vi.fn().mockRejectedValue(new TypeError("offline"))
+    });
+
+    render(<App api={api} />);
+
+    expect(await screen.findByText("잠시 후 다시 시도해 주세요.")).toBeVisible();
+    expect(screen.queryByText("오프라인 학습 중")).not.toBeInTheDocument();
+  });
+
+  it("moves a revoked startup to device action and preserves the blocked journal", async () => {
+    const seeded = createFakeApi();
+    const cachedPlan = await seeded.getToday();
+    await markStudentAuthenticated();
+    await cacheIssuedPlan(cachedPlan, cachedPlan.stars);
+    await queueAttempt({
+      clientAttemptId: "revoked-startup-attempt-0001",
+      planId: cachedPlan.planId,
+      itemId: cachedPlan.items[0]!.id,
+      contentVersion: cachedPlan.items[0]!.version,
+      studyDate: cachedPlan.date,
+      occurredAt: "2026-07-16T01:00:00.000Z",
+      readingScore: 100,
+      missedTokens: [],
+      mathAnswer: null,
+      durationMs: 20_000,
+      difficultyFeedback: null
+    });
+    const api = createFakeApi({
+      me: vi.fn().mockRejectedValue(new ApiError(403, "DEVICE_REVOKED"))
+    });
+
+    render(<App api={api} />);
+
+    expect(await screen.findByRole("heading", { name: "이 기기 등록하기" }))
+      .toBeVisible();
+    await expect(getDeviceState()).resolves.toBe("device-action-required");
+    await expect(listQueuedAttempts()).rejects.toMatchObject({
+      code: "DEVICE_ACTION_REQUIRED"
+    });
+  });
+
   it("shows setup only for SETUP_REQUIRED", async () => {
     const api = createFakeApi({
       me: vi.fn().mockRejectedValue(new ApiError(409, "SETUP_REQUIRED"))
@@ -185,6 +303,116 @@ describe("가족 로그인과 학생 홈", () => {
       .toBeLessThan(studentLogin.mock.invocationCallOrder[0]!);
   });
 
+  it("retries a source-device recovery block only after a successful fresh student PIN login", async () => {
+    const user = userEvent.setup();
+    const seeded = createFakeApi();
+    const currentPlan = await seeded.getToday();
+    await markStudentAuthenticated();
+    await cacheIssuedPlan(currentPlan, currentPlan.stars);
+    await queueAttempt({
+      clientAttemptId: "attempt-login-recovery-0001",
+      planId: currentPlan.planId,
+      itemId: currentPlan.items[0]!.id,
+      contentVersion: currentPlan.items[0]!.version,
+      studyDate: currentPlan.date,
+      occurredAt: "2026-07-16T01:00:00.000Z",
+      readingScore: 100,
+      missedTokens: [],
+      mathAnswer: null,
+      durationMs: 20_000,
+      difficultyFeedback: null
+    });
+    await handleDeviceActionRequired("DEVICE_NOT_TRUSTED");
+    await markStudentAuthenticated();
+    await setRecoveryBlocked(currentPlan.planId);
+    await clearOfflineAuthority("auth-required");
+
+    const recoveryPlan = {
+      ...currentPlan,
+      planId: "plan-recovery-after-login",
+      planKind: "recovery" as const,
+      recoverySourcePlanId: currentPlan.planId,
+      offlineEpoch: currentPlan.offlineEpoch + 1,
+      activityCursor: 20
+    };
+    const createRecoveryPlan = vi.fn().mockResolvedValue(recoveryPlan);
+    const api = createFakeApi({
+      me: vi.fn()
+        .mockRejectedValueOnce(new ApiError(401, "AUTH_REQUIRED"))
+        .mockResolvedValueOnce({
+          id: "student-1",
+          role: "student",
+          displayName: "수아"
+        }),
+      getToday: vi.fn().mockResolvedValue(currentPlan),
+      createRecoveryPlan,
+      applyOfflineBatch: vi.fn().mockRejectedValue(new TypeError("offline"))
+    });
+    render(<App api={api} />);
+
+    await screen.findByRole("heading", { name: "수아 PIN으로 들어가기" });
+    await user.type(screen.getByLabelText("수아의 4자리 PIN"), "2580");
+    await user.click(screen.getByRole("button", { name: "공부 시작하기" }));
+
+    await waitFor(() => expect(createRecoveryPlan).toHaveBeenCalledWith({
+      sourcePlanId: currentPlan.planId
+    }));
+    await expect(listActivities()).resolves.toEqual([
+      expect.objectContaining({
+        planId: recoveryPlan.planId,
+        sourcePlanId: currentPlan.planId,
+        requiresRecovery: false,
+        recoveryBlockedCode: null
+      })
+    ]);
+  });
+
+  it("shows the guardian device-management guidance when recovery remains source-device blocked", async () => {
+    const user = userEvent.setup();
+    const seeded = createFakeApi();
+    const currentPlan = await seeded.getToday();
+    await markStudentAuthenticated();
+    await cacheIssuedPlan(currentPlan, currentPlan.stars);
+    await queueAttempt({
+      clientAttemptId: "attempt-login-recovery-blocked-0001",
+      planId: currentPlan.planId,
+      itemId: currentPlan.items[0]!.id,
+      contentVersion: currentPlan.items[0]!.version,
+      studyDate: currentPlan.date,
+      occurredAt: "2026-07-16T01:00:00.000Z",
+      readingScore: 100,
+      missedTokens: [],
+      mathAnswer: null,
+      durationMs: 20_000,
+      difficultyFeedback: null
+    });
+    await handleDeviceActionRequired("DEVICE_NOT_TRUSTED");
+    await clearOfflineAuthority("auth-required");
+
+    const api = createFakeApi({
+      me: vi.fn()
+        .mockRejectedValueOnce(new ApiError(401, "AUTH_REQUIRED"))
+        .mockResolvedValueOnce({
+          id: "student-1",
+          role: "student",
+          displayName: "수아"
+        }),
+      getToday: vi.fn().mockResolvedValue(currentPlan),
+      createRecoveryPlan: vi.fn().mockRejectedValue(
+        new ApiError(409, "SOURCE_DEVICE_STILL_ACTIVE")
+      )
+    });
+    render(<App api={api} />);
+
+    await screen.findByRole("heading", { name: "수아 PIN으로 들어가기" });
+    await user.type(screen.getByLabelText("수아의 4자리 PIN"), "2580");
+    await user.click(screen.getByRole("button", { name: "공부 시작하기" }));
+
+    expect(await screen.findByText(
+      "보호자 기기 관리에서 이전 기기를 해제해 주세요"
+    )).toBeVisible();
+  });
+
   it("ends the student session before requiring a fresh guardian password", async () => {
     const user = userEvent.setup();
     const endSession = vi.fn().mockResolvedValue(undefined);
@@ -238,6 +466,48 @@ describe("가족 로그인과 학생 홈", () => {
     expect(await screen.findByRole("heading", {
       name: "수아 PIN으로 들어가기"
     })).toBeVisible();
+  });
+
+  it("clears and blocks offline authority on logout even when the session-end request loses the network", async () => {
+    const user = userEvent.setup();
+    const api = createFakeApi({
+      endSession: vi.fn().mockRejectedValue(new TypeError("offline"))
+    });
+    const issuedPlan = await api.getToday();
+    api.getToday.mockClear();
+    await markStudentAuthenticated();
+    await cacheIssuedPlan(issuedPlan, issuedPlan.stars);
+    await storeOfflineLease({
+      offlineAccessUntil: "2026-07-17T14:59:59.999Z",
+      user: { id: "student-1", role: "student", displayName: "수아" }
+    });
+    await queueAttempt({
+      clientAttemptId: "logout-network-attempt-0001",
+      planId: issuedPlan.planId,
+      itemId: issuedPlan.items[0]!.id,
+      contentVersion: issuedPlan.items[0]!.version,
+      studyDate: issuedPlan.date,
+      occurredAt: "2026-07-16T01:00:00.000Z",
+      readingScore: 100,
+      missedTokens: [],
+      mathAnswer: null,
+      durationMs: 10_000,
+      difficultyFeedback: null
+    });
+    render(<App api={api} />);
+    await screen.findByText("수아야, 오늘도 한 걸음!");
+
+    await user.click(screen.getByRole("button", { name: "로그아웃" }));
+
+    expect(await screen.findByRole("heading", {
+      name: "수아 PIN으로 들어가기"
+    })).toBeVisible();
+    await expect(getDeviceState()).resolves.toBe("auth-required");
+    await expect(listQueuedAttempts()).rejects.toMatchObject({
+      code: "AUTH_REQUIRED"
+    });
+    await markStudentAuthenticated();
+    await expect(listQueuedAttempts()).resolves.toHaveLength(1);
   });
 
   it("shows the A layout, required stars, and original friend", async () => {
@@ -331,13 +601,15 @@ describe("가족 로그인과 학생 홈", () => {
       deductedToday: 1,
       lastReason: "필수 학습을 마쳤어요."
     };
+    const syncedPlan = {
+      ...initialPlan,
+      activityCursor: 1,
+      completedItemIds: ["ko-01"],
+      stars: confirmedAfterSync
+    };
     api.getToday.mockReset()
       .mockResolvedValueOnce(initialPlan)
-      .mockResolvedValue({
-        ...initialPlan,
-        completedItemIds: ["ko-01"],
-        stars: confirmedAfterSync
-      });
+      .mockResolvedValue(syncedPlan);
     api.getStudentStars.mockReset()
       .mockResolvedValueOnce(initialPlan.stars)
       .mockResolvedValue(confirmedAfterSync);
@@ -357,6 +629,39 @@ describe("가족 로그인과 학생 홈", () => {
           eventId: "star-after-sync"
         }
       });
+    api.applyOfflineBatch.mockImplementation(async (input) => ({
+      clientBatchId: input.clientBatchId,
+      duplicate: false,
+      orderConflict: false,
+      batchEndCursor: 1,
+      activityCursor: 1,
+      receipts: input.events.map((event: ActivityEvent) => ({
+        clientId: event.kind === "attempt"
+          ? event.payload.clientAttemptId
+          : event.payload.clientIdleEventId,
+        kind: event.kind,
+        status: "APPLIED" as const,
+        code: null,
+        attempt: event.kind === "attempt" ? {
+          id: "attempt-server-after-sync",
+          duplicate: false,
+          readingPass: true,
+          mathPass: null,
+          completed: true,
+          activityCursor: 1,
+          starAward: {
+            awarded: true,
+            amount: 1,
+            balance: 8,
+            eventId: "star-after-sync"
+          }
+        } : null,
+        idle: null
+      })),
+      processedPlan: syncedPlan,
+      currentDailyPlan: syncedPlan,
+      stars: confirmedAfterSync
+    }));
 
     render(<App api={api} />);
     await user.click(await screen.findByRole("button", { name: "바람과 꽃 시작하기" }));
@@ -365,12 +670,16 @@ describe("가족 로그인과 학생 홈", () => {
 
     expect(await screen.findByText("학습 기록을 동기화 대기 중이에요. 연결되면 확인할게요.")).toBeVisible();
     await expect(listQueuedAttempts()).resolves.toHaveLength(1);
-    expect(screen.getByRole("button", { name: "다음 문제" })).toBeDisabled();
-    await user.click(screen.getByRole("button", { name: "대시보드로 돌아가기" }));
+    expect(screen.getByRole("button", { name: "다음 문제" })).toBeEnabled();
+    expect(screen.getByText("동기화 대기")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "다음 문제" }));
 
     expect(await screen.findByRole("heading", { name: "오늘의 학습" })).toBeVisible();
     expect(screen.getByText("동기화 대기 별 1개")).toBeVisible();
     expect(screen.getByText("모은 별 7개")).toBeVisible();
+    const provisionalCard = screen.getByRole("heading", { name: "바람과 꽃" }).closest("article");
+    expect(provisionalCard).not.toBeNull();
+    expect(within(provisionalCard!).getByText("동기화 대기")).toBeVisible();
     await expect(listQueuedAttempts()).resolves.toHaveLength(1);
 
     await act(async () => {
@@ -386,8 +695,8 @@ describe("가족 로그인과 학생 홈", () => {
       expect(within(completedCard!).getByText("★ 받은 별 1개")).toBeVisible();
     });
     await expect(listQueuedAttempts()).resolves.toHaveLength(0);
-    expect(api.getToday).toHaveBeenCalledTimes(2);
-    expect(api.getStudentStars).toHaveBeenCalledTimes(3);
+    expect(api.getToday).toHaveBeenCalledTimes(3);
+    expect(api.getStudentStars).toHaveBeenCalledTimes(2);
   });
 
   it("keeps queued stars separate from the confirmed balance", () => {
@@ -427,6 +736,10 @@ describe("가족 로그인과 학생 홈", () => {
       durationMs: 30_000,
       difficultyFeedback: null
     };
+    const issuedPlan = await api.getToday();
+    api.getToday.mockClear();
+    await markStudentAuthenticated();
+    await cacheIssuedPlan(issuedPlan, issuedPlan.stars);
     await queueAttempt(queuedAttempt);
 
     render(<App api={api} />);

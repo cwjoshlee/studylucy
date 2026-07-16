@@ -157,7 +157,7 @@ export class ApiClient {
       "POST",
       `/api/guardian/devices/${encodeURIComponent(publicId)}/revoke`
     );
-    await this.callbacks.onDeviceRevoked?.(publicId);
+    if (device.current) await this.callbacks.onDeviceRevoked?.(publicId);
     return device;
   }
 

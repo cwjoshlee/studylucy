@@ -223,3 +223,24 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .guardian-checkbox { grid-template-columns: auto 1fr !important; align-items: center; }
 .guardian-checkbox input { width: var(--touch-min); margin: 0; }
 .ledger-link { color: var(--lavender-deep); font-weight: 800; }
+
+.offline-learning-banner,
+.provisional-label {
+  padding: 10px 14px;
+  border: 2px solid #d29a00;
+  border-radius: var(--radius-medium);
+  background: #fff4bf;
+  color: #664900;
+  font-weight: 900;
+}
+.offline-learning-banner { margin: 0 0 18px; }
+.recovery-guidance {
+  margin: 0 0 18px;
+  padding: 10px 14px;
+  border: 2px solid #d75d00;
+  border-radius: 14px;
+  background: #fff1e7;
+  color: #743100;
+  font-weight: 900;
+}
+.provisional-label { display: inline-flex; width: fit-content; }

@@ -45,6 +45,7 @@ export type LearningSessionProps = {
   onNext?: () => void;
   onExit?: () => void;
   onActivityCursor?: (activityCursor: number) => void;
+  onProvisional?: () => void;
   offlineEligibility?: "validated";
   idFactory?: (prefix: "attempt" | "idle-event") => string;
 };
@@ -100,6 +101,7 @@ function LearningSessionView({
   onNext,
   onExit,
   onActivityCursor,
+  onProvisional,
   offlineEligibility,
   idFactory = createClientId
 }: Omit<LearningSessionProps, "item"> & {
@@ -121,6 +123,7 @@ function LearningSessionView({
   const [showHint, setShowHint] = useState(false);
   const [difficultyFeedback, setDifficultyFeedback] = useState<AttemptInput["difficultyFeedback"]>(null);
   const [attemptReceipt, setAttemptReceipt] = useState<AttemptReceipt | null>(null);
+  const [provisional, setProvisional] = useState(false);
   const [speechListening, setSpeechListening] = useState(false);
   const controllerRef = useRef<InactivityController | null>(null);
   const speechRef = useRef<SpeechController | null>(null);
@@ -295,7 +298,9 @@ function LearningSessionView({
         return;
       }
       const queued = await preserveFailedAttempt(error, input).catch(() => false);
-      setNextUnlocked(false);
+      setNextUnlocked(queued);
+      setProvisional(queued);
+      if (queued) onProvisional?.();
       setMathFeedback(queued
         ? "학습 기록을 동기화 대기 중이에요. 연결되면 확인할게요."
         : "학습 기록을 저장하지 못했어요. 다시 시도해 주세요.");
@@ -303,7 +308,7 @@ function LearningSessionView({
       setWaiting(false);
       controllerRef.current?.resume("server-wait");
     }
-  }, [api, buildAttempt, onActivityCursor, onExit]);
+  }, [api, buildAttempt, onActivityCursor, onExit, onProvisional]);
 
   const judgeTranscript = useCallback((transcript: string) => {
     if (learningControlsPaused) return;
@@ -360,7 +365,10 @@ function LearningSessionView({
         return;
       }
       const queued = await preserveFailedAttempt(error, input).catch(() => false);
-      setNextUnlocked(false);
+      const locallyComplete = queued && Number(mathAnswer) === item.answer;
+      setNextUnlocked(locallyComplete);
+      setProvisional(locallyComplete);
+      if (locallyComplete) onProvisional?.();
       setMathFeedback(queued
         ? "답을 동기화 대기 중이에요. 연결되면 확인할게요."
         : "답을 확인하지 못했어요. 다시 시도해 주세요.");
@@ -464,6 +472,7 @@ function LearningSessionView({
         </form>
       ) : null}
       {mathFeedback ? <p role="status">{mathFeedback}</p> : null}
+      {provisional ? <p className="provisional-label" role="status">동기화 대기</p> : null}
 
       {idleUi?.phase === "hint" ? (
         <aside role="status">

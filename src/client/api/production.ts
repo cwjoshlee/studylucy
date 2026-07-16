@@ -1,8 +1,14 @@
-import { clearCurrentV1Authority } from "../offline/db";
+import {
+  applyAuthorityFailure,
+  clearOfflineAuthority,
+  handleDeviceActionRequired
+} from "../offline/db";
 import { ApiClient } from "./client";
 
 export function createProductionApi(fetcher: typeof fetch = fetch): ApiClient {
   return new ApiClient(fetcher, {
-    onAuthorityFailure: clearCurrentV1Authority
+    onSessionEnded: () => clearOfflineAuthority("auth-required"),
+    onDeviceRevoked: () => handleDeviceActionRequired("DEVICE_REVOKED"),
+    onAuthorityFailure: applyAuthorityFailure
   });
 }

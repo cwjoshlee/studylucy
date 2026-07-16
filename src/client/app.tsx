@@ -30,6 +30,7 @@ function AppContent() {
   return (
     <StudentHome
       api={auth.api}
+      offlineSession={auth.offlineSession}
       onEnterGuardianMode={auth.enterGuardianMode}
       onLogout={auth.logout}
     />

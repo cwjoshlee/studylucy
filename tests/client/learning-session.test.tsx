@@ -27,9 +27,11 @@ import {
 import { createSpeechController } from "../../src/client/learning/speech-recognition";
 import {
   OFFLINE_DB_NAME,
+  cacheIssuedPlan,
   getQueueCounts,
   listQueuedAttempts,
-  listQueuedIdleEvents
+  listQueuedIdleEvents,
+  markStudentAuthenticated
 } from "../../src/client/offline/db";
 
 const mathItem: LearningItemPayload = {
@@ -149,6 +151,26 @@ function offlineId(prefix: "learning-session" | "attempt" | "idle-event"): strin
 
 beforeEach(async () => {
   await deleteDB(OFFLINE_DB_NAME);
+  await markStudentAuthenticated();
+  await cacheIssuedPlan({
+    planId: "plan-daily-1",
+    planKind: "daily",
+    recoverySourcePlanId: null,
+    date: "2026-07-16",
+    submitUntil: "2026-07-17T14:59:59.999Z",
+    offlineEpoch: 1,
+    activityCursor: 0,
+    studentDisplayName: "수아",
+    completedItemIds: [],
+    requiredItemIds: [readingPlanItem.id, mathPlanItem.id],
+    stars: {
+      balance: 7,
+      earnedToday: 2,
+      deductedToday: 1,
+      lastReason: "확정 별"
+    },
+    items: [readingPlanItem, mathPlanItem]
+  });
 });
 
 afterEach(() => {
@@ -396,7 +418,11 @@ describe("LearningSession", () => {
     }));
     expect(api.saveAttempt.mock.calls[0]![0]).not.toHaveProperty("transcript");
     expect(screen.getByRole("button", { name: "다음 문제" })).toBeEnabled();
-    await expect(getQueueCounts()).resolves.toEqual({ attempts: 0, idleEvents: 0 });
+    await expect(getQueueCounts()).resolves.toEqual({
+      activities: 0,
+      provisionalAttempts: 0,
+      rejected: 0
+    });
   });
 
   it("reports the authoritative online cursor after a saved attempt", async () => {
@@ -446,7 +472,8 @@ describe("LearningSession", () => {
         mathAnswer: null
       })
     ]);
-    expect(screen.getByRole("button", { name: "다음 문제" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "다음 문제" })).toBeEnabled();
+    expect(screen.getByText("동기화 대기")).toBeVisible();
     const dashboardReturn = screen.getByRole("button", { name: "대시보드로 돌아가기" });
     expect(dashboardReturn).toBeEnabled();
     await userEvent.click(dashboardReturn);
@@ -496,7 +523,7 @@ describe("LearningSession", () => {
     await expect(listQueuedAttempts()).resolves.toEqual([]);
   });
 
-  it("queues a math answer after a network failure without unlocking Next", async () => {
+  it("queues a locally correct math answer as provisional and unlocks Next without confirming a star", async () => {
     const api = createLearningApi();
     api.saveAttempt.mockRejectedValue(new TypeError("offline"));
     const user = userEvent.setup();
@@ -523,7 +550,9 @@ describe("LearningSession", () => {
         mathAnswer: 5
       })
     ]);
-    expect(screen.getByRole("button", { name: "다음 문제" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "다음 문제" })).toBeEnabled();
+    expect(screen.getByText("동기화 대기")).toBeVisible();
+    expect(screen.queryByText(/별 1개를 모았어요/)).not.toBeInTheDocument();
   });
 
   it("keeps a failed online-issued idle volatile and never writes its learning session ID to IndexedDB", async () => {

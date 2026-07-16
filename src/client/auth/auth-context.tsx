@@ -12,6 +12,15 @@ import {
   type ClientApi,
   type SetupInput
 } from "../api/client";
+import {
+  applyAuthorityFailure,
+  clearOfflineAuthority,
+  loadOfflineStudentSession,
+  markStudentAuthenticated,
+  storeOfflineLease,
+  type OfflineStudentSession
+} from "../offline/db";
+import { syncPending } from "../offline/sync";
 
 type AuthState =
   | { phase: "loading"; user: null }
@@ -21,7 +30,11 @@ type AuthState =
   | { phase: "device-registration"; user: null }
   | { phase: "pin-setup"; user: null }
   | { phase: "student-login"; user: null }
-  | { phase: "authenticated"; user: CurrentUser }
+  | {
+      phase: "authenticated";
+      user: CurrentUser;
+      offlineSession: OfflineStudentSession | null;
+    }
   | { phase: "error"; user: null };
 
 type AuthContextValue = AuthState & {
@@ -49,24 +62,57 @@ export function AuthProvider({
   const [state, setState] = useState<AuthState>({ phase: "loading", user: null });
 
   const endSession = async () => {
-    await api.endSession();
+    try {
+      await api.endSession();
+    } catch {
+      // Local authority is removed even when the server response is lost.
+    }
+    await clearOfflineAuthority("auth-required");
   };
 
   useEffect(() => {
     let active = true;
     void api.me().then(
       (user) => {
-        if (active) setState({ phase: "authenticated", user });
+        if (active) setState({
+          phase: "authenticated",
+          user,
+          offlineSession: null
+        });
       },
-      (error: unknown) => {
+      async (error: unknown) => {
         if (!active) return;
         if (error instanceof ApiError && error.code === "SETUP_REQUIRED") {
           setState({ phase: "setup", user: null });
           return;
         }
         if (error instanceof ApiError && error.code === "AUTH_REQUIRED") {
+          await applyAuthorityFailure(error.code).catch(() => undefined);
+          if (!active) return;
           setState({ phase: "student-login", user: null });
           return;
+        }
+        if (
+          error instanceof ApiError &&
+          (error.code === "DEVICE_REVOKED" || error.code === "DEVICE_NOT_TRUSTED")
+        ) {
+          await applyAuthorityFailure(error.code).catch(() => undefined);
+          if (!active) return;
+          setState({ phase: "device-registration", user: null });
+          return;
+        }
+        if (error instanceof TypeError) {
+          const offlineSession = await loadOfflineStudentSession()
+            .catch(() => undefined);
+          if (!active) return;
+          if (offlineSession !== undefined) {
+            setState({
+              phase: "authenticated",
+              user: offlineSession.user,
+              offlineSession
+            });
+            return;
+          }
         }
         setState({ phase: "error", user: null });
       }
@@ -91,7 +137,7 @@ export function AuthProvider({
         return;
       }
       const user = await api.me();
-      setState({ phase: "authenticated", user });
+      setState({ phase: "authenticated", user, offlineSession: null });
     },
     registerDevice: async (name) => {
       await api.registerDevice(name);
@@ -103,9 +149,20 @@ export function AuthProvider({
       setState({ phase: "student-login", user: null });
     },
     studentLogin: async (pin) => {
-      await api.studentLogin(pin);
+      const login = await api.studentLogin(pin);
       const user = await api.me();
-      setState({ phase: "authenticated", user });
+      if (user.role !== "student") throw new Error("STUDENT_SESSION_REQUIRED");
+      const studentUser: CurrentUser & { role: "student" } = {
+        ...user,
+        role: "student"
+      };
+      await markStudentAuthenticated();
+      await storeOfflineLease({
+        offlineAccessUntil: login.offlineAccessUntil,
+        user: studentUser
+      });
+      setState({ phase: "authenticated", user: studentUser, offlineSession: null });
+      void syncPending(api, { retryRecoveryBlocked: true }).catch(() => undefined);
     },
     showGuardianLogin: () => {
       setState({ phase: "guardian-login", user: null });

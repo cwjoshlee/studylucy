@@ -81,11 +81,9 @@ async function seedAuthorityAndReplayData(): Promise<void> {
 async function expectAuthorityClearedAndReplayPreserved(): Promise<void> {
   await expect(offlineDb.loadCachedTodayPlan(plan.date)).resolves.toBeUndefined();
   await expect(offlineDb.getConfirmedStars()).resolves.toBeUndefined();
-  await expect(offlineDb.listQueuedAttempts()).resolves.toEqual([attempt]);
-  await expect(offlineDb.listQueuedIdleEvents()).resolves.toEqual([idleEvent]);
 }
 
-describe("current v1 authority clearing", () => {
+describe("centralized offline authority policy", () => {
   beforeEach(async () => {
     await deleteDB(offlineDb.OFFLINE_DB_NAME);
   });
@@ -100,18 +98,50 @@ describe("current v1 authority clearing", () => {
       await expectAuthorityClearedAndReplayPreserved();
       await expect(offlineDb.getDeviceState())
         .resolves.toBe("device-action-required");
+      await expect(offlineDb.listActivities()).rejects.toMatchObject({
+        code: "DEVICE_ACTION_REQUIRED"
+      });
+      await offlineDb.markStudentAuthenticated();
+      await expect(offlineDb.listActivities()).resolves.toEqual([
+        expect.objectContaining({
+          clientId: attempt.clientAttemptId,
+          sourcePlanId: plan.planId,
+          requiresRecovery: true
+        }),
+        expect.objectContaining({
+          clientId: idleEvent.clientIdleEventId,
+          sourcePlanId: plan.planId,
+          requiresRecovery: true
+        })
+      ]);
     }
   );
 
-  it.each(["AUTH_REQUIRED", "PLAN_NOT_ISSUED", "INVALID_REQUEST"])(
-    "clears cached authority without falsely requiring device action for %s",
+  it("clears cached authority, preserves the journal, and blocks reads for AUTH_REQUIRED", async () => {
+    await seedAuthorityAndReplayData();
+
+    await (offlineDb as AuthorityDb).clearCurrentV1Authority("AUTH_REQUIRED");
+
+    await expectAuthorityClearedAndReplayPreserved();
+    await expect(offlineDb.getDeviceState()).resolves.toBe("auth-required");
+    await expect(offlineDb.listActivities()).rejects.toMatchObject({
+      code: "AUTH_REQUIRED"
+    });
+    await offlineDb.markStudentAuthenticated();
+    await expect(offlineDb.listActivities()).resolves.toHaveLength(2);
+  });
+
+  it.each(["PLAN_NOT_ISSUED", "INVALID_REQUEST"])(
+    "leaves authority transitions to sync terminal handling for %s",
     async (code) => {
       await seedAuthorityAndReplayData();
 
       await (offlineDb as AuthorityDb).clearCurrentV1Authority(code);
 
-      await expectAuthorityClearedAndReplayPreserved();
+      await expect(offlineDb.loadCachedTodayPlan(plan.date)).resolves.toEqual(plan);
+      await expect(offlineDb.getConfirmedStars()).resolves.toEqual(stars);
       await expect(offlineDb.getDeviceState()).resolves.toBe("ready");
+      await expect(offlineDb.listActivities()).resolves.toHaveLength(2);
     }
   );
 });
