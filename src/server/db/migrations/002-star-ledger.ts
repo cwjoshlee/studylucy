@@ -31,6 +31,7 @@ export const starLedgerMigration = {
       CREATE TABLE star_events (
         id TEXT PRIMARY KEY,
         student_id TEXT NOT NULL REFERENCES users(id),
+        requested_delta INTEGER NOT NULL,
         delta INTEGER NOT NULL,
         balance_after INTEGER NOT NULL CHECK (balance_after >= 0),
         reason_code TEXT NOT NULL CHECK (reason_code IN (
@@ -48,8 +49,19 @@ export const starLedgerMigration = {
         actor_user_id TEXT REFERENCES users(id),
         source_key TEXT NOT NULL UNIQUE,
         reverses_event_id TEXT UNIQUE REFERENCES star_events(id),
-        created_at TEXT NOT NULL
+        created_at TEXT NOT NULL,
+        CHECK ((reason_code = 'REVERSAL') = (reverses_event_id IS NOT NULL))
       );
+      CREATE TRIGGER star_events_append_only_update
+      BEFORE UPDATE ON star_events
+      BEGIN
+        SELECT RAISE(ABORT, 'STAR_EVENTS_APPEND_ONLY');
+      END;
+      CREATE TRIGGER star_events_append_only_delete
+      BEFORE DELETE ON star_events
+      BEGIN
+        SELECT RAISE(ABORT, 'STAR_EVENTS_APPEND_ONLY');
+      END;
       CREATE TABLE idle_events (
         id TEXT PRIMARY KEY,
         student_id TEXT NOT NULL REFERENCES users(id),

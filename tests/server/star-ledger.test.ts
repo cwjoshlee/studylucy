@@ -1,15 +1,61 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import type Database from "better-sqlite3";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { openDatabase } from "../../src/server/db/client";
 import { migrate } from "../../src/server/db/migrate";
 import { seedInitialContent } from "../../src/server/db/seed";
-import { StarRepository } from "../../src/server/stars/repository";
+import {
+  StarRepository,
+  type ApplyStarInput
+} from "../../src/server/stars/repository";
 import { StarReasonSchema } from "../../src/shared/stars";
 
 const STUDENT_ID = "student-1";
 const GUARDIAN_ID = "guardian-1";
 const STUDY_DATE = "2026-07-16";
 const CREATED_AT = "2026-07-16T03:00:00.000Z";
+
+const PUBLIC_APPLY_REVERSAL_FORGERY: ApplyStarInput = {
+  studentId: STUDENT_ID,
+  delta: -1,
+  reason: "REVERSAL",
+  reasonText: "public apply cannot forge a reversal",
+  studyDate: STUDY_DATE,
+  actorType: "guardian",
+  actorUserId: GUARDIAN_ID,
+  sourceKey: "forged:reversal",
+  // @ts-expect-error Only StarRepository.reverse() may link a reversal.
+  reversesEventId: "source-event",
+  createdAt: CREATED_AT
+};
+void PUBLIC_APPLY_REVERSAL_FORGERY;
+
+function insertDirectStarEvent(
+  db: Database.Database,
+  id: string,
+  reason: "GUARDIAN_ADJUSTMENT" | "REVERSAL",
+  reversesEventId: string | null
+): void {
+  db.prepare(`
+    INSERT INTO star_events (
+      id, student_id, requested_delta, delta, balance_after,
+      reason_code, reason_text, study_date, actor_type, actor_user_id,
+      source_key, reverses_event_id, created_at
+    ) VALUES (?, ?, 0, 0, 0, ?, ?, ?, 'guardian', ?, ?, ?, ?)
+  `).run(
+    id,
+    STUDENT_ID,
+    reason,
+    "direct SQL forgery",
+    STUDY_DATE,
+    GUARDIAN_ID,
+    `direct:${id}`,
+    reversesEventId,
+    CREATED_AT
+  );
+}
 
 describe("append-only star ledger", () => {
   let db: Database.Database;
@@ -60,6 +106,7 @@ describe("append-only star ledger", () => {
     expect(first).toMatchObject({
       duplicate: false,
       event: {
+        requestedDelta: 1,
         delta: 1,
         balanceAfter: 1,
         reason: "REQUIRED_ITEM_COMPLETED",
@@ -78,6 +125,128 @@ describe("append-only star ledger", () => {
         WHERE student_id = ?
       `).get(STUDENT_ID)
     ).toEqual({ balance: 1 });
+  });
+
+  it("returns the same event for the same source across two connections", () => {
+    const directory = mkdtempSync(join(tmpdir(), "star-ledger-"));
+    const databasePath = join(directory, "stars.sqlite");
+    const firstDb = openDatabase(databasePath);
+    const secondDb = openDatabase(databasePath);
+
+    try {
+      migrate(firstDb);
+      seedInitialContent(firstDb);
+      firstDb.prepare(`
+        INSERT INTO users (id, role, display_name, created_at)
+        VALUES (?, 'guardian', '보호자', ?), (?, 'student', '수아', ?)
+      `).run(GUARDIAN_ID, CREATED_AT, STUDENT_ID, CREATED_AT);
+      migrate(secondDb);
+
+      const input = {
+        studentId: STUDENT_ID,
+        delta: 1,
+        reason: "REQUIRED_ITEM_COMPLETED" as const,
+        reasonText: "필수 학습을 완료했어요",
+        studyDate: STUDY_DATE,
+        itemId: "ko-01",
+        actorType: "system" as const,
+        sourceKey: "required:student-1:cross-connection:ko-01",
+        createdAt: CREATED_AT
+      };
+      const first = new StarRepository(firstDb).apply(input);
+      const duplicate = new StarRepository(secondDb).apply(input);
+
+      expect(duplicate).toEqual({ event: first.event, duplicate: true });
+      expect(secondDb.prepare("SELECT COUNT(*) AS count FROM star_events").get())
+        .toEqual({ count: 1 });
+      expect(secondDb.prepare(`
+        SELECT balance
+        FROM student_star_balances
+        WHERE student_id = ?
+      `).get(STUDENT_ID)).toEqual({ balance: 1 });
+    } finally {
+      secondDb.close();
+      firstDb.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
+  it("rejects direct SQL updates and leaves the event unchanged", () => {
+    const applied = repository.apply({
+      studentId: STUDENT_ID,
+      delta: 1,
+      reason: "GUARDIAN_BONUS",
+      reasonText: "수정하면 안 되는 별",
+      studyDate: STUDY_DATE,
+      actorType: "guardian",
+      actorUserId: GUARDIAN_ID,
+      sourceKey: "guardian:guardian-1:append-only-update",
+      createdAt: CREATED_AT
+    });
+    const before = db.prepare("SELECT * FROM star_events WHERE id = ?")
+      .get(applied.event.id);
+
+    expect(() =>
+      db.prepare("UPDATE star_events SET reason_text = ? WHERE id = ?")
+        .run("조작된 사유", applied.event.id)
+    ).toThrowError(/STAR_EVENTS_APPEND_ONLY/);
+    expect(db.prepare("SELECT * FROM star_events WHERE id = ?")
+      .get(applied.event.id)).toEqual(before);
+  });
+
+  it("rejects direct SQL deletes and leaves the event unchanged", () => {
+    const applied = repository.apply({
+      studentId: STUDENT_ID,
+      delta: 1,
+      reason: "GUARDIAN_BONUS",
+      reasonText: "삭제하면 안 되는 별",
+      studyDate: STUDY_DATE,
+      actorType: "guardian",
+      actorUserId: GUARDIAN_ID,
+      sourceKey: "guardian:guardian-1:append-only-delete",
+      createdAt: CREATED_AT
+    });
+    const before = db.prepare("SELECT * FROM star_events WHERE id = ?")
+      .get(applied.event.id);
+
+    expect(() =>
+      db.prepare("DELETE FROM star_events WHERE id = ?").run(applied.event.id)
+    ).toThrowError(/STAR_EVENTS_APPEND_ONLY/);
+    expect(db.prepare("SELECT * FROM star_events WHERE id = ?")
+      .get(applied.event.id)).toEqual(before);
+  });
+
+  it("rejects a direct SQL reversal link on a non-reversal event", () => {
+    const original = repository.apply({
+      studentId: STUDENT_ID,
+      delta: 1,
+      reason: "GUARDIAN_BONUS",
+      reasonText: "원본 이벤트",
+      studyDate: STUDY_DATE,
+      actorType: "guardian",
+      actorUserId: GUARDIAN_ID,
+      sourceKey: "guardian:guardian-1:forged-pair-source",
+      createdAt: CREATED_AT
+    });
+
+    expect(() =>
+      insertDirectStarEvent(
+        db,
+        "forged-non-reversal-link",
+        "GUARDIAN_ADJUSTMENT",
+        original.event.id
+      )
+    ).toThrowError(/CHECK constraint failed/);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM star_events").get())
+      .toEqual({ count: 1 });
+  });
+
+  it("rejects a direct SQL reversal event without a reversal link", () => {
+    expect(() =>
+      insertDirectStarEvent(db, "forged-reversal-without-link", "REVERSAL", null)
+    ).toThrowError(/CHECK constraint failed/);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM star_events").get())
+      .toEqual({ count: 0 });
   });
 
   it("clamps deductions at zero and records later requests as audits", () => {
@@ -118,11 +287,21 @@ describe("append-only star ledger", () => {
 
     expect(clamped).toMatchObject({
       duplicate: false,
-      event: { delta: -1, balanceAfter: 0, reason: "IDLE_TIMEOUT" }
+      event: {
+        requestedDelta: -2,
+        delta: -1,
+        balanceAfter: 0,
+        reason: "IDLE_TIMEOUT"
+      }
     });
     expect(noBalance).toMatchObject({
       duplicate: false,
-      event: { delta: 0, balanceAfter: 0, reason: "NO_BALANCE_AUDIT" }
+      event: {
+        requestedDelta: -1,
+        delta: 0,
+        balanceAfter: 0,
+        reason: "NO_BALANCE_AUDIT"
+      }
     });
     expect(
       db.prepare(`
@@ -135,10 +314,51 @@ describe("append-only star ledger", () => {
     ).toEqual({ balance: 0, ledgerTotal: 0 });
   });
 
-  it("reverses an event once by appending a linked opposite event", () => {
+  it("rolls back the balance when the event insert fails", () => {
+    repository.apply({
+      studentId: STUDENT_ID,
+      delta: 4,
+      reason: "GUARDIAN_BONUS",
+      reasonText: "롤백 기준 잔액",
+      studyDate: STUDY_DATE,
+      actorType: "guardian",
+      actorUserId: GUARDIAN_ID,
+      sourceKey: "guardian:guardian-1:rollback-baseline",
+      createdAt: CREATED_AT
+    });
+    const beforeBalance = db.prepare(`
+      SELECT balance, updated_at AS updatedAt
+      FROM student_star_balances
+      WHERE student_id = ?
+    `).get(STUDENT_ID);
+    const beforeCount = db.prepare("SELECT COUNT(*) AS count FROM star_events").get();
+
+    expect(() =>
+      repository.apply({
+        studentId: STUDENT_ID,
+        delta: 2,
+        reason: "REQUIRED_ITEM_COMPLETED",
+        reasonText: "존재하지 않는 콘텐츠",
+        studyDate: STUDY_DATE,
+        itemId: "missing-item",
+        actorType: "system",
+        sourceKey: "required:student-1:missing-item",
+        createdAt: "2026-07-16T04:00:00.000Z"
+      })
+    ).toThrowError(/FOREIGN KEY constraint failed/);
+    expect(db.prepare(`
+      SELECT balance, updated_at AS updatedAt
+      FROM student_star_balances
+      WHERE student_id = ?
+    `).get(STUDENT_ID)).toEqual(beforeBalance);
+    expect(db.prepare("SELECT COUNT(*) AS count FROM star_events").get())
+      .toEqual(beforeCount);
+  });
+
+  it("partially reverses an event once while logging requested and actual deltas", () => {
     const earned = repository.apply({
       studentId: STUDENT_ID,
-      delta: 1,
+      delta: 5,
       reason: "REQUIRED_ITEM_COMPLETED",
       reasonText: "필수 학습을 완료했어요",
       studyDate: STUDY_DATE,
@@ -146,6 +366,17 @@ describe("append-only star ledger", () => {
       actorType: "system",
       sourceKey: `required:${STUDENT_ID}:${STUDY_DATE}:ko-01`,
       createdAt: CREATED_AT
+    });
+    repository.apply({
+      studentId: STUDENT_ID,
+      delta: -3,
+      reason: "REWARD_REDEMPTION",
+      reasonText: "보상으로 별을 사용했어요",
+      studyDate: STUDY_DATE,
+      actorType: "guardian",
+      actorUserId: GUARDIAN_ID,
+      sourceKey: "reward:student-1:partial-reversal-setup",
+      createdAt: "2026-07-16T03:30:00.000Z"
     });
 
     const reversed = repository.reverse(
@@ -158,7 +389,8 @@ describe("append-only star ledger", () => {
     expect(reversed).toMatchObject({
       duplicate: false,
       event: {
-        delta: -1,
+        requestedDelta: -5,
+        delta: -2,
         balanceAfter: 0,
         reason: "REVERSAL",
         reasonText: "잘못 지급된 별",
@@ -177,20 +409,86 @@ describe("append-only star ledger", () => {
     ).toThrowError("EVENT_ALREADY_REVERSED");
     expect(
       db.prepare("SELECT COUNT(*) AS count FROM star_events").get()
-    ).toEqual({ count: 2 });
+    ).toEqual({ count: 3 });
     expect(
       db.prepare(`
-        SELECT delta, reason_code AS reason, reverses_event_id AS reversesEventId
+        SELECT requested_delta AS requestedDelta,
+               delta,
+               reason_code AS reason,
+               reverses_event_id AS reversesEventId
         FROM star_events
         ORDER BY created_at
       `).all()
     ).toEqual([
       {
-        delta: 1,
+        requestedDelta: 5,
+        delta: 5,
         reason: "REQUIRED_ITEM_COMPLETED",
         reversesEventId: null
       },
-      { delta: -1, reason: "REVERSAL", reversesEventId: earned.event.id }
+      {
+        requestedDelta: -3,
+        delta: -3,
+        reason: "REWARD_REDEMPTION",
+        reversesEventId: null
+      },
+      {
+        requestedDelta: -5,
+        delta: -2,
+        reason: "REVERSAL",
+        reversesEventId: earned.event.id
+      }
     ]);
+  });
+
+  it("records a zero-actual reversal as REVERSAL and consumes its link", () => {
+    const earned = repository.apply({
+      studentId: STUDENT_ID,
+      delta: 2,
+      reason: "GUARDIAN_BONUS",
+      reasonText: "임시 보너스",
+      studyDate: STUDY_DATE,
+      actorType: "guardian",
+      actorUserId: GUARDIAN_ID,
+      sourceKey: "guardian:guardian-1:zero-reversal-source",
+      createdAt: CREATED_AT
+    });
+    repository.apply({
+      studentId: STUDENT_ID,
+      delta: -2,
+      reason: "REWARD_REDEMPTION",
+      reasonText: "모두 사용",
+      studyDate: STUDY_DATE,
+      actorType: "guardian",
+      actorUserId: GUARDIAN_ID,
+      sourceKey: "reward:student-1:zero-reversal-setup",
+      createdAt: "2026-07-16T03:30:00.000Z"
+    });
+
+    const reversed = repository.reverse(
+      earned.event.id,
+      GUARDIAN_ID,
+      "잔액 없는 상태에서 취소",
+      new Date("2026-07-16T04:00:00.000Z")
+    );
+
+    expect(reversed).toMatchObject({
+      duplicate: false,
+      event: {
+        requestedDelta: -2,
+        delta: 0,
+        balanceAfter: 0,
+        reason: "REVERSAL",
+        reversesEventId: earned.event.id
+      }
+    });
+    expect(() =>
+      repository.reverse(
+        earned.event.id,
+        GUARDIAN_ID,
+        "두 번째 취소",
+        new Date("2026-07-16T05:00:00.000Z")
+      )
+    ).toThrowError("EVENT_ALREADY_REVERSED");
   });
 });

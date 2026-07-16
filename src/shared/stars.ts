@@ -15,6 +15,7 @@ export type StarReason = z.infer<typeof StarReasonSchema>;
 
 export type StarEvent = {
   id: string;
+  requestedDelta: number;
   delta: number;
   balanceAfter: number;
   reason: StarReason;

@@ -20,12 +20,12 @@ export type ApplyStarInput = {
   actorType: "system" | "guardian";
   actorUserId?: string | null;
   sourceKey: string;
-  reversesEventId?: string | null;
   createdAt: string;
 };
 
 type StarEventRow = {
   id: string;
+  requestedDelta: number;
   delta: number;
   balanceAfter: number;
   reason: string;
@@ -46,6 +46,7 @@ type ReversibleEventRow = {
 
 const STAR_EVENT_SELECT = `
   SELECT id,
+         requested_delta AS requestedDelta,
          delta,
          balance_after AS balanceAfter,
          reason_code AS reason,
@@ -100,23 +101,28 @@ export class StarRepository {
         throw new Error("EVENT_ALREADY_REVERSED");
       }
 
-      return this.applyInTransaction({
-        studentId: original.studentId,
-        delta: -original.delta,
-        reason: "REVERSAL",
-        reasonText: note,
-        studyDate: original.studyDate,
-        itemId: original.itemId,
-        actorType: "guardian",
-        actorUserId: guardianId,
-        sourceKey: `reversal:${eventId}`,
-        reversesEventId: eventId,
-        createdAt: now.toISOString()
-      });
+      return this.applyInTransaction(
+        {
+          studentId: original.studentId,
+          delta: -original.delta,
+          reason: "REVERSAL",
+          reasonText: note,
+          studyDate: original.studyDate,
+          itemId: original.itemId,
+          actorType: "guardian",
+          actorUserId: guardianId,
+          sourceKey: `reversal:${eventId}`,
+          createdAt: now.toISOString()
+        },
+        eventId
+      );
     }).immediate();
   }
 
-  private applyInTransaction(input: ApplyStarInput): AppliedStarResult {
+  private applyInTransaction(
+    input: ApplyStarInput,
+    reversesEventId: string | null = null
+  ): AppliedStarResult {
     const existing = this.db.prepare(`
       ${STAR_EVENT_SELECT}
       WHERE source_key = ?
@@ -139,7 +145,7 @@ export class StarRepository {
     const delta = input.delta < 0
       ? Math.max(input.delta, -balanceRow.balance)
       : input.delta;
-    const reason = input.delta < 0 && delta === 0
+    const reason = reversesEventId === null && input.delta < 0 && delta === 0
       ? "NO_BALANCE_AUDIT"
       : input.reason;
     const balanceAfter = balanceRow.balance + delta;
@@ -153,14 +159,16 @@ export class StarRepository {
     const id = randomUUID();
     this.db.prepare(`
       INSERT INTO star_events (
-        id, student_id, delta, balance_after, reason_code, reason_text,
+        id, student_id, requested_delta, delta, balance_after,
+        reason_code, reason_text,
         study_date, item_id, attempt_id, idle_event_id,
         pending_adjustment_id, actor_type, actor_user_id, source_key,
         reverses_event_id, created_at
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       id,
       input.studentId,
+      input.delta,
       delta,
       balanceAfter,
       reason,
@@ -173,7 +181,7 @@ export class StarRepository {
       input.actorType,
       input.actorUserId ?? null,
       input.sourceKey,
-      input.reversesEventId ?? null,
+      reversesEventId,
       input.createdAt
     );
 
