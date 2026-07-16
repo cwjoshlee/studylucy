@@ -95,6 +95,7 @@ export class ApiClient {
         "code" in payload && typeof payload.code === "string"
         ? payload.code
         : `HTTP_${response.status}`;
+      const error = new ApiError(response.status, code);
       if (
         response.status === 401 ||
         code.startsWith("DEVICE_") ||
@@ -105,9 +106,13 @@ export class ApiClient {
           response.status < 500
         )
       ) {
-        await this.callbacks.onAuthorityFailure?.(code);
+        try {
+          await this.callbacks.onAuthorityFailure?.(code);
+        } catch {
+          // Authority clearing is best-effort; the server denial remains canonical.
+        }
       }
-      throw new ApiError(response.status, code);
+      throw error;
     }
     if (response.status === 204) return undefined as T;
     return await response.json() as T;

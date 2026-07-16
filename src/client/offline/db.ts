@@ -199,6 +199,24 @@ export function getDeviceState(): Promise<DeviceState> {
   });
 }
 
+export function clearCurrentV1Authority(code: string): Promise<void> {
+  return withDatabase(async (database) => {
+    const transaction = database.transaction(["todayPlans", "meta"], "readwrite");
+    const operations: Array<Promise<unknown>> = [
+      transaction.objectStore("todayPlans").clear(),
+      transaction.objectStore("meta").delete("confirmed-stars")
+    ];
+    if (code === "DEVICE_REVOKED" || code === "DEVICE_NOT_TRUSTED") {
+      operations.push(transaction.objectStore("meta").put({
+        key: "device-state",
+        value: "device-action-required"
+      }));
+    }
+    await Promise.all(operations);
+    await transaction.done;
+  });
+}
+
 export async function storeConfirmedStars(summary: StudentStarSummary): Promise<void> {
   const confirmed: StudentStarSummary = {
     balance: summary.balance,

@@ -540,6 +540,24 @@ describe("append-only star ledger", () => {
     ]);
   });
 
+  it("enforces reserved source keys in the transaction-aware apply core", () => {
+    const apply = db.transaction(() => repository.applyInTransaction({
+      studentId: STUDENT_ID,
+      delta: 7,
+      reason: "GUARDIAN_BONUS",
+      reasonText: "트랜잭션 코어 예약 키 선점 시도",
+      studyDate: STUDY_DATE,
+      actorType: "guardian",
+      actorUserId: GUARDIAN_ID,
+      sourceKey: "reversal:forged-transaction-core",
+      createdAt: CREATED_AT
+    }));
+
+    expect(() => apply.immediate()).toThrowError("SOURCE_KEY_RESERVED");
+    expect(db.prepare("SELECT COUNT(*) AS count FROM star_events").get())
+      .toEqual({ count: 0 });
+  });
+
   it("records a zero-actual reversal as REVERSAL and consumes its link", () => {
     const earned = repository.apply({
       studentId: STUDENT_ID,

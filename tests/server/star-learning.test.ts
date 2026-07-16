@@ -1,4 +1,4 @@
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { getDailyItems } from "../../src/shared/daily-order";
 import type { TodayPlan } from "../../src/shared/learning";
 import { INITIAL_ITEMS } from "../../src/server/db/seed";
@@ -539,6 +539,36 @@ describe("issued-plan required learning star awards", () => {
     expect(harness.db.prepare(`
       SELECT current_cursor AS currentCursor FROM student_activity_cursors
     `).get()).toEqual({ currentCursor: 2 });
+  });
+
+  it("opens exactly one transaction for the complete bound idle deduction", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    const plan = await getToday(student);
+    const item = plan.items[0]!;
+    const session = await issueLearningSession(student, plan, item);
+    harness.advanceTime(5 * 60 * 1_000);
+    const transaction = vi.spyOn(harness.db, "transaction");
+
+    const response = await student.request(
+      "POST",
+      "/api/student/idle-events",
+      boundIdleEvent(
+        plan,
+        item,
+        session.learningSessionId,
+        "idle-single-transaction-0001"
+      )
+    );
+
+    expect(response.statusCode).toBe(201);
+    expect(transaction).toHaveBeenCalledTimes(1);
+    expect(harness.db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM idle_events) AS idleEvents,
+        (SELECT COUNT(*) FROM star_events) AS starEvents,
+        (SELECT current_cursor FROM student_activity_cursors) AS activityCursor
+    `).get()).toEqual({ idleEvents: 1, starEvents: 1, activityCursor: 1 });
   });
 
   it("accepts a disconnected online-issued idle event received later but within the plan deadline", async () => {

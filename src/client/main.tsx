@@ -1,6 +1,6 @@
 import { StrictMode } from "react";
 import { createRoot } from "react-dom/client";
-import { ApiClient } from "./api/client";
+import { createProductionApi } from "./api/production";
 import { App } from "./app";
 import { syncPending } from "./offline/sync";
 import "./styles/tokens.css";
@@ -11,7 +11,7 @@ import "./styles/responsive.css";
 const root = document.getElementById("root");
 if (root === null) throw new Error("Missing #root");
 
-const api = new ApiClient();
+const api = createProductionApi();
 
 createRoot(root).render(
   <StrictMode>

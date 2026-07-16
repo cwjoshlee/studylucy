@@ -320,4 +320,24 @@ describe("ApiClient", () => {
     })).rejects.toBeInstanceOf(TypeError);
     expect(onAuthorityFailure).not.toHaveBeenCalled();
   });
+
+  it("keeps the original ApiError when authority clearing rejects with TypeError", async () => {
+    const onAuthorityFailure = vi.fn().mockRejectedValue(
+      new TypeError("indexedDB unavailable")
+    );
+    const api = new ApiClient(
+      vi.fn().mockResolvedValue(new Response(
+        JSON.stringify({ code: "PLAN_NOT_ISSUED" }),
+        { status: 409, headers: { "content-type": "application/json" } }
+      )),
+      { onAuthorityFailure }
+    );
+
+    await expect(api.createLearningSession({
+      planId: "plan-daily-1",
+      itemId: "ko-01",
+      contentVersion: 1
+    })).rejects.toEqual(new ApiError(409, "PLAN_NOT_ISSUED"));
+    expect(onAuthorityFailure).toHaveBeenCalledWith("PLAN_NOT_ISSUED");
+  });
 });

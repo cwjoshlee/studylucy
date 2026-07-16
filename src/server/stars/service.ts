@@ -185,7 +185,7 @@ export class StarService {
       outcome = "capped";
       starEventId = null;
     } else {
-      const applied = this.stars.apply({
+      const applied = this.stars.applyInTransaction({
         studentId,
         delta: -1,
         reason: "IDLE_TIMEOUT",

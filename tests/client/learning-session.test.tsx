@@ -12,7 +12,7 @@ import {
   it,
   vi
 } from "vitest";
-import { ApiError } from "../../src/client/api/client";
+import { ApiClient, ApiError } from "../../src/client/api/client";
 import type {
   AttemptReceipt,
   LearningItemPayload,
@@ -297,6 +297,33 @@ describe("LearningSession", () => {
     await expect(listQueuedIdleEvents()).resolves.toEqual([]);
   });
 
+  it("exits instead of entering offline-unissued when authority clearing itself rejects", async () => {
+    const api = new ApiClient(
+      vi.fn().mockResolvedValue(new Response(
+        JSON.stringify({ code: "PLAN_NOT_ISSUED" }),
+        { status: 409, headers: { "content-type": "application/json" } }
+      )),
+      {
+        onAuthorityFailure: vi.fn().mockRejectedValue(
+          new TypeError("indexedDB unavailable")
+        )
+      }
+    );
+    const onExit = vi.fn();
+    render(<LearningSession
+      item={readingPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      offlineEligibility="validated"
+      onExit={onExit}
+    />);
+
+    await waitFor(() => expect(onExit).toHaveBeenCalledOnce());
+    expect(api).toBeDefined();
+    await expect(listQueuedIdleEvents()).resolves.toEqual([]);
+  });
+
   it("submits the issued content version without fabricating a fallback", async () => {
     const api = createLearningApi();
     render(<LearningSession
@@ -529,6 +556,46 @@ describe("LearningSession", () => {
     vi.setSystemTime(new Date("2026-07-16T01:00:00.000Z"));
     const api = createLearningApi();
     api.sendIdleEvent.mockRejectedValue(new ApiError(409, "PLAN_SUBMISSION_EXPIRED"));
+    const onExit = vi.fn();
+    render(<LearningSession
+      item={readingPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      onExit={onExit}
+    />);
+    await flushLearningSessionIssue();
+
+    await act(async () => {
+      vi.advanceTimersByTime(300_000);
+      await Promise.resolve();
+    });
+
+    expect(onExit).toHaveBeenCalledOnce();
+    await expect(listQueuedIdleEvents()).resolves.toEqual([]);
+  });
+
+  it("exits on an idle denial when authority clearing itself rejects", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    vi.setSystemTime(new Date("2026-07-16T01:00:00.000Z"));
+    const fetcher = vi.fn().mockImplementation(async (input: RequestInfo | URL) => {
+      if (String(input) === "/api/student/learning-sessions") {
+        return new Response(JSON.stringify({
+          learningSessionId: "server-issued-learning-session-0001",
+          activeUntil: "2026-07-16T07:00:00.000Z",
+          submitUntil: "2026-07-17T14:59:59.999Z"
+        }), { status: 201, headers: { "content-type": "application/json" } });
+      }
+      return new Response(JSON.stringify({ code: "LEARNING_SESSION_EXPIRED" }), {
+        status: 409,
+        headers: { "content-type": "application/json" }
+      });
+    });
+    const api = new ApiClient(fetcher, {
+      onAuthorityFailure: vi.fn().mockRejectedValue(
+        new TypeError("indexedDB unavailable")
+      )
+    });
     const onExit = vi.fn();
     render(<LearningSession
       item={readingPlanItem}

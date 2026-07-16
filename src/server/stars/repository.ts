@@ -70,10 +70,14 @@ export class StarRepository {
   constructor(private db: Database.Database) {}
 
   apply(input: ApplyStarInput): AppliedStarResult {
+    return this.db.transaction(() => this.applyInTransaction(input)).immediate();
+  }
+
+  applyInTransaction(input: ApplyStarInput): AppliedStarResult {
     if (input.sourceKey.startsWith("reversal:")) {
       throw new Error("SOURCE_KEY_RESERVED");
     }
-    return this.db.transaction(() => this.applyInTransaction(input)).immediate();
+    return this.applyCore(input);
   }
 
   findBySource(sourceKey: string): StarEvent | null {
@@ -111,7 +115,7 @@ export class StarRepository {
         return { event: eventFromRow(existingReversal), duplicate: true };
       }
 
-      return this.applyInTransaction(
+      return this.applyCore(
         {
           studentId: original.studentId,
           delta: -original.delta,
@@ -129,7 +133,7 @@ export class StarRepository {
     }).immediate();
   }
 
-  private applyInTransaction(
+  private applyCore(
     input: ApplyStarInput,
     reversesEventId: string | null = null
   ): AppliedStarResult {
