@@ -15,6 +15,11 @@ import type {
   StudentStarSummary
 } from "../../shared/stars";
 import { StarReasonSchema } from "../../shared/stars";
+import { IssuedPlanError } from "../learning/issued-plan-repository";
+import {
+  LearningSessionError,
+  LearningSessionRepository
+} from "../learning/session-repository";
 import { isValidStudyDate, kstStudyDate } from "./kst";
 import { DailyPlanService } from "./daily-plan";
 import { StarRepository } from "./repository";
@@ -24,6 +29,19 @@ type IdleEventRow = {
   id: string;
   outcome: IdleEventResult["outcome"];
   starEventId: string | null;
+  learningSessionId: string;
+  planId: string;
+  trustedDeviceId: string;
+  itemId: string;
+  contentVersion: number;
+  studyDate: string;
+  idleStartedAt: string;
+  occurredAt: string;
+  revokedAt: string | null;
+};
+
+export type RecordIdleEventOptions = {
+  advanceCursor?: boolean;
 };
 
 type PendingAdjustmentRow = PendingStarAdjustment & {
@@ -61,68 +79,112 @@ export type StarServiceDeps = {
 export class StarService {
   private stars: StarRepository;
   private dailyPlan: DailyPlanService;
+  private learningSessions: LearningSessionRepository;
 
   constructor(private deps: StarServiceDeps) {
     this.stars = new StarRepository(deps.db);
     this.dailyPlan = new DailyPlanService(deps.db, deps.now);
+    this.learningSessions = new LearningSessionRepository(deps.db);
   }
 
   findIdleResult(
     studentId: string,
-    clientIdleEventId: string
+    trustedDeviceId: string,
+    input: IdleEventInput
   ): IdleEventResult | null {
     const row = this.deps.db.prepare(`
-      SELECT id, outcome, star_event_id AS starEventId
-      FROM idle_events
-      WHERE student_id = ? AND id = ?
-    `).get(studentId, clientIdleEventId) as IdleEventRow | undefined;
-    return row === undefined ? null : { ...row, duplicate: true };
+      SELECT ie.id, ie.outcome, ie.star_event_id AS starEventId,
+             ie.learning_session_id AS learningSessionId,
+             ils.plan_id AS planId,
+             ils.trusted_device_id AS trustedDeviceId,
+             ie.item_id AS itemId,
+             ils.content_version AS contentVersion,
+             ie.study_date AS studyDate,
+             ie.idle_started_at AS idleStartedAt,
+             ie.occurred_at AS occurredAt,
+             ils.revoked_at AS revokedAt
+      FROM idle_events AS ie
+      JOIN issued_learning_sessions AS ils
+        ON ils.id = ie.learning_session_id
+      WHERE ie.student_id = ? AND ie.id = ?
+    `).get(studentId, input.clientIdleEventId) as IdleEventRow | undefined;
+    if (row === undefined) return null;
+    if (row.revokedAt !== null) {
+      throw new StarServiceError(409, "LEARNING_SESSION_INVALID");
+    }
+    if (
+      row.trustedDeviceId !== trustedDeviceId ||
+      row.learningSessionId !== input.learningSessionId ||
+      row.planId !== input.planId ||
+      row.itemId !== input.itemId ||
+      row.contentVersion !== input.contentVersion ||
+      row.studyDate !== input.studyDate ||
+      row.idleStartedAt !== input.idleStartedAt ||
+      row.occurredAt !== input.occurredAt
+    ) {
+      throw new StarServiceError(400, "INVALID_REQUEST");
+    }
+    return {
+      id: row.id,
+      outcome: row.outcome,
+      starEventId: row.starEventId,
+      duplicate: true,
+      activityCursor: this.getActivityCursor(studentId)
+    };
   }
 
   recordIdleEvent(
     studentId: string,
+    trustedDeviceId: string,
     input: IdleEventInput
   ): IdleEventResult {
-    return this.deps.db.transaction((): IdleEventResult => {
-      const existing = this.findIdleResult(studentId, input.clientIdleEventId);
-      if (existing !== null) {
-        return existing;
-      }
+    return this.deps.db.transaction(() => this.recordIdleEventInTransaction(
+      studentId,
+      trustedDeviceId,
+      input
+    )).immediate();
+  }
 
-      const idleStartedAt = new Date(input.idleStartedAt);
-      const occurredAt = new Date(input.occurredAt);
-      const elapsed = occurredAt.getTime() - idleStartedAt.getTime();
-      if (
-        elapsed < 300_000 ||
-        occurredAt.getTime() > this.deps.now().getTime() + 300_000 ||
-        input.studyDate !== kstStudyDate(occurredAt)
-      ) {
-        throw new StarServiceError(400, "INVALID_REQUEST");
-      }
-      const availableItem = this.deps.db.prepare(`
-        SELECT 1 FROM content_items WHERE id = ? AND status = 'published'
-      `).get(input.itemId);
-      if (availableItem === undefined) {
-        throw new StarServiceError(400, "INVALID_REQUEST");
-      }
+  recordIdleEventInTransaction(
+    studentId: string,
+    trustedDeviceId: string,
+    input: IdleEventInput,
+    options: RecordIdleEventOptions = {}
+  ): IdleEventResult {
+    const existing = this.findIdleResult(studentId, trustedDeviceId, input);
+    if (existing !== null) return existing;
 
-      const counted = this.deps.db.prepare(`
-        SELECT COUNT(*) AS count
-        FROM idle_events
-        WHERE student_id = ? AND study_date = ?
-          AND outcome IN ('applied', 'no-balance')
-      `).get(studentId, input.studyDate) as { count: number };
-      const createdAt = this.deps.now().toISOString();
-      if (counted.count >= 2) {
-        this.insertIdleEvent(studentId, input, "capped", null, createdAt);
-        return {
-          id: input.clientIdleEventId,
-          outcome: "capped",
-          starEventId: null,
-          duplicate: false
-        };
+    const receivedAt = this.deps.now();
+    try {
+      this.learningSessions.validateIdle(
+        studentId,
+        trustedDeviceId,
+        input,
+        receivedAt
+      );
+    } catch (error) {
+      if (error instanceof IssuedPlanError || error instanceof LearningSessionError) {
+        throw new StarServiceError(
+          error.code === "INVALID_REQUEST" ? 400 : 409,
+          error.code
+        );
       }
+      throw error;
+    }
 
+    const counted = this.deps.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM idle_events
+      WHERE student_id = ? AND study_date = ?
+        AND outcome IN ('applied', 'no-balance')
+    `).get(studentId, input.studyDate) as { count: number };
+    const createdAt = receivedAt.toISOString();
+    let outcome: IdleEventResult["outcome"];
+    let starEventId: string | null;
+    if (counted.count >= 2) {
+      outcome = "capped";
+      starEventId = null;
+    } else {
       const applied = this.stars.apply({
         studentId,
         delta: -1,
@@ -135,24 +197,35 @@ export class StarService {
         sourceKey: `idle:${studentId}:${input.clientIdleEventId}`,
         createdAt
       });
-      const outcome: IdleEventResult["outcome"] =
-        applied.event.reason === "NO_BALANCE_AUDIT"
+      outcome = applied.event.reason === "NO_BALANCE_AUDIT"
         ? "no-balance"
         : "applied";
-      this.insertIdleEvent(
-        studentId,
-        input,
-        outcome,
-        applied.event.id,
-        createdAt
-      );
-      return {
-        id: input.clientIdleEventId,
-        outcome,
-        starEventId: applied.event.id,
-        duplicate: false
-      };
-    }).immediate();
+      starEventId = applied.event.id;
+    }
+    this.insertIdleEvent(
+      studentId,
+      input,
+      outcome,
+      starEventId,
+      createdAt
+    );
+    if (options.advanceCursor !== false) {
+      const updated = this.deps.db.prepare(`
+        UPDATE student_activity_cursors
+        SET current_cursor = current_cursor + 1, updated_at = ?
+        WHERE student_id = ?
+      `).run(createdAt, studentId);
+      if (updated.changes !== 1) {
+        throw new Error("STUDENT_ACTIVITY_CURSOR_MISSING");
+      }
+    }
+    return {
+      id: input.clientIdleEventId,
+      outcome,
+      starEventId,
+      duplicate: false,
+      activityCursor: this.getActivityCursor(studentId)
+    };
   }
 
   listAdjustments(limit: number): PendingStarAdjustment[] {
@@ -475,5 +548,17 @@ export class StarService {
       starEventId,
       createdAt
     );
+  }
+
+  private getActivityCursor(studentId: string): number {
+    const row = this.deps.db.prepare(`
+      SELECT current_cursor AS currentCursor
+      FROM student_activity_cursors
+      WHERE student_id = ?
+    `).get(studentId) as { currentCursor: number } | undefined;
+    if (row === undefined) {
+      throw new Error("STUDENT_ACTIVITY_CURSOR_MISSING");
+    }
+    return row.currentCursor;
   }
 }

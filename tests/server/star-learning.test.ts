@@ -46,6 +46,65 @@ async function getToday(student: TestClient): Promise<TodayPlan> {
   return response.json() as TodayPlan;
 }
 
+async function loginStudentOnNewDevice(
+  student: TestClient,
+  name: string
+): Promise<void> {
+  expect((await student.request("POST", "/api/auth/guardian/login", {
+    password: FAMILY.password
+  })).statusCode).toBe(204);
+  expect((await student.request("POST", "/api/guardian/devices/current", {
+    name
+  })).statusCode).toBe(201);
+  expect((await student.request("POST", "/api/auth/logout")).statusCode)
+    .toBe(204);
+  expect((await student.request("POST", "/api/auth/student/login", {
+    pin: "2580"
+  })).statusCode).toBe(200);
+}
+
+async function issueLearningSession(
+  student: TestClient,
+  plan: TodayPlan,
+  item: TodayPlan["items"][number]
+) {
+  const response = await student.request(
+    "POST",
+    "/api/student/learning-sessions",
+    {
+      planId: plan.planId,
+      itemId: item.id,
+      contentVersion: item.version
+    }
+  );
+  expect(response.statusCode).toBe(201);
+  return response.json() as {
+    learningSessionId: string;
+    activeUntil: string;
+    submitUntil: string;
+  };
+}
+
+function boundIdleEvent(
+  plan: TodayPlan,
+  item: TodayPlan["items"][number],
+  learningSessionId: string,
+  clientIdleEventId: string,
+  overrides: Record<string, unknown> = {}
+) {
+  return {
+    clientIdleEventId,
+    learningSessionId,
+    planId: plan.planId,
+    itemId: item.id,
+    contentVersion: item.version,
+    studyDate: plan.date,
+    idleStartedAt: "2026-07-15T03:00:00.000Z",
+    occurredAt: "2026-07-15T03:05:00.000Z",
+    ...overrides
+  };
+}
+
 function expectedRequiredIds(studyDate: string): string[] {
   const counts = { korean: 0, math: 0 };
   return getDailyItems(INITIAL_ITEMS, studyDate)
@@ -395,6 +454,266 @@ describe("issued-plan required learning star awards", () => {
       balance: 6,
       eventId: first.json().starAward.eventId
     });
+  });
+
+  it("deducts only for a bound issued session and advances the activity cursor only for a new exact idle event", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    const plan = await getToday(student);
+    const item = plan.items[0]!;
+    const session = await issueLearningSession(student, plan, item);
+    new StarRepository(harness.db).apply({
+      studentId: studentId(harness),
+      delta: 3,
+      reason: "GUARDIAN_BONUS",
+      reasonText: "시작 별",
+      studyDate: plan.date,
+      actorType: "guardian",
+      sourceKey: "guardian:bound-idle-start",
+      createdAt: "2026-07-15T02:59:00.000Z"
+    });
+    harness.advanceTime(5 * 60 * 1_000);
+    const input = boundIdleEvent(
+      plan,
+      item,
+      session.learningSessionId,
+      "idle-bound-exact-0001"
+    );
+
+    const first = await student.request(
+      "POST",
+      "/api/student/idle-events",
+      input
+    );
+    expect(first.statusCode).toBe(201);
+    expect(first.json()).toMatchObject({
+      id: input.clientIdleEventId,
+      outcome: "applied",
+      duplicate: false,
+      activityCursor: 1,
+      starEventId: expect.any(String)
+    });
+
+    const attempt = await student.request(
+      "POST",
+      "/api/student/attempts",
+      passingAttempt(plan, item, "attempt-after-idle-0001")
+    );
+    expect(attempt.statusCode).toBe(201);
+    expect(attempt.json().activityCursor).toBe(2);
+
+    const duplicate = await student.request(
+      "POST",
+      "/api/student/idle-events",
+      input
+    );
+    expect(duplicate.statusCode).toBe(200);
+    expect(duplicate.json()).toEqual({
+      ...first.json(),
+      duplicate: true,
+      activityCursor: 2
+    });
+    const changedDuplicate = await student.request(
+      "POST",
+      "/api/student/idle-events",
+      { ...input, occurredAt: "2026-07-15T03:05:01.000Z" }
+    );
+    expect(changedDuplicate.statusCode).toBe(400);
+    expect(changedDuplicate.json()).toEqual({ code: "INVALID_REQUEST" });
+    expect(harness.db.prepare(`
+      SELECT current_cursor AS currentCursor FROM student_activity_cursors
+    `).get()).toEqual({ currentCursor: 2 });
+
+    harness.db.prepare(`
+      UPDATE issued_learning_sessions SET revoked_at = ? WHERE id = ?
+    `).run("2026-07-15T03:06:00.000Z", session.learningSessionId);
+    const revokedDuplicate = await student.request(
+      "POST",
+      "/api/student/idle-events",
+      input
+    );
+    expect(revokedDuplicate.statusCode).toBe(409);
+    expect(revokedDuplicate.json()).toEqual({
+      code: "LEARNING_SESSION_INVALID"
+    });
+    expect(harness.db.prepare(`
+      SELECT current_cursor AS currentCursor FROM student_activity_cursors
+    `).get()).toEqual({ currentCursor: 2 });
+  });
+
+  it("accepts a disconnected online-issued idle event received later but within the plan deadline", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    const plan = await getToday(student);
+    const item = plan.items[0]!;
+    const session = await issueLearningSession(student, plan, item);
+    harness.advanceTime(24 * 60 * 60 * 1_000);
+
+    const response = await student.request(
+      "POST",
+      "/api/student/idle-events",
+      boundIdleEvent(
+        plan,
+        item,
+        session.learningSessionId,
+        "idle-disconnected-valid-0001"
+      )
+    );
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      outcome: "no-balance",
+      duplicate: false,
+      activityCursor: 1
+    });
+  });
+
+  it("rejects unknown, revoked, foreign, mismatched, pre-issue, over-six-hour, short, and post-deadline idle authority without mutation", async () => {
+    const firstDevice = harness.client();
+    await authenticateStudent(harness, firstDevice);
+    const firstPlan = await getToday(firstDevice);
+    const firstItem = firstPlan.items[0]!;
+    const otherItem = firstPlan.items[1]!;
+    const session = await issueLearningSession(firstDevice, firstPlan, firstItem);
+    const secondDevice = harness.client();
+    await loginStudentOnNewDevice(secondDevice, "수아 두 번째 태블릿");
+    const secondPlan = await getToday(secondDevice);
+    const before = harness.db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM idle_events) AS idleEvents,
+        (SELECT COUNT(*) FROM star_events) AS starEvents,
+        (SELECT current_cursor FROM student_activity_cursors) AS activityCursor
+    `).get();
+
+    const cases = [
+      [firstDevice, boundIdleEvent(firstPlan, firstItem, "unknown-session-0001", "idle-unknown-0001"), "LEARNING_SESSION_INVALID"],
+      [secondDevice, boundIdleEvent(firstPlan, firstItem, session.learningSessionId, "idle-wrong-device-0001"), "LEARNING_SESSION_INVALID"],
+      [firstDevice, boundIdleEvent(firstPlan, firstItem, session.learningSessionId, "idle-wrong-plan-0001", { planId: secondPlan.planId }), "LEARNING_SESSION_INVALID"],
+      [firstDevice, boundIdleEvent(firstPlan, firstItem, session.learningSessionId, "idle-wrong-item-0001", { itemId: otherItem.id }), "LEARNING_SESSION_INVALID"],
+      [firstDevice, boundIdleEvent(firstPlan, firstItem, session.learningSessionId, "idle-wrong-version-0001", { contentVersion: firstItem.version + 1 }), "LEARNING_SESSION_INVALID"],
+      [firstDevice, boundIdleEvent(firstPlan, firstItem, session.learningSessionId, "idle-wrong-date-0001", { studyDate: "2026-07-14" }), "LEARNING_SESSION_INVALID"],
+      [firstDevice, boundIdleEvent(firstPlan, firstItem, session.learningSessionId, "idle-before-issue-0001", {
+        idleStartedAt: "2026-07-15T02:59:00.000Z",
+        occurredAt: "2026-07-15T03:04:00.000Z"
+      }), "LEARNING_SESSION_INVALID"],
+      [firstDevice, boundIdleEvent(firstPlan, firstItem, session.learningSessionId, "idle-over-six-hours-0001", {
+        occurredAt: "2026-07-15T09:00:00.001Z"
+      }), "LEARNING_SESSION_EXPIRED"],
+      [firstDevice, boundIdleEvent(firstPlan, firstItem, session.learningSessionId, "idle-too-short-0001", {
+        idleStartedAt: "2026-07-15T03:00:00.001Z"
+      }), "INVALID_REQUEST"]
+    ] as const;
+    for (const [client, input, code] of cases) {
+      const response = await client.request(
+        "POST",
+        "/api/student/idle-events",
+        input
+      );
+      expect(response.statusCode).toBe(code === "INVALID_REQUEST" ? 400 : 409);
+      expect(response.json()).toEqual({ code });
+      expect(harness.db.prepare(`
+        SELECT
+          (SELECT COUNT(*) FROM idle_events) AS idleEvents,
+          (SELECT COUNT(*) FROM star_events) AS starEvents,
+          (SELECT current_cursor FROM student_activity_cursors) AS activityCursor
+      `).get()).toEqual(before);
+    }
+
+    const guardianId = (harness.db.prepare(`
+      SELECT id FROM users WHERE role = 'guardian'
+    `).get() as { id: string }).id;
+    harness.db.prepare(`
+      UPDATE issued_learning_sessions SET student_id = ? WHERE id = ?
+    `).run(guardianId, session.learningSessionId);
+    const wrongStudent = await firstDevice.request(
+      "POST",
+      "/api/student/idle-events",
+      boundIdleEvent(
+        firstPlan,
+        firstItem,
+        session.learningSessionId,
+        "idle-wrong-student-0001"
+      )
+    );
+    expect(wrongStudent.statusCode).toBe(409);
+    expect(wrongStudent.json()).toEqual({ code: "LEARNING_SESSION_INVALID" });
+    harness.db.prepare(`
+      UPDATE issued_learning_sessions SET student_id = ? WHERE id = ?
+    `).run(studentId(harness), session.learningSessionId);
+
+    harness.db.prepare(`
+      UPDATE issued_learning_sessions SET revoked_at = ? WHERE id = ?
+    `).run("2026-07-15T03:01:00.000Z", session.learningSessionId);
+    const revoked = await firstDevice.request(
+      "POST",
+      "/api/student/idle-events",
+      boundIdleEvent(
+        firstPlan,
+        firstItem,
+        session.learningSessionId,
+        "idle-revoked-session-0001"
+      )
+    );
+    expect(revoked.statusCode).toBe(409);
+    expect(revoked.json()).toEqual({ code: "LEARNING_SESSION_INVALID" });
+
+    harness.db.prepare(`
+      UPDATE issued_learning_sessions SET revoked_at = NULL WHERE id = ?
+    `).run(session.learningSessionId);
+    harness.advanceTime(36 * 60 * 60 * 1_000 + 1);
+    const expiredPlan = await firstDevice.request(
+      "POST",
+      "/api/student/idle-events",
+      boundIdleEvent(
+        firstPlan,
+        firstItem,
+        session.learningSessionId,
+        "idle-submit-expired-0001"
+      )
+    );
+    expect(expiredPlan.statusCode).toBe(409);
+    expect(expiredPlan.json()).toEqual({ code: "PLAN_SUBMISSION_EXPIRED" });
+    expect(harness.db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM idle_events) AS idleEvents,
+        (SELECT COUNT(*) FROM star_events) AS starEvents,
+        (SELECT current_cursor FROM student_activity_cursors) AS activityCursor
+    `).get()).toEqual(before);
+  });
+
+  it("rolls back the idle star event and cursor when idle persistence fails", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    const plan = await getToday(student);
+    const item = plan.items[0]!;
+    const session = await issueLearningSession(student, plan, item);
+    harness.advanceTime(5 * 60 * 1_000);
+    harness.db.exec(`
+      CREATE TRIGGER fail_bound_idle_insert
+      BEFORE INSERT ON idle_events
+      BEGIN
+        SELECT RAISE(ABORT, 'FORCED_IDLE_FAILURE');
+      END;
+    `);
+
+    const failed = await student.request(
+      "POST",
+      "/api/student/idle-events",
+      boundIdleEvent(
+        plan,
+        item,
+        session.learningSessionId,
+        "idle-atomic-failure-0001"
+      )
+    );
+
+    expect(failed.statusCode).toBe(500);
+    expect(harness.db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM idle_events) AS idleEvents,
+        (SELECT COUNT(*) FROM star_events) AS starEvents,
+        (SELECT current_cursor FROM student_activity_cursors) AS activityCursor
+    `).get()).toEqual({ idleEvents: 0, starEvents: 0, activityCursor: 0 });
   });
 });
 

@@ -86,6 +86,37 @@ describe("ApiClient", () => {
     );
   });
 
+  it("creates a server learning session with the exact issued plan item authority", async () => {
+    const receipt = {
+      learningSessionId: "server-learning-session-0001",
+      activeUntil: "2026-07-16T07:00:00.000Z",
+      submitUntil: "2026-07-17T14:59:59.999Z"
+    };
+    const fetcher = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify(receipt),
+      { status: 201, headers: { "content-type": "application/json" } }
+    ));
+    const api = new ApiClient(fetcher);
+
+    await expect(api.createLearningSession({
+      planId: "plan-daily-1",
+      itemId: "ko-01",
+      contentVersion: 2
+    })).resolves.toEqual(receipt);
+
+    expect(fetcher).toHaveBeenCalledWith(
+      "/api/student/learning-sessions",
+      expect.objectContaining({
+        method: "POST",
+        body: JSON.stringify({
+          planId: "plan-daily-1",
+          itemId: "ko-01",
+          contentVersion: 2
+        })
+      })
+    );
+  });
+
   it("sends guardian ledger filters with the hard 100-row page limit", async () => {
     const ledger = {
       summary: {
@@ -250,5 +281,43 @@ describe("ApiClient", () => {
       code: "DEVICE_REVOKED"
     });
     expect(onAuthorityFailure).toHaveBeenCalledWith("DEVICE_REVOKED");
+  });
+
+  it.each([
+    [401, "AUTH_REQUIRED"],
+    [403, "DEVICE_NOT_TRUSTED"],
+    [409, "PLAN_NOT_ISSUED"],
+    [400, "INVALID_REQUEST"]
+  ])("reports every explicit %s %s learning authority failure", async (status, code) => {
+    const onAuthorityFailure = vi.fn();
+    const api = new ApiClient(
+      vi.fn().mockResolvedValue(new Response(
+        JSON.stringify({ code }),
+        { status, headers: { "content-type": "application/json" } }
+      )),
+      { onAuthorityFailure }
+    );
+
+    await expect(api.createLearningSession({
+      planId: "plan-daily-1",
+      itemId: "ko-01",
+      contentVersion: 1
+    })).rejects.toEqual(new ApiError(status, code));
+    expect(onAuthorityFailure).toHaveBeenCalledWith(code);
+  });
+
+  it("does not invoke the authority callback for a network TypeError", async () => {
+    const onAuthorityFailure = vi.fn();
+    const api = new ApiClient(
+      vi.fn().mockRejectedValue(new TypeError("offline")),
+      { onAuthorityFailure }
+    );
+
+    await expect(api.createLearningSession({
+      planId: "plan-daily-1",
+      itemId: "ko-01",
+      contentVersion: 1
+    })).rejects.toBeInstanceOf(TypeError);
+    expect(onAuthorityFailure).not.toHaveBeenCalled();
   });
 });

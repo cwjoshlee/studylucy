@@ -43,6 +43,22 @@ export const AttemptInputSchema = z.object({
 
 export type AttemptInput = z.infer<typeof AttemptInputSchema>;
 
+export const LearningSessionRequestSchema = z.object({
+  planId: z.string().min(1),
+  itemId: z.string().min(1),
+  contentVersion: z.number().int().positive()
+});
+
+export type LearningSessionRequest = z.infer<
+  typeof LearningSessionRequestSchema
+>;
+
+export type LearningSessionReceipt = {
+  learningSessionId: string;
+  activeUntil: string;
+  submitUntil: string;
+};
+
 export type TodayPlan = {
   planId: string;
   planKind: "daily" | "recovery";

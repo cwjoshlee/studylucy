@@ -9,16 +9,14 @@ import type {
   AttemptInput,
   AttemptReceipt,
   LearningItemPayload,
+  LearningSessionReceipt,
   TodayPlan
 } from "../../shared/learning";
 import type { ReadingResult } from "../../shared/reading";
 import type { IdleEventInput, IdleEventResult } from "../../shared/stars";
 import type { ApiClient } from "../api/client";
 import { StarCelebration } from "../delight/star-celebration";
-import {
-  preserveFailedAttempt,
-  preserveFailedIdleEvent
-} from "../offline/sync";
+import { preserveFailedAttempt } from "../offline/sync";
 import {
   createInactivityController,
   type InactivityActivity,
@@ -32,7 +30,10 @@ import {
   type SpeechController
 } from "./speech-recognition";
 
-type LearningApi = Pick<ApiClient, "saveAttempt" | "sendIdleEvent">;
+type LearningApi = Pick<
+  ApiClient,
+  "createLearningSession" | "saveAttempt" | "sendIdleEvent"
+>;
 type PlanItem = TodayPlan["items"][number];
 
 export type LearningSessionProps = {
@@ -44,8 +45,15 @@ export type LearningSessionProps = {
   onNext?: () => void;
   onExit?: () => void;
   onActivityCursor?: (activityCursor: number) => void;
-  idFactory?: (prefix: "learning-session" | "attempt" | "idle-event") => string;
+  offlineEligibility?: "validated";
+  idFactory?: (prefix: "attempt" | "idle-event") => string;
 };
+
+type LearningAuthority =
+  | { phase: "issuing" }
+  | { phase: "online-issued"; receipt: LearningSessionReceipt }
+  | { phase: "offline-unissued" }
+  | { phase: "unavailable" };
 
 type IdleUi =
   | { phase: "hint" }
@@ -60,11 +68,20 @@ const IDLE_RESULT_TEXT: Record<IdleEventResult["outcome"], string> = {
   "no-balance": "5분 동안 학습 활동이 없었어요. 줄어들 별은 없고 기록만 남겼어요."
 };
 
+function isExplicitClientError(error: unknown): boolean {
+  return error !== null &&
+    typeof error === "object" &&
+    "status" in error &&
+    typeof error.status === "number" &&
+    error.status >= 400 &&
+    error.status < 500;
+}
+
 export function LearningSession(props: LearningSessionProps) {
   return (
     <LearningSessionView
       {...props}
-      key={`${props.item.id}:${props.item.version}`}
+      key={`${props.planId}:${props.item.id}:${props.item.version}`}
       item={props.item.payload}
       contentVersion={props.item.version}
       studyDate={props.studyDate}
@@ -82,13 +99,16 @@ function LearningSessionView({
   onNext,
   onExit,
   onActivityCursor,
+  offlineEligibility,
   idFactory = createClientId
 }: Omit<LearningSessionProps, "item"> & {
   item: LearningItemPayload;
   studyDate: string;
   contentVersion: number;
 }) {
-  const [learningSessionId] = useState(() => idFactory("learning-session"));
+  const [authority, setAuthority] = useState<LearningAuthority>({
+    phase: "issuing"
+  });
   const [viewStartedAt] = useState(() => Date.now());
   const [manualTranscript, setManualTranscript] = useState("");
   const [readingResult, setReadingResult] = useState<ReadingResult | null>(null);
@@ -103,7 +123,36 @@ function LearningSessionView({
   const [speechListening, setSpeechListening] = useState(false);
   const controllerRef = useRef<InactivityController | null>(null);
   const speechRef = useRef<SpeechController | null>(null);
-  const learningControlsPaused = waiting || idleUi?.phase === "paused";
+  const volatileIdleRef = useRef<IdleEventInput | null>(null);
+  const learningControlsPaused =
+    authority.phase === "unavailable" ||
+    waiting ||
+    idleUi?.phase === "paused";
+
+  useEffect(() => {
+    let active = true;
+    void api.createLearningSession({
+      planId,
+      itemId: item.id,
+      contentVersion
+    }).then(
+      (receipt) => {
+        if (active) setAuthority({ phase: "online-issued", receipt });
+      },
+      (error: unknown) => {
+        if (!active) return;
+        if (error instanceof TypeError && offlineEligibility === "validated") {
+          setAuthority({ phase: "offline-unissued" });
+          return;
+        }
+        setAuthority({ phase: "unavailable" });
+        onExit?.();
+      }
+    );
+    return () => {
+      active = false;
+    };
+  }, [api, contentVersion, item.id, offlineEligibility, onExit, planId]);
 
   const recordActivity = useCallback((activity: InactivityActivity) => {
     controllerRef.current?.recordActivity(activity);
@@ -112,34 +161,58 @@ function LearningSessionView({
   const handleIdleDeduction = useCallback(async (
     event: Extract<InactivityEvent, { type: "deduct" }>
   ) => {
+    if (authority.phase === "offline-unissued") {
+      setIdleUi({
+        phase: "paused",
+        message: "오프라인에서는 별을 차감하지 않아요"
+      });
+      return;
+    }
+    if (authority.phase !== "online-issued") return;
     controllerRef.current?.pause("server-wait");
     setWaiting(true);
     setIdleUi({ phase: "waiting" });
     const clientIdleEventId = idFactory("idle-event");
     const input: IdleEventInput = {
       clientIdleEventId,
-      learningSessionId,
+      learningSessionId: authority.receipt.learningSessionId,
+      planId,
       itemId: item.id,
+      contentVersion,
       studyDate,
       idleStartedAt: event.idleStartedAt,
       occurredAt: event.occurredAt
     };
     try {
       const result = await api.sendIdleEvent(input);
+      volatileIdleRef.current = null;
+      onActivityCursor?.(result.activityCursor);
       setIdleUi({ phase: "paused", message: IDLE_RESULT_TEXT[result.outcome] });
     } catch (error) {
-      const queued = await preserveFailedIdleEvent(error, input).catch(() => false);
+      if (isExplicitClientError(error)) {
+        onExit?.();
+        return;
+      }
+      volatileIdleRef.current = input;
       setIdleUi({
         phase: "paused",
-        message: queued
-          ? "쉬는 기록을 동기화 대기 중이에요. 준비되면 다시 시작해 주세요."
-          : "쉬는 기록을 보내지 못했어요. 준비되면 다시 시작해 주세요."
+        message: "쉬는 기록을 보내지 못했어요. 준비되면 다시 시작해 주세요."
       });
     } finally {
       setWaiting(false);
       controllerRef.current?.resume("server-wait");
     }
-  }, [api, idFactory, item.id, learningSessionId, studyDate]);
+  }, [
+    api,
+    authority,
+    contentVersion,
+    idFactory,
+    item.id,
+    onActivityCursor,
+    onExit,
+    planId,
+    studyDate
+  ]);
 
   const handleInactivityEvent = useCallback((event: InactivityEvent) => {
     if (event.type === "hint") {
@@ -160,6 +233,10 @@ function LearningSessionView({
   }, [handleIdleDeduction]);
 
   useEffect(() => {
+    if (
+      authority.phase !== "online-issued" &&
+      authority.phase !== "offline-unissued"
+    ) return;
     const controller = createInactivityController({ onEvent: handleInactivityEvent });
     controllerRef.current = controller;
     controller.start();
@@ -180,7 +257,7 @@ function LearningSessionView({
       controller.stop();
       controllerRef.current = null;
     };
-  }, [handleInactivityEvent]);
+  }, [authority.phase, handleInactivityEvent]);
 
   const buildAttempt = useCallback((
     result: ReadingResult,
@@ -212,6 +289,10 @@ function LearningSessionView({
         setMathFeedback("서버 확인에서 읽기를 다시 해야 해요.");
       }
     } catch (error) {
+      if (isExplicitClientError(error)) {
+        onExit?.();
+        return;
+      }
       const queued = await preserveFailedAttempt(error, input).catch(() => false);
       setNextUnlocked(false);
       setMathFeedback(queued
@@ -221,7 +302,7 @@ function LearningSessionView({
       setWaiting(false);
       controllerRef.current?.resume("server-wait");
     }
-  }, [api, buildAttempt, onActivityCursor]);
+  }, [api, buildAttempt, onActivityCursor, onExit]);
 
   const judgeTranscript = useCallback((transcript: string) => {
     if (learningControlsPaused) return;
@@ -273,6 +354,10 @@ function LearningSessionView({
       setNextUnlocked(receipt.completed && passed);
       setMathFeedback(passed ? "정답이에요." : "답을 다시 생각해 봐요.");
     } catch (error) {
+      if (isExplicitClientError(error)) {
+        onExit?.();
+        return;
+      }
       const queued = await preserveFailedAttempt(error, input).catch(() => false);
       setNextUnlocked(false);
       setMathFeedback(queued

@@ -85,6 +85,18 @@ async function getToday(student: TestClient): Promise<TodayPlan> {
   return response.json() as TodayPlan;
 }
 
+async function createLearningSession(
+  student: TestClient,
+  plan: TodayPlan,
+  item: TodayPlan["items"][number]
+) {
+  return student.request("POST", "/api/student/learning-sessions", {
+    planId: plan.planId,
+    itemId: item.id,
+    contentVersion: item.version
+  });
+}
+
 describe("authoritative learning API", () => {
   let harness: Harness;
 
@@ -194,6 +206,129 @@ describe("authoritative learning API", () => {
       .toEqual({ count: 0 });
     expect(harness.db.prepare("SELECT COUNT(*) AS count FROM star_events").get())
       .toEqual({ count: 0 });
+  });
+
+  it("issues opaque learning sessions bound to the authenticated student, device, plan, item, and version", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    const plan = await getToday(student);
+    const item = plan.items[0]!;
+
+    const first = await createLearningSession(student, plan, item);
+    const second = await createLearningSession(student, plan, item);
+
+    expect(first.statusCode).toBe(201);
+    expect(first.json()).toEqual({
+      learningSessionId: expect.stringMatching(
+        /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+      ),
+      activeUntil: "2026-07-15T09:00:00.000Z",
+      submitUntil: plan.submitUntil
+    });
+    expect(second.statusCode).toBe(201);
+    expect(second.json().learningSessionId)
+      .not.toBe(first.json().learningSessionId);
+
+    const studentId = (harness.db.prepare(`
+      SELECT id FROM users WHERE role = 'student'
+    `).get() as { id: string }).id;
+    const trustedDeviceId = (harness.db.prepare(`
+      SELECT trusted_device_id AS trustedDeviceId
+      FROM issued_daily_plans WHERE id = ?
+    `).get(plan.planId) as { trustedDeviceId: string }).trustedDeviceId;
+    expect(harness.db.prepare(`
+      SELECT id, plan_id AS planId, student_id AS studentId,
+             trusted_device_id AS trustedDeviceId, item_id AS itemId,
+             content_version AS contentVersion, study_date AS studyDate,
+             issued_at AS issuedAt, active_until AS activeUntil,
+             submit_until AS submitUntil, revoked_at AS revokedAt
+      FROM issued_learning_sessions
+      ORDER BY issued_at, id
+    `).all()).toEqual([
+      first.json().learningSessionId,
+      second.json().learningSessionId
+    ].sort().map((id) => ({
+      id,
+      planId: plan.planId,
+      studentId,
+      trustedDeviceId,
+      itemId: item.id,
+      contentVersion: item.version,
+      studyDate: plan.date,
+      issuedAt: "2026-07-15T03:00:00.000Z",
+      activeUntil: "2026-07-15T09:00:00.000Z",
+      submitUntil: plan.submitUntil,
+      revokedAt: null
+    })));
+  });
+
+  it("caps a late-issued learning session at the issued plan submit deadline", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    const plan = await getToday(student);
+    harness.advanceTime(35 * 60 * 60 * 1_000 + 55 * 60 * 1_000);
+
+    const response = await createLearningSession(student, plan, plan.items[0]!);
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      activeUntil: plan.submitUntil,
+      submitUntil: plan.submitUntil
+    });
+  });
+
+  it("rejects learning-session issuance for foreign devices, wrong items or versions, expired plans, and revoked authority", async () => {
+    const firstDevice = harness.client();
+    await authenticateStudent(harness, firstDevice);
+    const plan = await getToday(firstDevice);
+    const item = plan.items[0]!;
+    const secondDevice = harness.client();
+    await loginStudentOnNewDevice(secondDevice, "수아 두 번째 태블릿");
+
+    const cases = [
+      [
+        secondDevice,
+        { planId: plan.planId, itemId: item.id, contentVersion: item.version },
+        "PLAN_NOT_ISSUED"
+      ],
+      [
+        firstDevice,
+        { planId: plan.planId, itemId: "missing-item", contentVersion: 1 },
+        "PLAN_NOT_ISSUED"
+      ],
+      [
+        firstDevice,
+        { planId: plan.planId, itemId: item.id, contentVersion: item.version + 1 },
+        "CONTENT_VERSION_CONFLICT"
+      ]
+    ] as const;
+    for (const [client, body, code] of cases) {
+      const response = await client.request(
+        "POST",
+        "/api/student/learning-sessions",
+        body
+      );
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ code });
+    }
+
+    harness.advanceTime(36 * 60 * 60 * 1_000 + 1);
+    const expired = await createLearningSession(firstDevice, plan, item);
+    expect(expired.statusCode).toBe(409);
+    expect(expired.json()).toEqual({ code: "PLAN_SUBMISSION_EXPIRED" });
+
+    harness.db.prepare(`
+      UPDATE trusted_devices SET revoked_at = ?
+      WHERE id = (
+        SELECT trusted_device_id FROM issued_daily_plans WHERE id = ?
+      )
+    `).run("2026-07-16T15:00:00.002Z", plan.planId);
+    const revoked = await createLearningSession(firstDevice, plan, item);
+    expect(revoked.statusCode).toBe(403);
+    expect(revoked.json()).toEqual({ code: "DEVICE_REVOKED" });
+    expect(harness.db.prepare(`
+      SELECT COUNT(*) AS count FROM issued_learning_sessions
+    `).get()).toEqual({ count: 0 });
   });
 
   it("rejects foreign device, item, version, study-day, and occurrence authority without mutation", async () => {

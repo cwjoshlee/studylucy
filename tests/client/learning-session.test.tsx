@@ -97,15 +97,28 @@ function idleResult(outcome: IdleEventResult["outcome"]): IdleEventResult {
     id: `idle-${outcome}-0001`,
     outcome,
     starEventId: outcome === "applied" ? "star-idle-1" : null,
-    duplicate: false
+    duplicate: false,
+    activityCursor: 2
   };
 }
 
 function createLearningApi() {
   return {
+    createLearningSession: vi.fn().mockResolvedValue({
+      learningSessionId: "server-issued-learning-session-0001",
+      activeUntil: "2026-07-16T07:00:00.000Z",
+      submitUntil: "2026-07-17T14:59:59.999Z"
+    }),
     saveAttempt: vi.fn().mockResolvedValue(receipt()),
     sendIdleEvent: vi.fn().mockResolvedValue(idleResult("applied"))
   };
+}
+
+async function flushLearningSessionIssue(): Promise<void> {
+  await act(async () => {
+    await Promise.resolve();
+    await Promise.resolve();
+  });
 }
 
 function supportSpeechRecognition(): void {
@@ -148,6 +161,140 @@ describe("LearningSession", () => {
   it("requires an issued plan item as the final session item contract", () => {
     expectTypeOf<LearningSessionProps["item"]>()
       .toEqualTypeOf<TodayPlan["items"][number]>();
+  });
+
+  it("requests a server-issued learning session for the exact plan item and keeps its ID out of the client ID factory", async () => {
+    const api = createLearningApi();
+    const idFactory = vi.fn(offlineId);
+    render(<LearningSession
+      item={{ ...readingPlanItem, version: 2 }}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      idFactory={idFactory}
+    />);
+
+    await waitFor(() => {
+      expect(api.createLearningSession).toHaveBeenCalledWith({
+        planId: "plan-daily-1",
+        itemId: "ko-01",
+        contentVersion: 2
+      });
+    });
+    expect(idFactory).not.toHaveBeenCalled();
+    await expect(listQueuedIdleEvents()).resolves.toEqual([]);
+  });
+
+  it("discards the old issued authority when the plan changes for the same item", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    vi.setSystemTime(new Date("2026-07-16T01:00:00.000Z"));
+    const api = createLearningApi();
+    api.createLearningSession.mockImplementation(async (input) => {
+      if (input.planId === "plan-daily-1") {
+        return {
+          learningSessionId: "server-issued-learning-session-old",
+          activeUntil: "2026-07-16T07:00:00.000Z",
+          submitUntil: "2026-07-17T14:59:59.999Z"
+        };
+      }
+      return await new Promise(() => {});
+    });
+    const view = render(<LearningSession
+      item={readingPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      idFactory={offlineId}
+    />);
+    await flushLearningSessionIssue();
+
+    view.rerender(<LearningSession
+      item={readingPlanItem}
+      api={api}
+      planId="plan-daily-2"
+      studyDate="2026-07-16"
+      idFactory={offlineId}
+    />);
+    await act(async () => {
+      vi.advanceTimersByTime(300_000);
+      await Promise.resolve();
+    });
+
+    expect(api.createLearningSession).toHaveBeenLastCalledWith({
+      planId: "plan-daily-2",
+      itemId: "ko-01",
+      contentVersion: 1
+    });
+    expect(api.sendIdleEvent).not.toHaveBeenCalled();
+  });
+
+  it("enters offline-unissued only after a caller-validated network boundary and never creates or queues an idle ID", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    vi.setSystemTime(new Date("2026-07-16T01:00:00.000Z"));
+    const api = createLearningApi();
+    api.createLearningSession.mockRejectedValue(new TypeError("offline"));
+    const idFactory = vi.fn(offlineId);
+    render(<LearningSession
+      item={readingPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      offlineEligibility="validated"
+      idFactory={idFactory}
+    />);
+    await flushLearningSessionIssue();
+
+    await act(async () => {
+      vi.advanceTimersByTime(300_000);
+      await Promise.resolve();
+    });
+
+    expect(api.sendIdleEvent).not.toHaveBeenCalled();
+    expect(idFactory).not.toHaveBeenCalledWith("idle-event");
+    await expect(listQueuedIdleEvents()).resolves.toEqual([]);
+    expect(screen.getByText("오프라인에서는 별을 차감하지 않아요")).toBeVisible();
+    expect(screen.getByRole("button", { name: "학습 계속하기" })).toBeVisible();
+  });
+
+  it("exits instead of entering offline-unissued when the caller did not validate offline eligibility", async () => {
+    const api = createLearningApi();
+    api.createLearningSession.mockRejectedValue(new TypeError("offline"));
+    const onExit = vi.fn();
+    render(<LearningSession
+      item={readingPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      onExit={onExit}
+    />);
+
+    await waitFor(() => expect(onExit).toHaveBeenCalledOnce());
+    expect(api.sendIdleEvent).not.toHaveBeenCalled();
+    await expect(listQueuedIdleEvents()).resolves.toEqual([]);
+  });
+
+  it.each([
+    [401, "AUTH_REQUIRED"],
+    [403, "DEVICE_REVOKED"],
+    [403, "DEVICE_NOT_TRUSTED"],
+    [409, "PLAN_NOT_ISSUED"],
+    [400, "INVALID_REQUEST"]
+  ])("exits learning on an explicit %s %s session-authority failure", async (status, code) => {
+    const api = createLearningApi();
+    api.createLearningSession.mockRejectedValue(new ApiError(status, code));
+    const onExit = vi.fn();
+    render(<LearningSession
+      item={readingPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      offlineEligibility="validated"
+      onExit={onExit}
+    />);
+
+    await waitFor(() => expect(onExit).toHaveBeenCalledOnce());
+    expect(api.sendIdleEvent).not.toHaveBeenCalled();
+    await expect(listQueuedIdleEvents()).resolves.toEqual([]);
   });
 
   it("submits the issued content version without fabricating a fallback", async () => {
@@ -244,8 +391,7 @@ describe("LearningSession", () => {
 
   it.each([
     ["network", new TypeError("offline")],
-    ["server", new ApiError(503, "SERVICE_UNAVAILABLE")],
-    ["expired session", new ApiError(401, "AUTH_REQUIRED")]
+    ["server", new ApiError(503, "SERVICE_UNAVAILABLE")]
   ])("queues a passing reading submission after a recoverable %s failure", async (_label, failure) => {
     const api = createLearningApi();
     const onExit = vi.fn();
@@ -281,14 +427,45 @@ describe("LearningSession", () => {
     await expect(listQueuedAttempts()).resolves.toHaveLength(1);
   });
 
-  it("does not queue a rejected invalid attempt", async () => {
+  it.each([
+    [401, "AUTH_REQUIRED"],
+    [403, "DEVICE_REVOKED"],
+    [403, "DEVICE_NOT_TRUSTED"],
+    [409, "PLAN_NOT_ISSUED"],
+    [400, "INVALID_REQUEST"]
+  ])("exits and does not queue an attempt after an explicit %s %s authority failure", async (status, code) => {
     const api = createLearningApi();
-    api.saveAttempt.mockRejectedValue(new ApiError(400, "INVALID_ATTEMPT"));
-    render(<LearningSession item={readingPlanItem} api={api} planId="plan-daily-1" studyDate="2026-07-16" />);
+    api.saveAttempt.mockRejectedValue(new ApiError(status, code));
+    const onExit = vi.fn();
+    render(<LearningSession
+      item={readingPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      onExit={onExit}
+    />);
 
     await submitManualTranscript(readingItem.text);
 
-    await screen.findByText("학습 기록을 저장하지 못했어요. 다시 시도해 주세요.");
+    await waitFor(() => expect(onExit).toHaveBeenCalledOnce());
+    await expect(listQueuedAttempts()).resolves.toEqual([]);
+  });
+
+  it("does not queue a rejected invalid attempt", async () => {
+    const api = createLearningApi();
+    const onExit = vi.fn();
+    api.saveAttempt.mockRejectedValue(new ApiError(400, "INVALID_ATTEMPT"));
+    render(<LearningSession
+      item={readingPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      onExit={onExit}
+    />);
+
+    await submitManualTranscript(readingItem.text);
+
+    await waitFor(() => expect(onExit).toHaveBeenCalledOnce());
     await expect(listQueuedAttempts()).resolves.toEqual([]);
   });
 
@@ -322,7 +499,7 @@ describe("LearningSession", () => {
     expect(screen.getByRole("button", { name: "다음 문제" })).toBeDisabled();
   });
 
-  it("queues an idle event after a network failure and keeps learning paused", async () => {
+  it("keeps a failed online-issued idle volatile and never writes its learning session ID to IndexedDB", async () => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     vi.setSystemTime(new Date("2026-07-16T01:00:00.000Z"));
     const api = createLearningApi();
@@ -334,30 +511,49 @@ describe("LearningSession", () => {
       studyDate="2026-07-16"
       idFactory={offlineId}
     />);
+    await flushLearningSessionIssue();
 
     await act(async () => {
       vi.advanceTimersByTime(300_000);
       await Promise.resolve();
     });
     vi.useRealTimers();
-    await waitFor(async () => {
-      expect(await listQueuedIdleEvents()).toHaveLength(1);
-    });
-    expect(await listQueuedIdleEvents()).toEqual([
-      expect.objectContaining({
-        clientIdleEventId: "idle-event-offline-0001",
-        learningSessionId: "learning-session-offline-0001",
-        itemId: "ko-01",
-        studyDate: "2026-07-16"
-      })
-    ]);
+    await expect(listQueuedIdleEvents()).resolves.toEqual([]);
+    expect(JSON.stringify(await listQueuedIdleEvents()))
+      .not.toContain("server-issued-learning-session-0001");
     expect(screen.getByRole("button", { name: "학습 계속하기" })).toBeVisible();
+  });
+
+  it("exits on an explicit idle 4xx without queuing or deducting locally", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    vi.setSystemTime(new Date("2026-07-16T01:00:00.000Z"));
+    const api = createLearningApi();
+    api.sendIdleEvent.mockRejectedValue(new ApiError(409, "PLAN_SUBMISSION_EXPIRED"));
+    const onExit = vi.fn();
+    render(<LearningSession
+      item={readingPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      onExit={onExit}
+    />);
+    await flushLearningSessionIssue();
+
+    await act(async () => {
+      vi.advanceTimersByTime(300_000);
+      await Promise.resolve();
+    });
+
+    expect(onExit).toHaveBeenCalledOnce();
+    await expect(listQueuedIdleEvents()).resolves.toEqual([]);
   });
 
   it("leaves no idle queue row after a direct success", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-16T01:00:00.000Z"));
-    render(<LearningSession item={readingPlanItem} api={createLearningApi()} planId="plan-daily-1" studyDate="2026-07-16" />);
+    const api = createLearningApi();
+    render(<LearningSession item={readingPlanItem} api={api} planId="plan-daily-1" studyDate="2026-07-16" />);
+    await flushLearningSessionIssue();
 
     await act(async () => {
       vi.advanceTimersByTime(300_000);
@@ -378,6 +574,7 @@ describe("LearningSession", () => {
     const api = createLearningApi();
     api.sendIdleEvent.mockResolvedValue(idleResult(outcome));
     render(<LearningSession item={readingPlanItem} api={api} planId="plan-daily-1" studyDate="2026-07-16" />);
+    await flushLearningSessionIssue();
 
     await act(async () => {
       vi.advanceTimersByTime(300_000);
@@ -387,6 +584,9 @@ describe("LearningSession", () => {
     expect(api.sendIdleEvent).toHaveBeenCalledOnce();
     expect(api.sendIdleEvent).toHaveBeenCalledWith(expect.objectContaining({
       itemId: "ko-01",
+      planId: "plan-daily-1",
+      contentVersion: 1,
+      learningSessionId: "server-issued-learning-session-0001",
       studyDate: "2026-07-16",
       idleStartedAt: "2026-07-16T01:00:00.000Z",
       occurredAt: "2026-07-16T01:05:00.000Z"
@@ -417,6 +617,7 @@ describe("LearningSession", () => {
     supportSpeechRecognition();
     const api = createLearningApi();
     render(<LearningSession item={mathPlanItem} api={api} planId="plan-daily-1" studyDate="2026-07-16" />);
+    await flushLearningSessionIssue();
 
     fireEvent.change(screen.getByLabelText("읽은 내용 직접 입력"), {
       target: { value: `${mathItem.text} ${mathItem.question}` }
@@ -464,6 +665,7 @@ describe("LearningSession", () => {
       }
     }));
     render(<LearningSession item={readingPlanItem} api={api} planId="plan-daily-1" studyDate="2026-07-16" />);
+    await flushLearningSessionIssue();
 
     fireEvent.change(screen.getByLabelText("읽은 내용 직접 입력"), {
       target: { value: readingItem.text }

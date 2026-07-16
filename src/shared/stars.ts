@@ -1,4 +1,5 @@
 import { z } from "zod";
+import { StudyDateSchema } from "./study-date";
 
 export const StarReasonSchema = z.enum([
   "REQUIRED_ITEM_COMPLETED",
@@ -42,10 +43,12 @@ export type AppliedStarResult = {
 export const IdleEventInputSchema = z.object({
   clientIdleEventId: z.string().min(12).max(80),
   learningSessionId: z.string().min(12).max(80),
+  planId: z.string().min(1),
   itemId: z.string().min(1),
-  studyDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
-  idleStartedAt: z.string().datetime(),
-  occurredAt: z.string().datetime()
+  contentVersion: z.number().int().positive(),
+  studyDate: StudyDateSchema,
+  idleStartedAt: z.string().datetime({ offset: true }),
+  occurredAt: z.string().datetime({ offset: true })
 });
 
 export type IdleEventInput = z.infer<typeof IdleEventInputSchema>;
@@ -55,6 +58,7 @@ export type IdleEventResult = {
   outcome: "applied" | "capped" | "no-balance";
   starEventId: string | null;
   duplicate: boolean;
+  activityCursor: number;
 };
 
 export const ManualStarInputSchema = z.object({

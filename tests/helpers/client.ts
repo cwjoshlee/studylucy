@@ -94,11 +94,17 @@ export function createFakeApi(overrides: Record<string, unknown> = {}) {
         eventId: "star-required-completion-1"
       }
     }),
+    createLearningSession: vi.fn().mockResolvedValue({
+      learningSessionId: "server-issued-learning-session-0001",
+      activeUntil: "2026-07-16T07:00:00.000Z",
+      submitUntil: "2026-07-17T14:59:59.999Z"
+    }),
     sendIdleEvent: vi.fn().mockResolvedValue({
       id: "idle-server-1",
       outcome: "applied",
       starEventId: "star-idle-1",
-      duplicate: false
+      duplicate: false,
+      activityCursor: 2
     }),
     getGuardianProgress: vi.fn().mockResolvedValue({
       completedItems: 4,

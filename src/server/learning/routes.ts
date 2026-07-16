@@ -1,7 +1,10 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 import { requireRole } from "../auth/routes";
-import { AttemptInputSchema } from "../../shared/learning";
+import {
+  AttemptInputSchema,
+  LearningSessionRequestSchema
+} from "../../shared/learning";
 import { StudyDateSchema } from "../../shared/study-date";
 import {
   LearningError,
@@ -55,6 +58,31 @@ export function registerLearningRoutes(
           request.currentTrustedDeviceId
         )
       );
+    }
+  );
+
+  app.post(
+    "/api/student/learning-sessions",
+    { preHandler: requireRole("student") },
+    async (request, reply) => {
+      const body = LearningSessionRequestSchema.safeParse(request.body);
+      if (!body.success) {
+        sendInvalidRequest(reply);
+        return;
+      }
+      if (request.currentTrustedDeviceId === null) {
+        await reply.code(403).send({ code: "DEVICE_NOT_TRUSTED" });
+        return;
+      }
+      try {
+        await reply.code(201).send(service.createLearningSession(
+          request.currentUser!.id,
+          request.currentTrustedDeviceId,
+          body.data
+        ));
+      } catch (error) {
+        await handleLearningError(error, reply);
+      }
     }
   );
 

@@ -16,9 +16,6 @@ import {
   type StarServiceDeps
 } from "./service";
 
-const ClientIdleEventIdSchema = IdleEventInputSchema.pick({
-  clientIdleEventId: true
-});
 const ClientCommandIdSchema = ManualStarInputSchema.pick({
   clientCommandId: true
 });
@@ -66,25 +63,19 @@ export function registerStarRoutes(
     "/api/student/idle-events",
     { preHandler: requireRole("student") },
     async (request, reply) => {
-      const clientId = ClientIdleEventIdSchema.safeParse(request.body);
-      if (clientId.success) {
-        const duplicate = service.findIdleResult(
-          request.currentUser!.id,
-          clientId.data.clientIdleEventId
-        );
-        if (duplicate !== null) {
-          await reply.code(200).send(duplicate);
-          return;
-        }
-      }
       const body = IdleEventInputSchema.safeParse(request.body);
       if (!body.success) {
         await reply.code(400).send({ code: "INVALID_REQUEST" });
         return;
       }
+      if (request.currentTrustedDeviceId === null) {
+        await reply.code(403).send({ code: "DEVICE_NOT_TRUSTED" });
+        return;
+      }
       try {
         const result = service.recordIdleEvent(
           request.currentUser!.id,
+          request.currentTrustedDeviceId,
           body.data
         );
         await reply.code(result.duplicate ? 200 : 201).send(result);

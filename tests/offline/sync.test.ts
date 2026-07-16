@@ -36,7 +36,9 @@ const attempt: AttemptInput = {
 const idleEvent: IdleEventInput = {
   clientIdleEventId: "client-idle-event-0001",
   learningSessionId: "learning-session-0001",
+  planId: "plan-daily-1",
   itemId: "korean-1",
+  contentVersion: 1,
   studyDate: "2026-07-16",
   idleStartedAt: "2026-07-16T01:00:00.000Z",
   occurredAt: "2026-07-16T01:05:00.000Z"
@@ -61,7 +63,8 @@ const idleResult: IdleEventResult = {
   id: "server-idle-1",
   outcome: "applied",
   starEventId: "star-event-2",
-  duplicate: true
+  duplicate: true,
+  activityCursor: 5
 };
 
 const confirmedStars: StudentStarSummary = {

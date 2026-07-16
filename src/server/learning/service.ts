@@ -4,6 +4,8 @@ import type {
   AttemptInput,
   AttemptReceipt,
   GuardianProgress,
+  LearningSessionReceipt,
+  LearningSessionRequest,
   TodayPlan
 } from "../../shared/learning";
 import { getStudentStarSummary } from "../stars/student-summary";
@@ -15,6 +17,10 @@ import {
   AttemptIdempotencyError,
   LearningRepository
 } from "./repository";
+import {
+  LearningSessionError,
+  LearningSessionRepository
+} from "./session-repository";
 
 export class LearningError extends Error {
   readonly statusCode: 400 | 409;
@@ -23,6 +29,8 @@ export class LearningError extends Error {
     | "PLAN_NOT_ISSUED"
     | "PLAN_SUBMISSION_EXPIRED"
     | "CONTENT_VERSION_CONFLICT"
+    | "LEARNING_SESSION_INVALID"
+    | "LEARNING_SESSION_EXPIRED"
     | "INVALID_REQUEST"
   ) {
     super(code);
@@ -38,10 +46,12 @@ export type LearningServiceDeps = {
 export class LearningService {
   private repository: LearningRepository;
   private issuedPlans: IssuedPlanRepository;
+  private sessions: LearningSessionRepository;
 
   constructor(private deps: LearningServiceDeps) {
     this.repository = new LearningRepository(deps.db);
     this.issuedPlans = new IssuedPlanRepository(deps.db, deps.now);
+    this.sessions = new LearningSessionRepository(deps.db);
   }
 
   getTodayPlan(userId: string, trustedDeviceId: string): TodayPlan {
@@ -73,6 +83,26 @@ export class LearningService {
     clientAttemptId: string
   ): AttemptReceipt | null {
     return this.repository.findDuplicateAttempt(userId, clientAttemptId);
+  }
+
+  createLearningSession(
+    userId: string,
+    trustedDeviceId: string,
+    input: LearningSessionRequest
+  ): LearningSessionReceipt {
+    try {
+      return this.sessions.issue(
+        userId,
+        trustedDeviceId,
+        input,
+        this.deps.now()
+      );
+    } catch (error) {
+      if (error instanceof IssuedPlanError || error instanceof LearningSessionError) {
+        throw new LearningError(error.code);
+      }
+      throw error;
+    }
   }
 
   saveAttempt(

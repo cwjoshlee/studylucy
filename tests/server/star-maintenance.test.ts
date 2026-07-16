@@ -10,6 +10,7 @@ import {
 import { StarRepository } from "../../src/server/stars/repository";
 import { StarService } from "../../src/server/stars/service";
 import { DailyPlanService } from "../../src/server/stars/daily-plan";
+import type { TodayPlan } from "../../src/shared/learning";
 import {
   createTestHarness,
   type TestClient
@@ -71,17 +72,38 @@ async function authenticateFamily(harness: Harness): Promise<{
   return { guardian, student, studentId };
 }
 
+async function issueIdleAuthority(student: TestClient): Promise<{
+  plan: TodayPlan;
+  item: TodayPlan["items"][number];
+  learningSessionId: string;
+}> {
+  const planResponse = await student.request("GET", "/api/student/today");
+  expect(planResponse.statusCode).toBe(200);
+  const plan = planResponse.json() as TodayPlan;
+  const item = plan.items.find((candidate) => candidate.id === "ko-01")!;
+  const session = await student.request(
+    "POST",
+    "/api/student/learning-sessions",
+    { planId: plan.planId, itemId: item.id, contentVersion: item.version }
+  );
+  expect(session.statusCode).toBe(201);
+  return { plan, item, learningSessionId: session.json().learningSessionId };
+}
+
 function idleEvent(
+  authority: Awaited<ReturnType<typeof issueIdleAuthority>>,
   clientIdleEventId: string,
   overrides: Record<string, unknown> = {}
 ) {
   return {
     clientIdleEventId,
-    learningSessionId: "learning-session-0001",
-    itemId: "ko-01",
-    studyDate: "2026-07-15",
-    idleStartedAt: "2026-07-15T02:55:00.000Z",
-    occurredAt: "2026-07-15T03:00:00.000Z",
+    learningSessionId: authority.learningSessionId,
+    planId: authority.plan.planId,
+    itemId: authority.item.id,
+    contentVersion: authority.item.version,
+    studyDate: authority.plan.date,
+    idleStartedAt: "2026-07-15T03:00:00.000Z",
+    occurredAt: "2026-07-15T03:05:00.000Z",
     ...overrides
   };
 }
@@ -112,6 +134,7 @@ describe("idle deductions and missed-plan maintenance", () => {
 
   it("rejects 4:59 and applies a gentle deduction at exactly 5:00", async () => {
     const { student, studentId } = await authenticateFamily(harness);
+    const authority = await issueIdleAuthority(student);
     new StarRepository(harness.db).apply({
       studentId,
       delta: 3,
@@ -126,8 +149,8 @@ describe("idle deductions and missed-plan maintenance", () => {
     const tooSoon = await student.request(
       "POST",
       "/api/student/idle-events",
-      idleEvent("idle-event-0001", {
-        idleStartedAt: "2026-07-15T02:55:01.000Z"
+      idleEvent(authority, "idle-event-0001", {
+        idleStartedAt: "2026-07-15T03:00:01.000Z"
       })
     );
     expect(tooSoon.statusCode).toBe(400);
@@ -136,7 +159,7 @@ describe("idle deductions and missed-plan maintenance", () => {
     const applied = await student.request(
       "POST",
       "/api/student/idle-events",
-      idleEvent("idle-event-0002")
+      idleEvent(authority, "idle-event-0002")
     );
     expect(applied.statusCode).toBe(201);
     expect(applied.json()).toMatchObject({
@@ -158,8 +181,9 @@ describe("idle deductions and missed-plan maintenance", () => {
     });
   });
 
-  it("returns a stored idle result for a changed invalid retry and caps the third fresh event", async () => {
+  it("returns a stored idle result only for an exact retry and caps the third fresh event", async () => {
     const { student, studentId } = await authenticateFamily(harness);
+    const authority = await issueIdleAuthority(student);
     new StarRepository(harness.db).apply({
       studentId,
       delta: 3,
@@ -171,30 +195,38 @@ describe("idle deductions and missed-plan maintenance", () => {
       createdAt: "2026-07-15T02:50:00.000Z"
     });
 
+    const firstInput = idleEvent(authority, "idle-event-1001");
     const first = await student.request(
       "POST",
       "/api/student/idle-events",
-      idleEvent("idle-event-1001")
+      firstInput
     );
     const retry = await student.request(
       "POST",
       "/api/student/idle-events",
-      { clientIdleEventId: "idle-event-1001", occurredAt: "invalid" }
+      firstInput
+    );
+    const changedRetry = await student.request(
+      "POST",
+      "/api/student/idle-events",
+      { ...firstInput, occurredAt: "2026-07-15T03:05:01.000Z" }
     );
     const second = await student.request(
       "POST",
       "/api/student/idle-events",
-      idleEvent("idle-event-1002")
+      idleEvent(authority, "idle-event-1002")
     );
     const capped = await student.request(
       "POST",
       "/api/student/idle-events",
-      idleEvent("idle-event-1003")
+      idleEvent(authority, "idle-event-1003")
     );
 
     expect(first.statusCode).toBe(201);
     expect(retry.statusCode).toBe(200);
     expect(retry.json()).toEqual({ ...first.json(), duplicate: true });
+    expect(changedRetry.statusCode).toBe(400);
+    expect(changedRetry.json()).toEqual({ code: "INVALID_REQUEST" });
     expect(second.json()).toMatchObject({ outcome: "applied" });
     expect(capped.statusCode).toBe(201);
     expect(capped.json()).toMatchObject({
@@ -214,32 +246,33 @@ describe("idle deductions and missed-plan maintenance", () => {
     `).get()).toEqual({ count: 2 });
   });
 
-  it("validates idle ordering, future time, KST date, and published content", async () => {
+  it("validates idle ordering, future time, date, and issued-item session bindings", async () => {
     const { student } = await authenticateFamily(harness);
+    const authority = await issueIdleAuthority(student);
     const invalidInputs = [
-      idleEvent("idle-invalid-0001", {
-        idleStartedAt: "2026-07-15T03:01:00.000Z"
-      }),
-      idleEvent("idle-invalid-0002", {
-        idleStartedAt: "2026-07-15T03:00:01.000Z",
-        occurredAt: "2026-07-15T03:05:01.000Z"
-      }),
-      idleEvent("idle-invalid-0003", { studyDate: "2026-07-14" }),
-      idleEvent("idle-invalid-0004", { itemId: "missing-item" })
-    ];
-    harness.db.prepare(
-      "UPDATE content_items SET status = 'archived' WHERE id = 'ko-02'"
-    ).run();
-    invalidInputs.push(idleEvent("idle-invalid-0005", { itemId: "ko-02" }));
+      [idleEvent(authority, "idle-invalid-0001", {
+        idleStartedAt: "2026-07-15T03:06:00.000Z"
+      }), "LEARNING_SESSION_INVALID"],
+      [idleEvent(authority, "idle-invalid-0002", {
+        idleStartedAt: "2026-07-15T03:00:02.000Z",
+        occurredAt: "2026-07-15T03:05:02.000Z"
+      }), "LEARNING_SESSION_INVALID"],
+      [idleEvent(authority, "idle-invalid-0003", {
+        studyDate: "2026-07-14"
+      }), "LEARNING_SESSION_INVALID"],
+      [idleEvent(authority, "idle-invalid-0004", {
+        itemId: "missing-item"
+      }), "LEARNING_SESSION_INVALID"]
+    ] as const;
 
-    for (const input of invalidInputs) {
+    for (const [input, code] of invalidInputs) {
       const response = await student.request(
         "POST",
         "/api/student/idle-events",
         input
       );
-      expect(response.statusCode).toBe(400);
-      expect(response.json()).toEqual({ code: "INVALID_REQUEST" });
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ code });
     }
     expect(harness.db.prepare(
       "SELECT COUNT(*) AS count FROM idle_events"
@@ -248,20 +281,21 @@ describe("idle deductions and missed-plan maintenance", () => {
 
   it("counts zero-balance audits toward the two-event daily cap", async () => {
     const { student } = await authenticateFamily(harness);
+    const authority = await issueIdleAuthority(student);
     const first = await student.request(
       "POST",
       "/api/student/idle-events",
-      idleEvent("idle-no-balance-0001")
+      idleEvent(authority, "idle-no-balance-0001")
     );
     const second = await student.request(
       "POST",
       "/api/student/idle-events",
-      idleEvent("idle-no-balance-0002")
+      idleEvent(authority, "idle-no-balance-0002")
     );
     const capped = await student.request(
       "POST",
       "/api/student/idle-events",
-      idleEvent("idle-no-balance-0003")
+      idleEvent(authority, "idle-no-balance-0003")
     );
 
     expect(first.json()).toMatchObject({ outcome: "no-balance" });

@@ -7,6 +7,8 @@ import type {
   AttemptInput,
   AttemptReceipt,
   GuardianProgress,
+  LearningSessionReceipt,
+  LearningSessionRequest,
   TodayPlan
 } from "../../shared/learning";
 import type {
@@ -96,7 +98,12 @@ export class ApiClient {
       if (
         response.status === 401 ||
         code.startsWith("DEVICE_") ||
-        code.startsWith("PLAN_")
+        code.startsWith("PLAN_") ||
+        (
+          path.startsWith("/api/student/") &&
+          response.status >= 400 &&
+          response.status < 500
+        )
       ) {
         await this.callbacks.onAuthorityFailure?.(code);
       }
@@ -162,6 +169,12 @@ export class ApiClient {
 
   saveAttempt(input: AttemptInput): Promise<AttemptReceipt> {
     return this.request("POST", "/api/student/attempts", input);
+  }
+
+  createLearningSession(
+    input: LearningSessionRequest
+  ): Promise<LearningSessionReceipt> {
+    return this.request("POST", "/api/student/learning-sessions", input);
   }
 
   getStudentStars(): Promise<StudentStarSummary> {
@@ -260,6 +273,7 @@ export type ClientApi = Pick<ApiClient,
   | "endSession"
   | "logout"
   | "getToday"
+  | "createLearningSession"
   | "saveAttempt"
   | "getStudentStars"
   | "sendIdleEvent"
