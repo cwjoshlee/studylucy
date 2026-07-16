@@ -10,6 +10,7 @@ import { registerAuthRoutes } from "./auth/routes";
 import { registerBackupRoutes } from "./backup/routes";
 import type { AppConfig } from "./config";
 import { registerLearningRoutes } from "./learning/routes";
+import { registerOfflineRoutes } from "./offline/routes";
 import { createOriginGuard } from "./security/origin";
 import { trustFirstHopProxy } from "./security/proxy";
 import { registerStarRoutes } from "./stars/routes";
@@ -77,6 +78,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
   registerBackupRoutes(app, deps);
   registerLearningRoutes(app, deps);
   registerStarRoutes(app, deps);
+  registerOfflineRoutes(app, deps);
   app.get("/api/health", async () => ({ status: "ok" as const }));
 
   const clientDistDir = deps.clientDistDir ?? resolve(process.cwd(), "dist/client");

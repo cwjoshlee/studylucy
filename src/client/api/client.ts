@@ -9,6 +9,9 @@ import type {
   GuardianProgress,
   LearningSessionReceipt,
   LearningSessionRequest,
+  OfflineBatchInput,
+  OfflineBatchReceipt,
+  RecoveryPlanRequest,
   TodayPlan
 } from "../../shared/learning";
 import type {
@@ -96,16 +99,23 @@ export class ApiClient {
         ? payload.code
         : `HTTP_${response.status}`;
       const error = new ApiError(response.status, code);
-      if (
+      const syncPolicyOwnsError =
+        path === "/api/student/recovery-plans" ||
+        path === "/api/student/offline-batches";
+      const authorityFailure =
         response.status === 401 ||
         code.startsWith("DEVICE_") ||
-        code.startsWith("PLAN_") ||
         (
-          path.startsWith("/api/student/") &&
-          response.status >= 400 &&
-          response.status < 500
-        )
-      ) {
+          !syncPolicyOwnsError && (
+            code.startsWith("PLAN_") ||
+            (
+              path.startsWith("/api/student/") &&
+              response.status >= 400 &&
+              response.status < 500
+            )
+          )
+        );
+      if (authorityFailure) {
         try {
           await this.callbacks.onAuthorityFailure?.(code);
         } catch {
@@ -188,6 +198,14 @@ export class ApiClient {
 
   sendIdleEvent(input: IdleEventInput): Promise<IdleEventResult> {
     return this.request("POST", "/api/student/idle-events", input);
+  }
+
+  createRecoveryPlan(input: RecoveryPlanRequest): Promise<TodayPlan> {
+    return this.request("POST", "/api/student/recovery-plans", input);
+  }
+
+  applyOfflineBatch(input: OfflineBatchInput): Promise<OfflineBatchReceipt> {
+    return this.request("POST", "/api/student/offline-batches", input);
   }
 
   getGuardianProgress(from: string, to: string): Promise<GuardianProgress> {
@@ -282,6 +300,8 @@ export type ClientApi = Pick<ApiClient,
   | "saveAttempt"
   | "getStudentStars"
   | "sendIdleEvent"
+  | "createRecoveryPlan"
+  | "applyOfflineBatch"
   | "getGuardianProgress"
   | "getGuardianStars"
   | "getStarAdjustments"

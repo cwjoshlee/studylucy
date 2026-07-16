@@ -106,6 +106,13 @@ export function createFakeApi(overrides: Record<string, unknown> = {}) {
       duplicate: false,
       activityCursor: 2
     }),
+    createRecoveryPlan: vi.fn().mockResolvedValue({
+      planId: "plan-recovery-1"
+    }),
+    applyOfflineBatch: vi.fn().mockResolvedValue({
+      clientBatchId: "batch-fake-0001",
+      duplicate: false
+    }),
     getGuardianProgress: vi.fn().mockResolvedValue({
       completedItems: 4,
       totalAttempts: 6,

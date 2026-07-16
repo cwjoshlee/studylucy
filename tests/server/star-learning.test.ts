@@ -598,6 +598,49 @@ describe("issued-plan required learning star awards", () => {
     });
   });
 
+  it("appends a zero-floor audit without issuing a no-op balance update", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    const plan = await getToday(student);
+    const item = plan.items[0]!;
+    const session = await issueLearningSession(student, plan, item);
+    harness.advanceTime(5 * 60 * 1_000);
+    harness.db.exec(`
+      CREATE TRIGGER reject_noop_star_balance_update
+      BEFORE UPDATE ON student_star_balances
+      BEGIN
+        SELECT RAISE(ABORT, 'BALANCE_UPDATE_NOT_ALLOWED');
+      END;
+    `);
+
+    const response = await student.request(
+      "POST",
+      "/api/student/idle-events",
+      boundIdleEvent(
+        plan,
+        item,
+        session.learningSessionId,
+        "idle-zero-floor-audit-0001"
+      )
+    );
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      outcome: "no-balance",
+      starEventId: expect.any(String)
+    });
+    expect(harness.db.prepare(`
+      SELECT requested_delta AS requestedDelta, delta,
+             balance_after AS balanceAfter, reason_code AS reason
+      FROM star_events WHERE idle_event_id = ?
+    `).get("idle-zero-floor-audit-0001")).toEqual({
+      requestedDelta: -1,
+      delta: 0,
+      balanceAfter: 0,
+      reason: "NO_BALANCE_AUDIT"
+    });
+  });
+
   it("rejects unknown, revoked, foreign, mismatched, pre-issue, over-six-hour, short, and post-deadline idle authority without mutation", async () => {
     const firstDevice = harness.client();
     await authenticateStudent(harness, firstDevice);

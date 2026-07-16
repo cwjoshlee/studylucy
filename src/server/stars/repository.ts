@@ -23,6 +23,16 @@ export type ApplyStarInput = {
   createdAt: string;
 };
 
+export type NoBalanceAuditInput = {
+  studentId: string;
+  reasonText: string;
+  studyDate: string;
+  itemId?: string | null;
+  idleEventId: string;
+  sourceKey: string;
+  createdAt: string;
+};
+
 type StarEventRow = {
   id: string;
   requestedDelta: number;
@@ -78,6 +88,61 @@ export class StarRepository {
       throw new Error("SOURCE_KEY_RESERVED");
     }
     return this.applyCore(input);
+  }
+
+  appendNoBalanceAuditInTransaction(
+    input: NoBalanceAuditInput
+  ): AppliedStarResult {
+    if (input.sourceKey.startsWith("reversal:")) {
+      throw new Error("SOURCE_KEY_RESERVED");
+    }
+    const existing = this.db.prepare(`
+      ${STAR_EVENT_SELECT}
+      WHERE source_key = ?
+    `).get(input.sourceKey) as StarEventRow | undefined;
+    if (existing !== undefined) {
+      return { event: eventFromRow(existing), duplicate: true };
+    }
+
+    let balance = this.getBalance(input.studentId);
+    if (balance === null) {
+      this.db.prepare(`
+        INSERT INTO student_star_balances (student_id, balance, updated_at)
+        VALUES (?, 0, ?)
+      `).run(input.studentId, input.createdAt);
+      balance = 0;
+    }
+
+    const id = randomUUID();
+    this.db.prepare(`
+      INSERT INTO star_events (
+        id, student_id, requested_delta, delta, balance_after,
+        reason_code, reason_text,
+        study_date, item_id, attempt_id, idle_event_id,
+        pending_adjustment_id, actor_type, actor_user_id, source_key,
+        reverses_event_id, created_at
+      ) VALUES (?, ?, -1, 0, ?, 'NO_BALANCE_AUDIT', ?, ?, ?, NULL, ?,
+                NULL, 'system', NULL, ?, NULL, ?)
+    `).run(
+      id,
+      input.studentId,
+      balance,
+      input.reasonText,
+      input.studyDate,
+      input.itemId ?? null,
+      input.idleEventId,
+      input.sourceKey,
+      input.createdAt
+    );
+    const event = this.db.prepare(`
+      ${STAR_EVENT_SELECT}
+      WHERE id = ?
+    `).get(id) as StarEventRow;
+    return { event: eventFromRow(event), duplicate: false };
+  }
+
+  currentBalance(studentId: string): number {
+    return this.getBalance(studentId) ?? 0;
   }
 
   findBySource(sourceKey: string): StarEvent | null {
@@ -207,5 +272,12 @@ export class StarRepository {
       WHERE id = ?
     `).get(id) as StarEventRow;
     return { event: eventFromRow(event), duplicate: false };
+  }
+
+  private getBalance(studentId: string): number | null {
+    const row = this.db.prepare(`
+      SELECT balance FROM student_star_balances WHERE student_id = ?
+    `).get(studentId) as { balance: number } | undefined;
+    return row?.balance ?? null;
   }
 }

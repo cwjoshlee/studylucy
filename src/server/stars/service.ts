@@ -1,4 +1,6 @@
 import type Database from "better-sqlite3";
+import type { LegacyIdleEventInput } from "../../shared/learning";
+import { kstDayBounds } from "../../shared/study-date";
 import type {
   ApprovalInput,
   DailyPlanInput,
@@ -16,6 +18,7 @@ import type {
 } from "../../shared/stars";
 import { StarReasonSchema } from "../../shared/stars";
 import { IssuedPlanError } from "../learning/issued-plan-repository";
+import type { IssuedPlanSnapshot } from "../learning/issued-plan-repository";
 import {
   LearningSessionError,
   LearningSessionRepository
@@ -42,6 +45,10 @@ type IdleEventRow = {
 
 export type RecordIdleEventOptions = {
   advanceCursor?: boolean;
+  orderConflict?: boolean;
+  legacy?: boolean;
+  legacyPlan?: IssuedPlanSnapshot;
+  receivedAt?: Date;
 };
 
 type PendingAdjustmentRow = PendingStarAdjustment & {
@@ -148,53 +155,93 @@ export class StarService {
   recordIdleEventInTransaction(
     studentId: string,
     trustedDeviceId: string,
-    input: IdleEventInput,
+    input: IdleEventInput | LegacyIdleEventInput,
     options: RecordIdleEventOptions = {}
   ): IdleEventResult {
-    const existing = this.findIdleResult(studentId, trustedDeviceId, input);
+    const existing = options.legacy === true
+      ? this.findLegacyIdleResult(studentId, input as LegacyIdleEventInput)
+      : this.findIdleResult(
+          studentId,
+          trustedDeviceId,
+          input as IdleEventInput
+        );
     if (existing !== null) return existing;
 
-    const receivedAt = this.deps.now();
-    try {
-      this.learningSessions.validateIdle(
-        studentId,
-        trustedDeviceId,
-        input,
+    const receivedAt = options.receivedAt ?? this.deps.now();
+    if (options.legacy === true) {
+      this.validateLegacyIdle(
+        input as LegacyIdleEventInput,
+        options.legacyPlan,
         receivedAt
       );
-    } catch (error) {
-      if (error instanceof IssuedPlanError || error instanceof LearningSessionError) {
-        throw new StarServiceError(
-          error.code === "INVALID_REQUEST" ? 400 : 409,
-          error.code
+    } else {
+      try {
+        this.learningSessions.validateIdle(
+          studentId,
+          trustedDeviceId,
+          input as IdleEventInput,
+          receivedAt
         );
+      } catch (error) {
+        if (error instanceof IssuedPlanError || error instanceof LearningSessionError) {
+          throw new StarServiceError(
+            error.code === "INVALID_REQUEST" ? 400 : 409,
+            error.code
+          );
+        }
+        throw error;
       }
-      throw error;
     }
 
+    const canonicalInput = input as IdleEventInput | LegacyIdleEventInput;
     const counted = this.deps.db.prepare(`
       SELECT COUNT(*) AS count
       FROM idle_events
       WHERE student_id = ? AND study_date = ?
         AND outcome IN ('applied', 'no-balance')
-    `).get(studentId, input.studyDate) as { count: number };
+    `).get(studentId, canonicalInput.studyDate) as { count: number };
     const createdAt = receivedAt.toISOString();
     let outcome: IdleEventResult["outcome"];
     let starEventId: string | null;
-    if (counted.count >= 2) {
+    const waiver = options.orderConflict === true || options.legacy === true;
+    if (waiver) {
+      const audited = this.stars.appendNoBalanceAuditInTransaction({
+        studentId,
+        reasonText: "오프라인 순서 충돌로 차감하지 않았어요",
+        studyDate: canonicalInput.studyDate,
+        itemId: canonicalInput.itemId,
+        idleEventId: canonicalInput.clientIdleEventId,
+        sourceKey: `idle:${studentId}:${canonicalInput.clientIdleEventId}`,
+        createdAt
+      });
+      outcome = "order-conflict-waived";
+      starEventId = audited.event.id;
+    } else if (counted.count >= 2) {
       outcome = "capped";
       starEventId = null;
+    } else if (this.stars.currentBalance(studentId) === 0) {
+      const audited = this.stars.appendNoBalanceAuditInTransaction({
+        studentId,
+        reasonText: "5분 동안 쉬고 있었어요. 별 1개를 잠시 돌려놓았어요.",
+        studyDate: canonicalInput.studyDate,
+        itemId: canonicalInput.itemId,
+        idleEventId: canonicalInput.clientIdleEventId,
+        sourceKey: `idle:${studentId}:${canonicalInput.clientIdleEventId}`,
+        createdAt
+      });
+      outcome = "no-balance";
+      starEventId = audited.event.id;
     } else {
       const applied = this.stars.applyInTransaction({
         studentId,
         delta: -1,
         reason: "IDLE_TIMEOUT",
         reasonText: "5분 동안 쉬고 있었어요. 별 1개를 잠시 돌려놓았어요.",
-        studyDate: input.studyDate,
-        itemId: input.itemId,
-        idleEventId: input.clientIdleEventId,
+        studyDate: canonicalInput.studyDate,
+        itemId: canonicalInput.itemId,
+        idleEventId: canonicalInput.clientIdleEventId,
         actorType: "system",
-        sourceKey: `idle:${studentId}:${input.clientIdleEventId}`,
+        sourceKey: `idle:${studentId}:${canonicalInput.clientIdleEventId}`,
         createdAt
       });
       outcome = applied.event.reason === "NO_BALANCE_AUDIT"
@@ -204,10 +251,11 @@ export class StarService {
     }
     this.insertIdleEvent(
       studentId,
-      input,
+      canonicalInput,
       outcome,
       starEventId,
-      createdAt
+      createdAt,
+      options.legacy === true
     );
     if (options.advanceCursor !== false) {
       const updated = this.deps.db.prepare(`
@@ -220,7 +268,7 @@ export class StarService {
       }
     }
     return {
-      id: input.clientIdleEventId,
+      id: canonicalInput.clientIdleEventId,
       outcome,
       starEventId,
       duplicate: false,
@@ -526,10 +574,11 @@ export class StarService {
 
   private insertIdleEvent(
     studentId: string,
-    input: IdleEventInput,
+    input: IdleEventInput | LegacyIdleEventInput,
     outcome: IdleEventResult["outcome"],
     starEventId: string | null,
-    createdAt: string
+    createdAt: string,
+    legacy = false
   ): void {
     this.deps.db.prepare(`
       INSERT INTO idle_events (
@@ -541,13 +590,75 @@ export class StarService {
       studentId,
       input.studyDate,
       input.itemId,
-      input.learningSessionId,
+      legacy ? null : (input as IdleEventInput).learningSessionId,
       input.idleStartedAt,
       input.occurredAt,
       outcome,
       starEventId,
       createdAt
     );
+  }
+
+  private findLegacyIdleResult(
+    studentId: string,
+    input: LegacyIdleEventInput
+  ): IdleEventResult | null {
+    const row = this.deps.db.prepare(`
+      SELECT id, item_id AS itemId, study_date AS studyDate,
+             idle_started_at AS idleStartedAt, occurred_at AS occurredAt,
+             outcome, star_event_id AS starEventId
+      FROM idle_events
+      WHERE student_id = ? AND id = ? AND learning_session_id IS NULL
+    `).get(studentId, input.clientIdleEventId) as (Pick<
+      IdleEventRow,
+      "id" | "itemId" | "studyDate" | "idleStartedAt" | "occurredAt" |
+      "outcome" | "starEventId"
+    >) | undefined;
+    if (row === undefined) return null;
+    if (
+      row.itemId !== input.itemId ||
+      row.studyDate !== input.studyDate ||
+      row.idleStartedAt !== input.idleStartedAt ||
+      row.occurredAt !== input.occurredAt ||
+      row.outcome !== "order-conflict-waived"
+    ) {
+      throw new StarServiceError(400, "INVALID_REQUEST");
+    }
+    return {
+      id: row.id,
+      outcome: row.outcome,
+      starEventId: row.starEventId,
+      duplicate: true,
+      activityCursor: this.getActivityCursor(studentId)
+    };
+  }
+
+  private validateLegacyIdle(
+    input: LegacyIdleEventInput,
+    plan: IssuedPlanSnapshot | undefined,
+    receivedAt: Date
+  ): void {
+    if (
+      plan === undefined ||
+      plan.studyDate !== input.studyDate ||
+      !plan.items.some((item) => item.id === input.itemId)
+    ) {
+      throw new StarServiceError(409, "PLAN_NOT_ISSUED");
+    }
+    const idleStartedAt = Date.parse(input.idleStartedAt);
+    const occurredAt = Date.parse(input.occurredAt);
+    const bounds = kstDayBounds(plan.studyDate);
+    if (
+      !Number.isFinite(idleStartedAt) ||
+      !Number.isFinite(occurredAt) ||
+      occurredAt < idleStartedAt ||
+      occurredAt - idleStartedAt < 5 * 60 * 1_000 ||
+      idleStartedAt < Date.parse(bounds.start) ||
+      occurredAt >= Date.parse(bounds.end) ||
+      occurredAt > receivedAt.getTime() + 5 * 60 * 1_000
+    ) {
+      throw new StarServiceError(400, "INVALID_REQUEST");
+    }
   }
 
   private getActivityCursor(studentId: string): number {

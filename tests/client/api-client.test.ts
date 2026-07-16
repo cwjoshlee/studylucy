@@ -2,6 +2,113 @@ import { describe, expect, it, vi } from "vitest";
 import { ApiClient, ApiError } from "../../src/client/api/client";
 
 describe("ApiClient", () => {
+  it("posts recovery plans and offline batches with their exact envelopes", async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        planId: "recovery-plan-1"
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        clientBatchId: "batch-client-api-0001",
+        duplicate: false
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }));
+    const api = new ApiClient(fetcher);
+    const recoveryInput = { sourcePlanId: "source-plan-1" };
+    const batchInput = {
+      clientBatchId: "batch-client-api-0001",
+      planId: "plan-daily-1",
+      offlineEpoch: 3,
+      startCursor: 9,
+      events: [{
+        kind: "attempt" as const,
+        legacy: false as const,
+        deviceSequence: 17,
+        payload: {
+          clientAttemptId: "attempt-client-api-0001",
+          planId: "plan-daily-1",
+          itemId: "ko-01",
+          contentVersion: 1,
+          studyDate: "2026-07-16",
+          occurredAt: "2026-07-16T01:00:00.000Z",
+          readingScore: 100,
+          missedTokens: [],
+          mathAnswer: null,
+          durationMs: 10_000,
+          difficultyFeedback: null
+        }
+      }]
+    };
+
+    await expect(api.createRecoveryPlan(recoveryInput))
+      .resolves.toEqual({ planId: "recovery-plan-1" });
+    await expect(api.applyOfflineBatch(batchInput))
+      .resolves.toEqual({
+        clientBatchId: "batch-client-api-0001",
+        duplicate: false
+      });
+    expect(fetcher).toHaveBeenNthCalledWith(
+      1,
+      "/api/student/recovery-plans",
+      expect.objectContaining({ body: JSON.stringify(recoveryInput) })
+    );
+    expect(fetcher).toHaveBeenNthCalledWith(
+      2,
+      "/api/student/offline-batches",
+      expect.objectContaining({ body: JSON.stringify(batchInput) })
+    );
+  });
+
+  it.each([
+    "CURRENT_DAILY_PLAN_REQUIRED",
+    "SOURCE_DEVICE_STILL_ACTIVE"
+  ])("keeps nonterminal offline state for %s", async (code) => {
+    const onAuthorityFailure = vi.fn();
+    const api = new ApiClient(
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ code }), {
+        status: 409,
+        headers: { "content-type": "application/json" }
+      })),
+      { onAuthorityFailure }
+    );
+
+    await expect(api.createRecoveryPlan({ sourcePlanId: "source-plan-1" }))
+      .rejects.toEqual(new ApiError(409, code));
+    expect(onAuthorityFailure).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ["recovery", "PLAN_SUBMISSION_EXPIRED"],
+    ["recovery", "PLAN_NOT_ISSUED"],
+    ["batch", "BATCH_ID_CONFLICT"],
+    ["batch", "INVALID_REQUEST"]
+  ] as const)("leaves offline %s terminal code %s for the sync policy to classify", async (kind, code) => {
+    const onAuthorityFailure = vi.fn();
+    const api = new ApiClient(
+      vi.fn().mockResolvedValue(new Response(JSON.stringify({ code }), {
+        status: 409,
+        headers: { "content-type": "application/json" }
+      })),
+      { onAuthorityFailure }
+    );
+
+    const request = kind === "recovery"
+      ? api.createRecoveryPlan({ sourcePlanId: "source-plan-1" })
+      : api.applyOfflineBatch({
+          clientBatchId: "batch-terminal-policy-0001",
+          planId: "plan-daily-1",
+          offlineEpoch: 1,
+          startCursor: 0,
+          events: []
+        });
+    await expect(request).rejects.toEqual(new ApiError(409, code));
+    expect(onAuthorityFailure).not.toHaveBeenCalled();
+  });
+
   it("invokes browser fetch with the global receiver", async () => {
     const fetcher = function (
       this: unknown,

@@ -634,7 +634,8 @@ describe("LearningSession", () => {
   it.each([
     ["applied", "5분 동안 학습 활동이 없어서 별 1개가 줄었어요. 준비되면 다시 시작할 수 있어요."],
     ["capped", "오늘은 별이 더 줄지 않아요. 준비되면 다시 시작할 수 있어요."],
-    ["no-balance", "5분 동안 학습 활동이 없었어요. 줄어들 별은 없고 기록만 남겼어요."]
+    ["no-balance", "5분 동안 학습 활동이 없었어요. 줄어들 별은 없고 기록만 남겼어요."],
+    ["order-conflict-waived", "오프라인 순서가 달라 별을 차감하지 않았어요. 준비되면 다시 시작할 수 있어요."]
   ] as const)("pauses for an idle %s result until the child explicitly resumes", async (outcome, message) => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-16T01:00:00.000Z"));

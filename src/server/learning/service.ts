@@ -98,7 +98,11 @@ export class LearningService {
         this.deps.now()
       );
     } catch (error) {
-      if (error instanceof IssuedPlanError || error instanceof LearningSessionError) {
+      if (error instanceof IssuedPlanError) {
+        if (error.code === "SOURCE_DEVICE_STILL_ACTIVE") throw error;
+        throw new LearningError(error.code);
+      }
+      if (error instanceof LearningSessionError) {
         throw new LearningError(error.code);
       }
       throw error;
@@ -137,6 +141,7 @@ export class LearningService {
         throw new LearningError(error.code);
       }
       if (error instanceof IssuedPlanError) {
+        if (error.code === "SOURCE_DEVICE_STILL_ACTIVE") throw error;
         throw new LearningError(error.code);
       }
       throw error;

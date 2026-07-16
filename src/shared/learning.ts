@@ -1,5 +1,10 @@
 import { z } from "zod";
-import type { StudentStarSummary } from "./stars";
+import {
+  IdleEventInputSchema,
+  IdleEventResultSchema,
+  StudentStarSummarySchema,
+  type StudentStarSummary
+} from "./stars";
 import { StudyDateSchema } from "./study-date";
 
 const BaseItem = z.object({
@@ -59,24 +64,26 @@ export type LearningSessionReceipt = {
   submitUntil: string;
 };
 
-export type TodayPlan = {
-  planId: string;
-  planKind: "daily" | "recovery";
-  recoverySourcePlanId: string | null;
-  date: string;
-  submitUntil: string;
-  offlineEpoch: number;
-  activityCursor: number;
-  studentDisplayName: string;
-  completedItemIds: string[];
-  requiredItemIds: string[];
-  stars: StudentStarSummary;
-  items: Array<{
-    id: string;
-    version: number;
-    payload: LearningItemPayload;
-  }>;
-};
+export const TodayPlanSchema = z.object({
+  planId: z.string().min(1),
+  planKind: z.enum(["daily", "recovery"]),
+  recoverySourcePlanId: z.string().nullable(),
+  date: StudyDateSchema,
+  submitUntil: z.string().datetime({ offset: true }),
+  offlineEpoch: z.number().int().positive(),
+  activityCursor: z.number().int().nonnegative(),
+  studentDisplayName: z.string().min(1),
+  completedItemIds: z.array(z.string().min(1)),
+  requiredItemIds: z.array(z.string().min(1)),
+  stars: StudentStarSummarySchema,
+  items: z.array(z.object({
+    id: z.string().min(1),
+    version: z.number().int().positive(),
+    payload: LearningItemPayloadSchema
+  }))
+});
+
+export type TodayPlan = z.infer<typeof TodayPlanSchema>;
 
 export type GuardianProgress = {
   completedItems: number;
@@ -86,21 +93,117 @@ export type GuardianProgress = {
   recentReviewTokens: Array<{ token: string; count: number }>;
 };
 
-export type StarAwardReceipt = {
-  awarded: boolean;
-  amount: number;
-  balance: number;
-  eventId: string | null;
-};
+export const StarAwardReceiptSchema = z.object({
+  awarded: z.boolean(),
+  amount: z.number().int().nonnegative(),
+  balance: z.number().int().nonnegative(),
+  eventId: z.string().nullable()
+});
 
-export type AttemptReceipt = {
-  id: string;
-  duplicate: boolean;
-  readingPass: boolean;
-  mathPass: boolean | null;
-  completed: boolean;
-  starAward: StarAwardReceipt;
-  activityCursor: number;
-};
+export type StarAwardReceipt = z.infer<typeof StarAwardReceiptSchema>;
+
+export const AttemptReceiptSchema = z.object({
+  id: z.string().min(1),
+  duplicate: z.boolean(),
+  readingPass: z.boolean(),
+  mathPass: z.boolean().nullable(),
+  completed: z.boolean(),
+  starAward: StarAwardReceiptSchema,
+  activityCursor: z.number().int().nonnegative()
+});
+
+export type AttemptReceipt = z.infer<typeof AttemptReceiptSchema>;
+
+export const RecoveryPlanRequestSchema = z.object({
+  sourcePlanId: z.string().min(1)
+}).strict();
+
+export type RecoveryPlanRequest = z.infer<typeof RecoveryPlanRequestSchema>;
+
+export const LegacyAttemptInputSchema = AttemptInputSchema.omit({
+  planId: true,
+  occurredAt: true
+}).strict();
+
+export type LegacyAttemptInput = z.infer<typeof LegacyAttemptInputSchema>;
+
+export const LegacyIdleEventInputSchema = IdleEventInputSchema.omit({
+  learningSessionId: true,
+  planId: true,
+  contentVersion: true
+}).strict();
+
+export type LegacyIdleEventInput = z.infer<typeof LegacyIdleEventInputSchema>;
+
+const DeviceSequenceSchema = z.number().int().nonnegative();
+
+export const ActivityEventSchema = z.union([
+  z.object({
+    kind: z.literal("attempt"),
+    deviceSequence: DeviceSequenceSchema,
+    legacy: z.literal(false),
+    payload: AttemptInputSchema
+  }),
+  z.object({
+    kind: z.literal("attempt"),
+    deviceSequence: DeviceSequenceSchema,
+    legacy: z.literal(true),
+    payload: LegacyAttemptInputSchema
+  }),
+  z.object({
+    kind: z.literal("idle"),
+    deviceSequence: DeviceSequenceSchema,
+    legacy: z.literal(false),
+    payload: IdleEventInputSchema
+  }),
+  z.object({
+    kind: z.literal("idle"),
+    deviceSequence: DeviceSequenceSchema,
+    legacy: z.literal(true),
+    payload: LegacyIdleEventInputSchema
+  })
+]);
+
+export type ActivityEvent = z.infer<typeof ActivityEventSchema>;
+
+export const OfflineBatchInputSchema = z.object({
+  clientBatchId: z.string().min(12).max(80),
+  planId: z.string().min(1),
+  offlineEpoch: z.number().int().positive(),
+  startCursor: z.number().int().nonnegative(),
+  events: z.array(ActivityEventSchema).min(1).max(100)
+}).strict();
+
+export type OfflineBatchInput = z.infer<typeof OfflineBatchInputSchema>;
+
+export const ActivityReceiptSchema = z.object({
+  clientId: z.string().min(1),
+  kind: z.enum(["attempt", "idle"]),
+  status: z.enum([
+    "APPLIED",
+    "DUPLICATE",
+    "REJECTED",
+    "ORDER_CONFLICT_WAIVED"
+  ]),
+  code: z.string().nullable(),
+  attempt: AttemptReceiptSchema.nullable(),
+  idle: IdleEventResultSchema.nullable()
+});
+
+export type ActivityReceipt = z.infer<typeof ActivityReceiptSchema>;
+
+export const OfflineBatchReceiptSchema = z.object({
+  clientBatchId: z.string().min(1),
+  duplicate: z.boolean(),
+  orderConflict: z.boolean(),
+  batchEndCursor: z.number().int().nonnegative(),
+  activityCursor: z.number().int().nonnegative(),
+  receipts: z.array(ActivityReceiptSchema),
+  processedPlan: TodayPlanSchema,
+  currentDailyPlan: TodayPlanSchema,
+  stars: StudentStarSummarySchema
+});
+
+export type OfflineBatchReceipt = z.infer<typeof OfflineBatchReceiptSchema>;
 
 export type SyncResult = { sent: number; remaining: number };

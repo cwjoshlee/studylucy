@@ -63,7 +63,7 @@ export class AttemptIdempotencyError extends Error {
   }
 }
 
-type AttemptWriteInput = AttemptInput & {
+export type AttemptWriteInput = AttemptInput & {
   id: string;
   userId: string;
   trustedDeviceId: string;

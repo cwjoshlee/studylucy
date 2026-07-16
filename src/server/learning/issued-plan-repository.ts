@@ -13,6 +13,7 @@ export type IssuedPlanErrorCode =
   | "PLAN_NOT_ISSUED"
   | "PLAN_SUBMISSION_EXPIRED"
   | "CONTENT_VERSION_CONFLICT"
+  | "SOURCE_DEVICE_STILL_ACTIVE"
   | "INVALID_REQUEST";
 
 export class IssuedPlanError extends Error {
@@ -63,6 +64,17 @@ type PlanRow = {
   submitUntil: string;
   offlineEpoch: number;
   startCursor: number;
+};
+
+type PlanAuthorityRow = PlanRow & {
+  trustedDeviceId: string;
+  originalDeviceId: string;
+};
+
+export type IssuedPlanAuthority = {
+  snapshot: IssuedPlanSnapshot;
+  trustedDeviceId: string;
+  originalDeviceId: string;
 };
 
 export class IssuedPlanRepository {
@@ -139,6 +151,144 @@ export class IssuedPlanRepository {
         throw new Error("ISSUED_DAILY_PLAN_MISSING");
       }
       return this.readSnapshot(studentId, plan);
+    }).immediate();
+  }
+
+  findCurrentDaily(
+    studentId: string,
+    trustedDeviceId: string,
+    at: Date = this.now()
+  ): IssuedPlanSnapshot | null {
+    const plan = this.findDailyPlan(
+      studentId,
+      trustedDeviceId,
+      kstStudyDate(at)
+    );
+    return plan === null ? null : this.readSnapshot(studentId, plan);
+  }
+
+  findPlanAuthority(
+    studentId: string,
+    planId: string
+  ): IssuedPlanAuthority | null {
+    const row = this.db.prepare(`
+      SELECT p.id, p.plan_kind AS planKind,
+             p.recovery_source_plan_id AS recoverySourcePlanId,
+             p.study_date AS studyDate, p.submit_until AS submitUntil,
+             p.offline_epoch AS offlineEpoch, p.start_cursor AS startCursor,
+             p.trusted_device_id AS trustedDeviceId,
+             COALESCE(source.trusted_device_id, p.trusted_device_id)
+               AS originalDeviceId
+      FROM issued_daily_plans AS p
+      LEFT JOIN issued_daily_plans AS source
+        ON source.id = p.recovery_source_plan_id
+      WHERE p.id = ? AND p.student_id = ?
+    `).get(planId, studentId) as PlanAuthorityRow | undefined;
+    if (row === undefined) return null;
+    return {
+      snapshot: this.readSnapshot(studentId, row),
+      trustedDeviceId: row.trustedDeviceId,
+      originalDeviceId: row.originalDeviceId
+    };
+  }
+
+  issueRecovery(
+    studentId: string,
+    trustedDeviceId: string,
+    sourcePlanId: string
+  ): IssuedPlanSnapshot {
+    return this.db.transaction(() => {
+      const now = this.now();
+      const nowIso = now.toISOString();
+      const activeDevice = this.db.prepare(`
+        SELECT 1 FROM trusted_devices
+        WHERE id = ? AND revoked_at IS NULL
+      `).get(trustedDeviceId);
+      if (activeDevice === undefined) {
+        throw new IssuedPlanError("PLAN_NOT_ISSUED");
+      }
+
+      const source = this.db.prepare(`
+        SELECT p.id, p.plan_kind AS planKind,
+               p.study_date AS studyDate, p.submit_until AS submitUntil,
+               p.trusted_device_id AS trustedDeviceId,
+               td.revoked_at AS revokedAt
+        FROM issued_daily_plans AS p
+        JOIN trusted_devices AS td ON td.id = p.trusted_device_id
+        WHERE p.id = ? AND p.student_id = ?
+      `).get(sourcePlanId, studentId) as {
+        id: string;
+        planKind: "daily" | "recovery";
+        studyDate: string;
+        submitUntil: string;
+        trustedDeviceId: string;
+        revokedAt: string | null;
+      } | undefined;
+      if (source === undefined || source.planKind !== "daily") {
+        throw new IssuedPlanError("PLAN_NOT_ISSUED");
+      }
+      if (source.revokedAt === null) {
+        throw new IssuedPlanError("SOURCE_DEVICE_STILL_ACTIVE");
+      }
+      if (now.getTime() > Date.parse(source.submitUntil)) {
+        throw new IssuedPlanError("PLAN_SUBMISSION_EXPIRED");
+      }
+
+      const existing = this.db.prepare(`
+        SELECT id, plan_kind AS planKind,
+               recovery_source_plan_id AS recoverySourcePlanId,
+               study_date AS studyDate, submit_until AS submitUntil,
+               offline_epoch AS offlineEpoch, start_cursor AS startCursor
+        FROM issued_daily_plans
+        WHERE student_id = ? AND trusted_device_id = ?
+          AND recovery_source_plan_id = ? AND plan_kind = 'recovery'
+      `).get(studentId, trustedDeviceId, sourcePlanId) as PlanRow | undefined;
+      if (existing !== undefined) {
+        return this.readSnapshot(studentId, existing);
+      }
+
+      const cursor = this.getCursor(studentId);
+      const recoveryPlanId = randomUUID();
+      this.db.prepare(`
+        INSERT INTO issued_daily_plans (
+          id, student_id, trusted_device_id, plan_kind,
+          recovery_source_plan_id, study_date, issued_at, submit_until,
+          offline_epoch, start_cursor
+        ) VALUES (?, ?, ?, 'recovery', ?, ?, ?, ?, ?, ?)
+      `).run(
+        recoveryPlanId,
+        studentId,
+        trustedDeviceId,
+        source.id,
+        source.studyDate,
+        nowIso,
+        source.submitUntil,
+        cursor.nextEpoch,
+        cursor.currentCursor
+      );
+      this.db.prepare(`
+        INSERT INTO issued_plan_items (
+          plan_id, item_id, content_version, is_required, sort_order
+        )
+        SELECT ?, item_id, content_version, is_required, sort_order
+        FROM issued_plan_items WHERE plan_id = ?
+      `).run(recoveryPlanId, source.id);
+      this.db.prepare(`
+        UPDATE student_activity_cursors
+        SET next_epoch = next_epoch + 1, updated_at = ?
+        WHERE student_id = ?
+      `).run(nowIso, studentId);
+      const recovery = this.db.prepare(`
+        SELECT id, plan_kind AS planKind,
+               recovery_source_plan_id AS recoverySourcePlanId,
+               study_date AS studyDate, submit_until AS submitUntil,
+               offline_epoch AS offlineEpoch, start_cursor AS startCursor
+        FROM issued_daily_plans WHERE id = ?
+      `).get(recoveryPlanId) as PlanRow | undefined;
+      if (recovery === undefined) {
+        throw new Error("RECOVERY_PLAN_MISSING");
+      }
+      return this.readSnapshot(studentId, recovery);
     }).immediate();
   }
 

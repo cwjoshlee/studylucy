@@ -28,12 +28,14 @@ export type StarEvent = {
   reversesEventId: string | null;
 };
 
-export type StudentStarSummary = {
-  balance: number;
-  earnedToday: number;
-  deductedToday: number;
-  lastReason: string | null;
-};
+export const StudentStarSummarySchema = z.object({
+  balance: z.number().int().nonnegative(),
+  earnedToday: z.number().int().nonnegative(),
+  deductedToday: z.number().int().nonnegative(),
+  lastReason: z.string().nullable()
+});
+
+export type StudentStarSummary = z.infer<typeof StudentStarSummarySchema>;
 
 export type AppliedStarResult = {
   event: StarEvent;
@@ -53,13 +55,20 @@ export const IdleEventInputSchema = z.object({
 
 export type IdleEventInput = z.infer<typeof IdleEventInputSchema>;
 
-export type IdleEventResult = {
-  id: string;
-  outcome: "applied" | "capped" | "no-balance";
-  starEventId: string | null;
-  duplicate: boolean;
-  activityCursor: number;
-};
+export const IdleEventResultSchema = z.object({
+  id: z.string().min(1),
+  outcome: z.enum([
+    "applied",
+    "capped",
+    "no-balance",
+    "order-conflict-waived"
+  ]),
+  starEventId: z.string().nullable(),
+  duplicate: z.boolean(),
+  activityCursor: z.number().int().nonnegative()
+});
+
+export type IdleEventResult = z.infer<typeof IdleEventResultSchema>;
 
 export const ManualStarInputSchema = z.object({
   delta: z.number().int().min(-100).max(100)
