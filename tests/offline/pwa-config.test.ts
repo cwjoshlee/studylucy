@@ -2,14 +2,14 @@ import { readFile } from "node:fs/promises";
 import { describe, expect, it } from "vitest";
 
 describe("PWA configuration boundaries", () => {
-  it("binds the tablet manifest to landscape orientation", async () => {
+  it("allows both approved tablet orientations", async () => {
     const config = await readFile(
       new URL("../../vite.config.ts", import.meta.url),
       "utf8"
     );
 
-    expect(config).toMatch(/orientation:\s*"landscape"/);
-    expect(config).not.toMatch(/orientation:\s*"any"/);
+    expect(config).toMatch(/orientation:\s*"any"/);
+    expect(config).not.toMatch(/orientation:\s*"landscape"/);
   });
 
   it("keeps API routes outside navigation fallback and runtime caches", async () => {
@@ -30,5 +30,16 @@ describe("PWA configuration boundaries", () => {
 
     expect(config).toMatch(/globPatterns:[\s\S]*"assets\/icon-192\.png"/);
     expect(config).toMatch(/globPatterns:[\s\S]*"assets\/icon-512\.png"/);
+  });
+
+  it("precaches nested companion SVGs through injectManifest", async () => {
+    const config = await readFile(
+      new URL("../../vite.config.ts", import.meta.url),
+      "utf8"
+    );
+
+    expect(config).toMatch(
+      /globPatterns:[\s\S]*"assets\/companions\/\*\.svg"/
+    );
   });
 });

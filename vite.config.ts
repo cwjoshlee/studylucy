@@ -19,7 +19,7 @@ export default defineConfig({
         start_url: "/",
         scope: "/",
         display: "standalone",
-        orientation: "landscape",
+        orientation: "any",
         background_color: "#fffaf2",
         theme_color: "#2d7a62",
         icons: [
@@ -41,6 +41,7 @@ export default defineConfig({
         globPatterns: [
           "assets/*-*.{js,css}",
           "assets/apple-touch-icon.png",
+          "assets/companions/*.svg",
           "assets/icon-192.png",
           "assets/icon-512.png",
           "index.html"
