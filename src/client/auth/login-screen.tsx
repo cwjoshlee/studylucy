@@ -6,7 +6,9 @@ type LoginPhase =
   | "setup"
   | "onboarding-guardian-login"
   | "guardian-login"
+  | "device-recovery-guardian-login"
   | "device-registration"
+  | "device-recovery-registration"
   | "pin-setup"
   | "student-login";
 
@@ -14,7 +16,9 @@ const titles: Record<LoginPhase, string> = {
   setup: "수아의 공부방 시작하기",
   "onboarding-guardian-login": "보호자 로그인",
   "guardian-login": "보호자 로그인",
+  "device-recovery-guardian-login": "보호자 확인",
   "device-registration": "이 기기 등록하기",
+  "device-recovery-registration": "이 기기 다시 등록하기",
   "pin-setup": "수아 PIN 만들기",
   "student-login": "수아 PIN으로 들어가기"
 };
@@ -74,12 +78,24 @@ export function LoginScreen({ phase }: { phase: LoginPhase }) {
             <button disabled={pending} type="submit">로그인</button>
           </form>
         ) : null}
-        {phase === "device-registration" ? (
+        {phase === "device-recovery-guardian-login" ? (
+          <form onSubmit={(event) => void submit(event, (data) =>
+            auth.guardianLogin(String(data.get("password"))))}>
+            <p>보호자가 현재 기기를 다시 등록해야 학습 기록을 안전하게 복구할 수 있어요.</p>
+            <Field label="보호자 비밀번호"><input name="password" type="password" required autoComplete="current-password" /></Field>
+            <button disabled={pending} type="submit">확인하고 기기 복구하기</button>
+          </form>
+        ) : null}
+        {phase === "device-registration" || phase === "device-recovery-registration" ? (
           <form onSubmit={(event) => void submit(event, (data) =>
             auth.registerDevice(String(data.get("deviceName"))))}>
             <p>수아가 안전하게 들어올 수 있도록 현재 기기만 등록해요.</p>
             <Field label="기기 이름"><input name="deviceName" defaultValue="수아 갤럭시 탭" required maxLength={60} /></Field>
-            <button disabled={pending} type="submit">현재 기기 등록</button>
+            <button disabled={pending} type="submit">
+              {phase === "device-recovery-registration"
+                ? "현재 기기 다시 등록"
+                : "현재 기기 등록"}
+            </button>
           </form>
         ) : null}
         {phase === "pin-setup" ? (

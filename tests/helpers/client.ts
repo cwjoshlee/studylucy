@@ -1,4 +1,5 @@
 import { vi } from "vitest";
+import { ApiError } from "../../src/client/api/client";
 
 const items = [
   ["ko-01", "korean", "동시 읽기", "바람과 꽃"],
@@ -22,6 +23,7 @@ const studentLoginResult = {
 };
 
 export function createFakeApi(overrides: Record<string, unknown> = {}) {
+  let guardianAuthenticated = false;
   return {
     me: vi.fn().mockResolvedValue({
       id: "student-1",
@@ -29,15 +31,22 @@ export function createFakeApi(overrides: Record<string, unknown> = {}) {
       displayName: "수아"
     }),
     setup: vi.fn().mockResolvedValue({ status: "created" }),
-    guardianLogin: vi.fn().mockResolvedValue(undefined),
-    registerDevice: vi.fn().mockResolvedValue(trustedDevice),
+    guardianLogin: vi.fn().mockImplementation(async () => {
+      guardianAuthenticated = true;
+    }),
+    registerDevice: vi.fn().mockImplementation(async () => {
+      if (!guardianAuthenticated) throw new ApiError(401, "AUTH_REQUIRED");
+      return trustedDevice;
+    }),
     listTrustedDevices: vi.fn().mockResolvedValue([trustedDevice]),
     revokeTrustedDevice: vi.fn().mockResolvedValue({
       ...trustedDevice,
       status: "revoked" as const
     }),
     setStudentPin: vi.fn().mockResolvedValue(undefined),
-    endSession: vi.fn().mockResolvedValue(undefined),
+    endSession: vi.fn().mockImplementation(async () => {
+      guardianAuthenticated = false;
+    }),
     logout: vi.fn().mockResolvedValue(undefined),
     studentLogin: vi.fn().mockResolvedValue(studentLoginResult),
     getToday: vi.fn().mockResolvedValue({

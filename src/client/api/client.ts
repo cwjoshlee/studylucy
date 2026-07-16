@@ -103,16 +103,23 @@ export class ApiClient {
       const syncPolicyOwnsError =
         path === "/api/student/recovery-plans" ||
         path === "/api/student/offline-batches";
-      const authorityFailure =
-        response.status === 401 ||
-        code.startsWith("DEVICE_") ||
+      const rejectedCredentialAttempt =
         (
-          !syncPolicyOwnsError && (
-            code.startsWith("PLAN_") ||
-            (
-              path.startsWith("/api/student/") &&
-              response.status >= 400 &&
-              response.status < 500
+          path === "/api/auth/guardian/login" ||
+          path === "/api/auth/student/login"
+        ) && (code === "AUTH_INVALID" || code === "AUTH_LOCKED");
+      const authorityFailure =
+        !rejectedCredentialAttempt && (
+          response.status === 401 ||
+          code.startsWith("DEVICE_") ||
+          (
+            !syncPolicyOwnsError && (
+              code.startsWith("PLAN_") ||
+              (
+                path.startsWith("/api/student/") &&
+                response.status >= 400 &&
+                response.status < 500
+              )
             )
           )
         );

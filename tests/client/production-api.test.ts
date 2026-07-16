@@ -7,6 +7,7 @@ import {
   OFFLINE_DB_NAME,
   getConfirmedStars,
   getDeviceState,
+  handleDeviceActionRequired,
   markStudentAuthenticated,
   storeConfirmedStars
 } from "../../src/client/offline/db";
@@ -33,6 +34,20 @@ describe("production ApiClient authority wiring", () => {
       new ApiError(403, "DEVICE_NOT_TRUSTED")
     );
     await expect(getConfirmedStars()).resolves.toBeUndefined();
+    await expect(getDeviceState()).resolves.toBe("device-action-required");
+  });
+
+  it("does not clear device-recovery authority for a rejected guardian credential attempt", async () => {
+    await markStudentAuthenticated();
+    await handleDeviceActionRequired("DEVICE_REVOKED");
+    const api = createProductionApi(vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ code: "AUTH_INVALID" }),
+      { status: 401, headers: { "content-type": "application/json" } }
+    )));
+
+    await expect(api.guardianLogin("wrong password")).rejects.toEqual(
+      new ApiError(401, "AUTH_INVALID")
+    );
     await expect(getDeviceState()).resolves.toBe("device-action-required");
   });
 });

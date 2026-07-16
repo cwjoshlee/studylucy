@@ -157,7 +157,7 @@ describe("browser auth/offline lifecycle", () => {
 
   afterEach(cleanup);
 
-  it("runs the production callbacks from logout and revoke through registration, PIN, and recovery sync", async () => {
+  it("runs production callbacks from revoke through guardian-authenticated registration, existing PIN, and recovery sync", async () => {
     const source = dailyPlan();
     const currentDaily = dailyPlan({
       planId: "plan-lifecycle-current-runtime",
@@ -180,6 +180,7 @@ describe("browser auth/offline lifecycle", () => {
     await queueIdleEvent(idle);
 
     let rejectNextStars = true;
+    let guardianAuthenticated = false;
     const recoveryRequests: unknown[] = [];
     const submitted: OfflineBatchInput[] = [];
     const json = (body: unknown, status = 200) => new Response(
@@ -193,6 +194,11 @@ describe("browser auth/offline lifecycle", () => {
         return json({ id: "student-1", role: "student", displayName: "수아" });
       }
       if (path === "/api/auth/session/end" && method === "POST") {
+        guardianAuthenticated = false;
+        return new Response(null, { status: 204 });
+      }
+      if (path === "/api/auth/guardian/login" && method === "POST") {
+        guardianAuthenticated = true;
         return new Response(null, { status: 204 });
       }
       if (path === "/api/student/stars" && method === "GET" && rejectNextStars) {
@@ -200,6 +206,9 @@ describe("browser auth/offline lifecycle", () => {
         return json({ code: "DEVICE_REVOKED" }, 403);
       }
       if (path === "/api/guardian/devices/current" && method === "POST") {
+        if (!guardianAuthenticated) {
+          return json({ code: "AUTH_REQUIRED" }, 401);
+        }
         return json({
           publicId: "replacement-device-public",
           name: "Galaxy Tab A 재등록",
@@ -208,9 +217,6 @@ describe("browser auth/offline lifecycle", () => {
           status: "active",
           current: true
         }, 201);
-      }
-      if (path === "/api/auth/student-pin" && method === "PUT") {
-        return new Response(null, { status: 204 });
       }
       if (path === "/api/auth/student/login" && method === "POST") {
         return json({ offlineAccessUntil: "2026-07-18T14:59:59.999Z" });
@@ -240,9 +246,11 @@ describe("browser auth/offline lifecycle", () => {
           void auth.api.getStudentStars().catch(() => undefined);
         }}>revoke response</button>
         <button type="button" onClick={() => {
+          void auth.guardianLogin("correct horse battery staple");
+        }}>guardian login</button>
+        <button type="button" onClick={() => {
           void auth.registerDevice("Galaxy Tab A 재등록");
         }}>register</button>
-        <button type="button" onClick={() => void auth.setStudentPin("2580")}>set PIN</button>
         <button type="button" onClick={() => void auth.studentLogin("2580")}>student login</button>
       </div>;
     }
@@ -263,7 +271,7 @@ describe("browser auth/offline lifecycle", () => {
 
     await user.click(screen.getByRole("button", { name: "revoke response" }));
     await waitFor(() => expect(screen.getByLabelText("phase"))
-      .toHaveTextContent("device-registration"));
+      .toHaveTextContent("device-recovery-guardian-login"));
     await expect(getDeviceState()).resolves.toBe("device-action-required");
     const afterRevoke = await openDB(OFFLINE_DB_NAME, OFFLINE_DB_VERSION);
     const rows = await afterRevoke.getAll("activityQueue");
@@ -271,12 +279,14 @@ describe("browser auth/offline lifecycle", () => {
     expect(rows.every((row) => row.requiresRecovery)).toBe(true);
     afterRevoke.close();
 
+    await user.click(screen.getByRole("button", { name: "guardian login" }));
+    await waitFor(() => expect(screen.getByLabelText("phase"))
+      .toHaveTextContent("device-recovery-registration"));
+    expect(guardianAuthenticated).toBe(true);
     await user.click(screen.getByRole("button", { name: "register" }));
     await waitFor(() => expect(screen.getByLabelText("phase"))
-      .toHaveTextContent("pin-setup"));
-    await user.click(screen.getByRole("button", { name: "set PIN" }));
-    await waitFor(() => expect(screen.getByLabelText("phase"))
       .toHaveTextContent("student-login"));
+    expect(guardianAuthenticated).toBe(false);
     await user.click(screen.getByRole("button", { name: "student login" }));
     await waitFor(() => expect(screen.getByLabelText("phase"))
       .toHaveTextContent("authenticated"));

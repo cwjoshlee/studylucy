@@ -374,7 +374,18 @@ describe("family authentication", () => {
     ).toBe(200);
 
     student.setCookie("sua_device", deviceB!);
-    expect((await student.request("GET", "/api/auth/me")).statusCode).toBe(401);
+    const wrongActiveDevice = await student.request("GET", "/api/auth/me");
+    expect(wrongActiveDevice.statusCode).toBe(403);
+    expect(wrongActiveDevice.json()).toEqual({ code: "DEVICE_NOT_TRUSTED" });
+    student.setCookie("sua_device", "unknown-device-cookie");
+    const unknownDeviceWithValidSession = await student.request(
+      "GET",
+      "/api/auth/me"
+    );
+    expect(unknownDeviceWithValidSession.statusCode).toBe(403);
+    expect(unknownDeviceWithValidSession.json()).toEqual({
+      code: "DEVICE_NOT_TRUSTED"
+    });
     student.setCookie("sua_device", deviceA!);
     expect((await student.request("GET", "/api/auth/me")).statusCode).toBe(200);
 
@@ -383,7 +394,9 @@ describe("family authentication", () => {
       SET revoked_at = ?
       WHERE name = ?
     `).run("2026-07-15T03:00:01.000Z", "태블릿 A");
-    expect((await student.request("GET", "/api/auth/me")).statusCode).toBe(401);
+    const revokedMe = await student.request("GET", "/api/auth/me");
+    expect(revokedMe.statusCode).toBe(403);
+    expect(revokedMe.json()).toEqual({ code: "DEVICE_REVOKED" });
     const revokedLogin = await student.request(
       "POST",
       "/api/auth/student/login",
@@ -391,6 +404,62 @@ describe("family authentication", () => {
     );
     expect(revokedLogin.statusCode).toBe(403);
     expect(revokedLogin.json()).toEqual({ code: "DEVICE_REVOKED" });
+  });
+
+  it("reports a revoked cold session after guardian revocation while preserving guardian access and ordinary unauthenticated semantics", async () => {
+    const guardian = harness.client();
+    await bootstrapFamily(harness, guardian);
+    await loginGuardian(guardian);
+    const registered = await guardian.request(
+      "POST",
+      "/api/guardian/devices/current",
+      { name: "해제할 수아 태블릿" }
+    );
+    const registeredView = registered.json() as TrustedDeviceView;
+    const deviceCookie = guardian.cookie("sua_device");
+    expect(deviceCookie).toBeDefined();
+    await guardian.request("PUT", "/api/auth/student-pin", { pin: "2580" });
+
+    const student = harness.client();
+    student.setCookie("sua_device", deviceCookie!);
+    expect((await student.request("POST", "/api/auth/student/login", {
+      pin: "2580"
+    })).statusCode).toBe(200);
+    expect((harness.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM sessions AS s
+      JOIN users AS u ON u.id = s.user_id
+      WHERE u.role = 'student'
+    `).get() as { count: number }).count).toBe(1);
+
+    const revoked = await guardian.request(
+      "POST",
+      `/api/guardian/devices/${registeredView.publicId}/revoke`
+    );
+    expect(revoked.statusCode).toBe(200);
+    expect((harness.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM sessions AS s
+      JOIN users AS u ON u.id = s.user_id
+      WHERE u.role = 'student'
+    `).get() as { count: number }).count).toBe(0);
+
+    const coldMe = await student.request("GET", "/api/auth/me");
+    expect(coldMe.statusCode).toBe(403);
+    expect(coldMe.json()).toEqual({ code: "DEVICE_REVOKED" });
+
+    const guardianMe = await guardian.request("GET", "/api/auth/me");
+    expect(guardianMe.statusCode).toBe(200);
+    expect(guardianMe.json()).toMatchObject({ role: "guardian" });
+
+    const ordinaryUnauthenticated = harness.client();
+    ordinaryUnauthenticated.setCookie("sua_device", "unknown-device-cookie");
+    const unauthenticatedMe = await ordinaryUnauthenticated.request(
+      "GET",
+      "/api/auth/me"
+    );
+    expect(unauthenticatedMe.statusCode).toBe(401);
+    expect(unauthenticatedMe.json()).toEqual({ code: "AUTH_REQUIRED" });
   });
 
   it("persists only peppered hashes of opaque session and device tokens", async () => {

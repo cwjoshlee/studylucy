@@ -46,6 +46,20 @@ beforeEach(async () => {
 });
 
 describe("가족 로그인과 학생 홈", () => {
+  it("keeps the shared component fake honest about guardian-only device registration", async () => {
+    const api = createFakeApi();
+
+    await expect(api.registerDevice("인증 없이 등록 시도"))
+      .rejects.toEqual(new ApiError(401, "AUTH_REQUIRED"));
+    await api.guardianLogin("correct horse battery staple");
+    await expect(api.registerDevice("보호자 인증 후 등록"))
+      .resolves.toMatchObject({
+        name: "수아 갤럭시 탭",
+        status: "active",
+        current: true
+      });
+  });
+
   it("requires a student PIN when the server still has a student session but local authority is new or missing", async () => {
     const api = createFakeApi({
       me: vi.fn().mockResolvedValue({
@@ -97,10 +111,11 @@ describe("가족 로그인과 학생 홈", () => {
 
     render(<App api={api} />);
 
-    expect(await screen.findByRole("heading", { name: "이 기기 등록하기" }))
+    expect(await screen.findByRole("heading", { name: "보호자 확인" }))
       .toBeVisible();
     await expect(getDeviceState()).resolves.toBe("device-action-required");
     expect(api.studentLogin).not.toHaveBeenCalled();
+    expect(api.registerDevice).not.toHaveBeenCalled();
   });
 
   it("cold-starts only from a ready unexpired same-KST-day student lease after a network TypeError", async () => {
@@ -202,12 +217,235 @@ describe("가족 로그인과 학생 홈", () => {
 
     render(<App api={api} />);
 
-    expect(await screen.findByRole("heading", { name: "이 기기 등록하기" }))
+    expect(await screen.findByRole("heading", { name: "보호자 확인" }))
       .toBeVisible();
     await expect(getDeviceState()).resolves.toBe("device-action-required");
     await expect(listQueuedAttempts()).rejects.toMatchObject({
       code: "DEVICE_ACTION_REQUIRED"
     });
+    expect(api.registerDevice).not.toHaveBeenCalled();
+  });
+
+  it("requires guardian authentication before recovery registration and returns to a fresh student PIN without losing the journal", async () => {
+    const user = userEvent.setup();
+    const seeded = createFakeApi();
+    const cachedPlan = await seeded.getToday();
+    await markStudentAuthenticated();
+    await cacheIssuedPlan(cachedPlan, cachedPlan.stars);
+    await queueAttempt({
+      clientAttemptId: "guardian-recovery-attempt-0001",
+      planId: cachedPlan.planId,
+      itemId: cachedPlan.items[0]!.id,
+      contentVersion: cachedPlan.items[0]!.version,
+      studyDate: cachedPlan.date,
+      occurredAt: "2026-07-16T01:00:00.000Z",
+      readingScore: 100,
+      missedTokens: [],
+      mathAnswer: null,
+      durationMs: 20_000,
+      difficultyFeedback: null
+    });
+    const endSession = vi.fn().mockResolvedValue(undefined);
+    const api = createFakeApi({
+      endSession,
+      me: vi.fn().mockRejectedValue(new ApiError(403, "DEVICE_REVOKED"))
+    });
+
+    render(<App api={api} />);
+
+    expect(await screen.findByRole("heading", { name: "보호자 확인" }))
+      .toBeVisible();
+    expect(screen.queryByLabelText("기기 이름")).not.toBeInTheDocument();
+    expect(api.registerDevice).not.toHaveBeenCalled();
+
+    await user.type(
+      screen.getByLabelText("보호자 비밀번호"),
+      "correct horse battery staple"
+    );
+    await user.click(screen.getByRole("button", { name: "확인하고 기기 복구하기" }));
+    expect(api.guardianLogin).toHaveBeenCalledWith(
+      "correct horse battery staple"
+    );
+
+    expect(await screen.findByRole("heading", { name: "이 기기 다시 등록하기" }))
+      .toBeVisible();
+    await user.clear(screen.getByLabelText("기기 이름"));
+    await user.type(screen.getByLabelText("기기 이름"), "수아 갤럭시 탭 복구");
+    await user.click(screen.getByRole("button", { name: "현재 기기 다시 등록" }));
+
+    expect(api.registerDevice).toHaveBeenCalledWith("수아 갤럭시 탭 복구");
+    expect(endSession).toHaveBeenCalledOnce();
+    expect(await screen.findByRole("heading", {
+      name: "수아 PIN으로 들어가기"
+    })).toBeVisible();
+    await expect(getDeviceState()).resolves.toBe("auth-required");
+    await markStudentAuthenticated();
+    const preserved = await listQueuedAttempts();
+    expect(preserved).toHaveLength(1);
+    expect(preserved[0]).toMatchObject({
+      clientAttemptId: "guardian-recovery-attempt-0001"
+    });
+  });
+
+  it("fails closed to a fresh student PIN when the guardian-session end response is lost after recovery registration", async () => {
+    const user = userEvent.setup();
+    const api = createFakeApi({
+      me: vi.fn().mockRejectedValue(new ApiError(403, "DEVICE_NOT_TRUSTED")),
+      endSession: vi.fn().mockRejectedValue(new TypeError("response lost"))
+    });
+
+    render(<App api={api} />);
+    await screen.findByRole("heading", { name: "보호자 확인" });
+    await user.type(
+      screen.getByLabelText("보호자 비밀번호"),
+      "correct horse battery staple"
+    );
+    await user.click(screen.getByRole("button", {
+      name: "확인하고 기기 복구하기"
+    }));
+    await screen.findByRole("heading", { name: "이 기기 다시 등록하기" });
+    await user.click(screen.getByRole("button", {
+      name: "현재 기기 다시 등록"
+    }));
+
+    expect(await screen.findByRole("heading", {
+      name: "수아 PIN으로 들어가기"
+    })).toBeVisible();
+    await expect(getDeviceState()).resolves.toBe("auth-required");
+    expect(api.setStudentPin).not.toHaveBeenCalled();
+  });
+
+  it("keeps the authenticated recovery registration step retryable after a transient register failure", async () => {
+    const user = userEvent.setup();
+    const registerDevice = vi.fn()
+      .mockRejectedValueOnce(new ApiError(503, "HTTP_503"))
+      .mockResolvedValueOnce({
+        publicId: "replacement-device-public",
+        name: "수아 갤럭시 탭",
+        createdAt: "2026-07-16T03:00:00.000Z",
+        lastUsedAt: null,
+        status: "active",
+        current: true
+      });
+    const api = createFakeApi({
+      me: vi.fn().mockRejectedValue(new ApiError(403, "DEVICE_REVOKED")),
+      registerDevice
+    });
+
+    render(<App api={api} />);
+    await screen.findByRole("heading", { name: "보호자 확인" });
+    await user.type(
+      screen.getByLabelText("보호자 비밀번호"),
+      "correct horse battery staple"
+    );
+    await user.click(screen.getByRole("button", {
+      name: "확인하고 기기 복구하기"
+    }));
+    await screen.findByRole("heading", { name: "이 기기 다시 등록하기" });
+
+    await user.click(screen.getByRole("button", {
+      name: "현재 기기 다시 등록"
+    }));
+    expect(await screen.findByRole("alert")).toHaveTextContent("HTTP_503");
+    expect(screen.getByRole("heading", {
+      name: "이 기기 다시 등록하기"
+    })).toBeVisible();
+
+    await user.click(screen.getByRole("button", {
+      name: "현재 기기 다시 등록"
+    }));
+    expect(await screen.findByRole("heading", {
+      name: "수아 PIN으로 들어가기"
+    })).toBeVisible();
+    expect(api.guardianLogin).toHaveBeenCalledOnce();
+    expect(registerDevice).toHaveBeenCalledTimes(2);
+    expect(api.endSession).toHaveBeenCalledOnce();
+    expect(api.setStudentPin).not.toHaveBeenCalled();
+  });
+
+  it("keeps production recovery retryable across a bad guardian password and an expired guardian registration session", async () => {
+    const user = userEvent.setup();
+    await markStudentAuthenticated();
+    let guardianLoginCalls = 0;
+    let registerCalls = 0;
+    const json = (body: unknown, status = 200) => new Response(
+      JSON.stringify(body),
+      { status, headers: { "content-type": "application/json" } }
+    );
+    const fetcher = vi.fn().mockImplementation(async (
+      input: RequestInfo | URL,
+      init?: RequestInit
+    ) => {
+      const path = String(input);
+      if (path === "/api/auth/me") {
+        return json({ code: "DEVICE_REVOKED" }, 403);
+      }
+      if (path === "/api/auth/guardian/login") {
+        guardianLoginCalls += 1;
+        return guardianLoginCalls === 1
+          ? json({ code: "AUTH_INVALID" }, 401)
+          : new Response(null, { status: 204 });
+      }
+      if (path === "/api/guardian/devices/current") {
+        registerCalls += 1;
+        return registerCalls === 1
+          ? json({ code: "AUTH_REQUIRED" }, 401)
+          : json({
+              publicId: "replacement-device-public",
+              name: "수아 갤럭시 탭",
+              createdAt: "2026-07-16T03:00:00.000Z",
+              lastUsedAt: null,
+              status: "active",
+              current: true
+            }, 201);
+      }
+      if (path === "/api/auth/session/end") {
+        return new Response(null, { status: 204 });
+      }
+      throw new Error(`Unexpected request: ${init?.method} ${path}`);
+    });
+    const api = createProductionApi(fetcher);
+
+    render(<App api={api} />);
+    await screen.findByRole("heading", { name: "보호자 확인" });
+    await user.type(screen.getByLabelText("보호자 비밀번호"), "wrong password");
+    await user.click(screen.getByRole("button", {
+      name: "확인하고 기기 복구하기"
+    }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent("AUTH_INVALID");
+    expect(screen.getByRole("heading", { name: "보호자 확인" }))
+      .toBeVisible();
+    await expect(getDeviceState()).resolves.toBe("device-action-required");
+
+    await user.click(screen.getByRole("button", {
+      name: "확인하고 기기 복구하기"
+    }));
+    await screen.findByRole("heading", { name: "이 기기 다시 등록하기" });
+    await user.click(screen.getByRole("button", {
+      name: "현재 기기 다시 등록"
+    }));
+
+    expect(await screen.findByRole("heading", { name: "보호자 확인" }))
+      .toBeVisible();
+    await expect(getDeviceState()).resolves.toBe("device-action-required");
+    await user.type(
+      screen.getByLabelText("보호자 비밀번호"),
+      "correct horse battery staple"
+    );
+    await user.click(screen.getByRole("button", {
+      name: "확인하고 기기 복구하기"
+    }));
+    await screen.findByRole("heading", { name: "이 기기 다시 등록하기" });
+    await user.click(screen.getByRole("button", {
+      name: "현재 기기 다시 등록"
+    }));
+
+    expect(await screen.findByRole("heading", {
+      name: "수아 PIN으로 들어가기"
+    })).toBeVisible();
+    expect(guardianLoginCalls).toBe(3);
+    expect(registerCalls).toBe(2);
   });
 
   it("shows setup only for SETUP_REQUIRED", async () => {
@@ -597,7 +835,7 @@ describe("가족 로그인과 학생 홈", () => {
 
   it.each([
     [409, "PLAN_NOT_ISSUED", "수아 PIN으로 들어가기"],
-    [403, "DEVICE_NOT_TRUSTED", "이 기기 등록하기"]
+    [403, "DEVICE_NOT_TRUSTED", "보호자 확인"]
   ])(
     "moves the live learning UI immediately after a direct %s %s authority failure",
     async (status, code, expectedHeading) => {

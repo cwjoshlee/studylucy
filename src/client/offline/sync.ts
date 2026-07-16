@@ -139,6 +139,22 @@ function blockedResult(
   };
 }
 
+async function transitionToBlocked(
+  sent: number,
+  fallback: { activities: number; rejected: number },
+  stopped: "auth-required" | "device-action-required",
+  transition: () => Promise<void>
+): Promise<SyncPendingResult> {
+  const counts = await getQueueCounts().catch(() => fallback);
+  await transition();
+  return {
+    sent,
+    remaining: counts.activities,
+    rejected: counts.rejected,
+    stopped
+  };
+}
+
 export async function preserveFailedAttempt(
   error: unknown,
   input: AttemptInput
@@ -264,50 +280,81 @@ export async function syncPending(
     }
   }
 
-  const batch = await reserveNextBatch();
-  if (batch === undefined) return await snapshotResult(0, null);
+  let sent = 0;
+  // Every successful batch removes at least one row. Bounding the number of
+  // reservations by the rows visible at wake start prevents a producer from
+  // extending this drain forever while still emptying every initially eligible
+  // authority group.
+  let reservationBudget = initial.activities;
+  while (reservationBudget > 0) {
+    const batch = await reserveNextBatch();
+    if (batch === undefined) return await snapshotResult(sent, null);
 
-  let retriedCurrentPlan = false;
-  for (;;) {
-    try {
-      const receipt = await api.applyOfflineBatch(batch);
-      await applyBatchReceipt(receipt);
-      publishSyncCompleted();
-      return await snapshotResult(batch.events.length, null);
-    } catch (error) {
-      if (isAuth(error)) {
-        await clearOfflineAuthority("auth-required");
-        return blockedResult(initial, "auth-required");
-      }
-      const device = deviceCode(error);
-      if (device !== undefined) {
-        await handleDeviceActionRequired(device);
-        return blockedResult(initial, "device-action-required");
-      }
-      const { code } = errorFacts(error);
-      if (code === "CURRENT_DAILY_PLAN_REQUIRED" && !retriedCurrentPlan) {
-        retriedCurrentPlan = true;
-        try {
-          await fetchCurrentPlan(api);
-        } catch (currentError) {
-          if (isAuth(currentError)) {
-            await clearOfflineAuthority("auth-required");
-            return blockedResult(initial, "auth-required");
-          }
-          const currentDevice = deviceCode(currentError);
-          if (currentDevice !== undefined) {
-            await handleDeviceActionRequired(currentDevice);
-            return blockedResult(initial, "device-action-required");
-          }
-          return await snapshotResult(0, "retry");
+    let retriedCurrentPlan = false;
+    for (;;) {
+      try {
+        const receipt = await api.applyOfflineBatch(batch);
+        await applyBatchReceipt(receipt);
+        sent += batch.events.length;
+        reservationBudget -= 1;
+        publishSyncCompleted();
+        break;
+      } catch (error) {
+        if (isAuth(error)) {
+          return await transitionToBlocked(
+            sent,
+            initial,
+            "auth-required",
+            () => clearOfflineAuthority("auth-required")
+          );
         }
-        continue;
+        const device = deviceCode(error);
+        if (device !== undefined) {
+          return await transitionToBlocked(
+            sent,
+            initial,
+            "device-action-required",
+            () => handleDeviceActionRequired(device)
+          );
+        }
+        const { code } = errorFacts(error);
+        if (code === "CURRENT_DAILY_PLAN_REQUIRED" && !retriedCurrentPlan) {
+          retriedCurrentPlan = true;
+          try {
+            await fetchCurrentPlan(api);
+          } catch (currentError) {
+            if (isAuth(currentError)) {
+              return await transitionToBlocked(
+                sent,
+                initial,
+                "auth-required",
+                () => clearOfflineAuthority("auth-required")
+              );
+            }
+            const currentDevice = deviceCode(currentError);
+            if (currentDevice !== undefined) {
+              return await transitionToBlocked(
+                sent,
+                initial,
+                "device-action-required",
+                () => handleDeviceActionRequired(currentDevice)
+              );
+            }
+            return await snapshotResult(sent, "retry");
+          }
+          continue;
+        }
+        if (isTerminal4xx(error)) {
+          await rejectPendingBatch(batch.clientBatchId, code ?? "INVALID_REQUEST");
+          return await snapshotResult(sent, "terminal");
+        }
+        return await snapshotResult(sent, "retry");
       }
-      if (isTerminal4xx(error)) {
-        await rejectPendingBatch(batch.clientBatchId, code ?? "INVALID_REQUEST");
-        return await snapshotResult(0, "terminal");
-      }
-      return await snapshotResult(0, "retry");
     }
   }
+
+  const completed = await snapshotResult(sent, null);
+  return completed.remaining === 0
+    ? completed
+    : { ...completed, stopped: "retry" };
 }

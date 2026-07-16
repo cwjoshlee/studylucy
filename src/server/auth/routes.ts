@@ -227,6 +227,14 @@ export function registerAuthRoutes(
         await reply.code(409).send({ code: "SETUP_REQUIRED" });
         return;
       }
+      if (request.currentDeviceStatus === "revoked") {
+        await reply.code(403).send({ code: "DEVICE_REVOKED" });
+        return;
+      }
+      if (request.currentSessionStatus === "valid") {
+        await reply.code(403).send({ code: "DEVICE_NOT_TRUSTED" });
+        return;
+      }
       await reply.code(401).send({ code: "AUTH_REQUIRED" });
       return;
     }

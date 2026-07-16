@@ -284,19 +284,20 @@ describe("unified persistent offline synchronization", () => {
     });
 
     await expect(syncPending(retryApi)).resolves.toMatchObject({
-      sent: 2,
-      remaining: 1
+      sent: 3,
+      remaining: 0
     });
     expect(retried[0]).toEqual(firstInputs[0]);
     expect(retried[0]?.events.map(clientId))
       .not.toContain("attempt-newer-waits-0002");
-    await expect(listPendingBatches()).resolves.toEqual([]);
-    await expect(listActivities()).resolves.toMatchObject([
-      { clientId: "attempt-newer-waits-0002" }
+    expect(retried[1]?.events.map(clientId)).toEqual([
+      "attempt-newer-waits-0002"
     ]);
+    await expect(listPendingBatches()).resolves.toEqual([]);
+    await expect(listActivities()).resolves.toEqual([]);
   });
 
-  it("caps one immutable same-authority reservation at exactly 100 ordered events", async () => {
+  it("caps each immutable reservation at 100 and drains the remaining eligible rows in the same wake", async () => {
     await readyWithPlan();
     for (let index = 0; index < 101; index += 1) {
       await queueAttempt(attempt(
@@ -319,15 +320,154 @@ describe("unified persistent offline synchronization", () => {
       )
     );
 
-    let retried: OfflineBatchInput | undefined;
+    const retried: OfflineBatchInput[] = [];
     await expect(syncPending(api({
       applyOfflineBatch: vi.fn().mockImplementation(async (input) => {
-        retried = structuredClone(input);
+        retried.push(structuredClone(input));
         return receiptFor(input);
       })
-    }))).resolves.toMatchObject({ sent: 100, remaining: 1 });
-    expect(retried).toEqual(first);
+    }))).resolves.toMatchObject({ sent: 101, remaining: 0, stopped: null });
+    expect(retried).toHaveLength(2);
+    expect(retried[0]).toEqual(first);
+    expect(retried[1]?.events.map(clientId)).toEqual([
+      "attempt-bulk-0100"
+    ]);
+    expect(retried[1]?.clientBatchId).not.toBe(first?.clientBatchId);
+    await expect(listActivities()).resolves.toEqual([]);
+    await expect(listPendingBatches()).resolves.toEqual([]);
   });
+
+  it("drains multiple authority groups in global journal order without waiting for another wake", async () => {
+    const firstPlan = plan({ planId: "plan-authority-first", offlineEpoch: 3 });
+    const secondPlan = plan({ planId: "plan-authority-second", offlineEpoch: 4 });
+    const thirdPlan = plan({ planId: "plan-authority-third", offlineEpoch: 5 });
+    await readyWithPlan(firstPlan);
+    await queueAttempt(attempt(
+      "attempt-authority-first-0001",
+      "2026-07-16T01:00:00.000Z",
+      firstPlan.planId
+    ));
+    await cacheIssuedPlan(secondPlan, secondPlan.stars);
+    await queueAttempt(attempt(
+      "attempt-authority-second-0001",
+      "2026-07-16T01:01:00.000Z",
+      secondPlan.planId
+    ));
+    await cacheIssuedPlan(thirdPlan, thirdPlan.stars);
+    await queueAttempt(attempt(
+      "attempt-authority-third-0001",
+      "2026-07-16T01:02:00.000Z",
+      thirdPlan.planId
+    ));
+    const submitted: OfflineBatchInput[] = [];
+    const client = api({
+      getToday: vi.fn().mockResolvedValue(thirdPlan),
+      applyOfflineBatch: vi.fn().mockImplementation(async (input) => {
+        submitted.push(structuredClone(input));
+        return receiptFor(input, { currentDailyPlan: thirdPlan });
+      })
+    });
+
+    await expect(syncPending(client)).resolves.toMatchObject({
+      sent: 3,
+      remaining: 0,
+      stopped: null
+    });
+    expect(submitted.map((batch) => batch.planId)).toEqual([
+      firstPlan.planId,
+      secondPlan.planId,
+      thirdPlan.planId
+    ]);
+    expect(submitted.flatMap((batch) => batch.events.map(clientId))).toEqual([
+      "attempt-authority-first-0001",
+      "attempt-authority-second-0001",
+      "attempt-authority-third-0001"
+    ]);
+    await expect(listPendingBatches()).resolves.toEqual([]);
+  });
+
+  it("stops a continuous drain on the first retryable failure and preserves that exact reservation", async () => {
+    await readyWithPlan();
+    for (let index = 0; index < 101; index += 1) {
+      await queueAttempt(attempt(
+        `attempt-drain-retry-${index.toString().padStart(4, "0")}`,
+        new Date(Date.parse("2026-07-16T01:00:00.000Z") + index).toISOString()
+      ));
+    }
+    const submitted: OfflineBatchInput[] = [];
+    const applyOfflineBatch = vi.fn().mockImplementation(async (input) => {
+      submitted.push(structuredClone(input));
+      if (submitted.length === 2) throw new TypeError("offline");
+      return receiptFor(input);
+    });
+
+    await expect(syncPending(api({ applyOfflineBatch }))).resolves.toMatchObject({
+      sent: 100,
+      remaining: 1,
+      stopped: "retry"
+    });
+    expect(submitted).toHaveLength(2);
+    expect(submitted[1]?.events.map(clientId)).toEqual([
+      "attempt-drain-retry-0100"
+    ]);
+    await expect(listPendingBatches()).resolves.toEqual([
+      expect.objectContaining({
+        clientBatchId: submitted[1]?.clientBatchId,
+        orderedClientIds: ["attempt-drain-retry-0100"]
+      })
+    ]);
+  });
+
+  it.each([
+    ["auth", new ApiError(401, "AUTH_REQUIRED"), "auth-required", 1, 0],
+    ["device", new ApiError(403, "DEVICE_REVOKED"), "device-action-required", 1, 0],
+    ["terminal", new ApiError(400, "INVALID_REQUEST"), "terminal", 0, 1]
+  ] as const)(
+    "reports prior successful batches and stops without another reservation on a later %s failure",
+    async (kind, failure, stopped, remaining, rejected) => {
+      await readyWithPlan();
+      for (let index = 0; index < 101; index += 1) {
+        await queueAttempt(attempt(
+          `attempt-drain-${kind}-${index.toString().padStart(4, "0")}`,
+          new Date(Date.parse("2026-07-16T01:00:00.000Z") + index).toISOString()
+        ));
+      }
+      const submitted: OfflineBatchInput[] = [];
+      const applyOfflineBatch = vi.fn().mockImplementation(async (input) => {
+        submitted.push(structuredClone(input));
+        if (submitted.length === 2) throw failure;
+        return receiptFor(input);
+      });
+
+      await expect(syncPending(api({ applyOfflineBatch }))).resolves.toMatchObject({
+        sent: 100,
+        remaining,
+        rejected,
+        stopped
+      });
+      expect(submitted).toHaveLength(2);
+      expect(submitted[1]?.events.map(clientId)).toEqual([
+        `attempt-drain-${kind}-0100`
+      ]);
+
+      if (kind === "auth") {
+        await expect(getDeviceState()).resolves.toBe("auth-required");
+        await markStudentAuthenticated();
+        await expect(listPendingBatches()).resolves.toHaveLength(1);
+      } else if (kind === "device") {
+        await expect(getDeviceState()).resolves.toBe("device-action-required");
+        await markStudentAuthenticated();
+        await expect(listPendingBatches()).resolves.toEqual([]);
+        await expect(listActivities()).resolves.toEqual([
+          expect.objectContaining({ requiresRecovery: true })
+        ]);
+      } else {
+        await expect(listPendingBatches()).resolves.toEqual([]);
+        await expect(listActivities()).resolves.toEqual([]);
+        await expect(listRejectedActivities()).resolves.toHaveLength(1);
+      }
+    }
+  );
 
   it("never lets a newer acknowledged cursor hide an older queued base cursor", async () => {
     await readyWithPlan(plan({ activityCursor: 1 }));

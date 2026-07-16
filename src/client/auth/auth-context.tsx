@@ -29,7 +29,9 @@ type AuthState =
   | { phase: "setup"; user: null }
   | { phase: "onboarding-guardian-login"; user: null }
   | { phase: "guardian-login"; user: null }
+  | { phase: "device-recovery-guardian-login"; user: null }
   | { phase: "device-registration"; user: null }
+  | { phase: "device-recovery-registration"; user: null }
   | { phase: "pin-setup"; user: null }
   | { phase: "student-login"; user: null }
   | {
@@ -67,7 +69,7 @@ export function AuthProvider({
     if (deviceState === "auth-required") {
       setState({ phase: "student-login", user: null });
     } else if (deviceState === "device-action-required") {
-      setState({ phase: "device-registration", user: null });
+      setState({ phase: "device-recovery-guardian-login", user: null });
     }
   }), []);
 
@@ -95,7 +97,7 @@ export function AuthProvider({
             return;
           }
           if (deviceState === "device-action-required") {
-            setState({ phase: "device-registration", user: null });
+            setState({ phase: "device-recovery-guardian-login", user: null });
             return;
           }
         }
@@ -123,7 +125,7 @@ export function AuthProvider({
         ) {
           await applyAuthorityFailure(error.code).catch(() => undefined);
           if (!active) return;
-          setState({ phase: "device-registration", user: null });
+          setState({ phase: "device-recovery-guardian-login", user: null });
           return;
         }
         if (error instanceof TypeError) {
@@ -156,16 +158,36 @@ export function AuthProvider({
     },
     guardianLogin: async (password) => {
       const onboarding = state.phase === "onboarding-guardian-login";
+      const deviceRecovery = state.phase === "device-recovery-guardian-login";
       await api.guardianLogin(password);
       if (onboarding) {
         setState({ phase: "device-registration", user: null });
+        return;
+      }
+      if (deviceRecovery) {
+        setState({ phase: "device-recovery-registration", user: null });
         return;
       }
       const user = await api.me();
       setState({ phase: "authenticated", user, offlineSession: null });
     },
     registerDevice: async (name) => {
-      await api.registerDevice(name);
+      const recovering = state.phase === "device-recovery-registration";
+      try {
+        await api.registerDevice(name);
+      } catch (error) {
+        if (recovering && error instanceof ApiError && error.status === 401) {
+          await applyAuthorityFailure("DEVICE_NOT_TRUSTED")
+            .catch(() => undefined);
+          setState({ phase: "device-recovery-guardian-login", user: null });
+        }
+        throw error;
+      }
+      if (recovering) {
+        await endSession();
+        setState({ phase: "student-login", user: null });
+        return;
+      }
       setState({ phase: "pin-setup", user: null });
     },
     setStudentPin: async (pin) => {

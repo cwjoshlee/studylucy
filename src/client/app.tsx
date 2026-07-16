@@ -11,7 +11,9 @@ function AppContent() {
     auth.phase === "setup" ||
     auth.phase === "onboarding-guardian-login" ||
     auth.phase === "guardian-login" ||
+    auth.phase === "device-recovery-guardian-login" ||
     auth.phase === "device-registration" ||
+    auth.phase === "device-recovery-registration" ||
     auth.phase === "pin-setup" ||
     auth.phase === "student-login"
   ) {
