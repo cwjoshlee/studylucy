@@ -1,6 +1,7 @@
 import type { ClientApi } from "./api/client";
 import { AuthProvider, useAuth } from "./auth/auth-context";
 import { LoginScreen } from "./auth/login-screen";
+import { GuardianDashboard } from "./guardian/guardian-dashboard";
 import { StudentHome } from "./home/student-home";
 
 function AppContent() {
@@ -18,14 +19,7 @@ function AppContent() {
   }
   if (auth.phase === "error") return <main>잠시 후 다시 시도해 주세요.</main>;
   if (auth.user.role === "guardian") {
-    return (
-      <main className="guardian-placeholder">
-        <p className="eyebrow">보호자 로그인으로 보호되어 있어요</p>
-        <h1>보호자 공간</h1>
-        <p id="guardian-placeholder-note">진도와 별 기록을 보는 화면은 다음 단계에서 열려요.</p>
-        <button type="button" disabled aria-describedby="guardian-placeholder-note">보호자 화면으로 가기</button>
-      </main>
-    );
+    return <GuardianDashboard api={auth.api} />;
   }
   return <StudentHome api={auth.api} />;
 }

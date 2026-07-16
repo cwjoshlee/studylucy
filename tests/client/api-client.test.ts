@@ -65,4 +65,97 @@ describe("ApiClient", () => {
 
     await expect(api.saveAttempt({} as never)).resolves.toEqual(receipt);
   });
+
+  it("sends guardian ledger filters with the hard 100-row page limit", async () => {
+    const ledger = {
+      summary: {
+        balance: 3,
+        earnedToday: 3,
+        deductedToday: 0,
+        lastReason: "보너스"
+      },
+      events: [],
+      nextCursor: null
+    };
+    const fetcher = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify(ledger),
+      { status: 200, headers: { "content-type": "application/json" } }
+    ));
+    const api = new ApiClient(fetcher);
+
+    await expect(api.getGuardianStars({
+      from: "2026-07-01",
+      to: "2026-07-16",
+      direction: "deducted",
+      reason: "IDLE_TIMEOUT",
+      cursor: "cursor-1"
+    })).resolves.toEqual(ledger);
+
+    expect(fetcher).toHaveBeenCalledWith(
+      "/api/guardian/stars?from=2026-07-01&to=2026-07-16&direction=deducted&reason=IDLE_TIMEOUT&cursor=cursor-1&limit=100",
+      expect.objectContaining({ method: "GET" })
+    );
+  });
+
+  it("maps guardian star and plan mutations to their protected API routes", async () => {
+    const fetcher = vi.fn().mockImplementation(() => Promise.resolve(new Response(
+      JSON.stringify({}),
+      { status: 200, headers: { "content-type": "application/json" } }
+    )));
+    const api = new ApiClient(fetcher);
+
+    await api.approveStarAdjustment("pending-1", { approvedStars: 1, note: "" });
+    await api.waiveStarAdjustment("pending-2", { note: "아파서 쉬었어요" });
+    await api.applyManualStars({
+      delta: 2,
+      reason: "약속을 잘 지켰어요",
+      clientCommandId: "guardian-command-0001"
+    });
+    await api.reverseStarEvent("event-1", { note: "잘못 입력했어요" });
+    await api.updateGuardianDailyPlan("2026-07-17", {
+      koreanTarget: 2,
+      mathTarget: 2,
+      isRestDay: false
+    });
+
+    expect(fetcher.mock.calls.map(([path, init]) => ({
+      path,
+      method: init?.method,
+      body: init?.body
+    }))).toEqual([
+      {
+        path: "/api/guardian/star-adjustments/pending-1/approve",
+        method: "POST",
+        body: JSON.stringify({ approvedStars: 1, note: "" })
+      },
+      {
+        path: "/api/guardian/star-adjustments/pending-2/waive",
+        method: "POST",
+        body: JSON.stringify({ note: "아파서 쉬었어요" })
+      },
+      {
+        path: "/api/guardian/stars/manual",
+        method: "POST",
+        body: JSON.stringify({
+          delta: 2,
+          reason: "약속을 잘 지켰어요",
+          clientCommandId: "guardian-command-0001"
+        })
+      },
+      {
+        path: "/api/guardian/stars/event-1/reverse",
+        method: "POST",
+        body: JSON.stringify({ note: "잘못 입력했어요" })
+      },
+      {
+        path: "/api/guardian/daily-plans/2026-07-17",
+        method: "PUT",
+        body: JSON.stringify({
+          koreanTarget: 2,
+          mathTarget: 2,
+          isRestDay: false
+        })
+      }
+    ]);
+  });
 });

@@ -1,7 +1,13 @@
-button, input {
+button, input, select, textarea {
   min-height: var(--touch-min);
   border-radius: 14px;
   border: 2px solid var(--line);
+}
+
+input, select, textarea {
+  padding: 8px 12px;
+  color: var(--ink);
+  background: white;
 }
 
 button {
@@ -15,7 +21,7 @@ button {
 
 button:disabled { cursor: wait; opacity: .65; }
 .button-secondary { color: var(--lavender-deep); background: var(--cloud); }
-button:focus-visible, input:focus-visible {
+button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible {
   outline: 4px solid var(--star);
   outline-offset: 3px;
 }
@@ -86,3 +92,61 @@ button:focus-visible, input:focus-visible {
 .login-card label { display: grid; gap: 7px; font-weight: 800; }
 .login-card input { width: 100%; padding: 8px 12px; background: white; }
 .eyebrow { color: var(--lavender-deep); font-weight: 900; }
+
+.guardian-header, .guardian-panel, .guardian-tabs {
+  padding: 22px;
+  border: 2px solid rgb(255 255 255 / 78%);
+  border-radius: var(--radius-large);
+  background: rgb(255 255 255 / 88%);
+  box-shadow: var(--shadow);
+}
+.guardian-header h1, .guardian-header p { margin: 0; }
+.guardian-header h1 { margin-top: 6px; }
+.guardian-tabs { gap: 10px; }
+.guardian-tabs button[aria-selected="true"] { border-color: var(--ink); background: var(--ink); }
+.guardian-panel h2 { margin-top: 0; }
+.guardian-balance { font-size: clamp(1.4rem, 3vw, 2rem); font-weight: 900; }
+.guardian-metrics, .adjustment-values {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 12px;
+}
+.guardian-metrics p, .adjustment-values span {
+  margin: 0;
+  padding: 14px;
+  border-radius: 14px;
+  background: var(--mint);
+  font-weight: 800;
+}
+.guardian-list { display: grid; gap: 16px; margin-top: 18px; }
+.guardian-card {
+  display: grid;
+  gap: 12px;
+  padding: 18px;
+  border: 2px solid var(--line);
+  border-radius: var(--radius-medium);
+  background: var(--cloud);
+}
+.guardian-card h3, .guardian-card p { margin: 0; }
+.guardian-card label, .guardian-filter label, .guardian-manual-stars label,
+.guardian-plan-loader label, .guardian-plan-form label {
+  display: grid;
+  gap: 6px;
+  font-weight: 800;
+}
+.guardian-filter, .guardian-manual-stars, .guardian-plan-form, .guardian-plan-loader {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+  align-items: end;
+  margin: 18px 0;
+}
+.guardian-manual-stars, .guardian-plan-form {
+  padding: 18px;
+  border-radius: var(--radius-medium);
+  background: #fbf6ff;
+}
+.guardian-manual-stars h3 { grid-column: 1 / -1; margin: 0; }
+.guardian-checkbox { grid-template-columns: auto 1fr !important; align-items: center; }
+.guardian-checkbox input { width: var(--touch-min); margin: 0; }
+.ledger-link { color: var(--lavender-deep); font-weight: 800; }

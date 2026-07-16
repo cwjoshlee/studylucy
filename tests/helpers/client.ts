@@ -54,6 +54,37 @@ export function createFakeApi(overrides: Record<string, unknown> = {}) {
       deductedToday: 1,
       lastReason: "필수 학습을 마쳤어요."
     }),
+    getGuardianProgress: vi.fn().mockResolvedValue({
+      completedItems: 4,
+      totalAttempts: 6,
+      readingPassRate: 83,
+      mathPassRate: 75,
+      recentReviewTokens: [{ token: "꽃잎", count: 2 }]
+    }),
+    getGuardianStars: vi.fn().mockResolvedValue({
+      summary: {
+        balance: 12,
+        earnedToday: 3,
+        deductedToday: 1,
+        lastReason: "5분 무반응"
+      },
+      events: [],
+      nextCursor: null
+    }),
+    getStarAdjustments: vi.fn().mockResolvedValue({ adjustments: [] }),
+    approveStarAdjustment: vi.fn(),
+    waiveStarAdjustment: vi.fn(),
+    applyManualStars: vi.fn(),
+    reverseStarEvent: vi.fn(),
+    getGuardianDailyPlan: vi.fn().mockResolvedValue({
+      studyDate: "2026-07-17",
+      koreanTarget: 2,
+      mathTarget: 2,
+      isRestDay: false,
+      requiredItemIds: []
+    }),
+    updateGuardianDailyPlan: vi.fn(),
+    getBackupStatus: vi.fn().mockResolvedValue({ status: "never-run" }),
     ...overrides
   };
 }

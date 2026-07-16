@@ -106,7 +106,10 @@ describe("가족 로그인과 학생 홈", () => {
     render(<App api={api} />);
 
     expect(await screen.findByRole("heading", { name: "보호자 공간" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "보호자 화면으로 가기" })).toBeVisible();
+    expect(screen.getByRole("tab", { name: "진도" })).toHaveAttribute("aria-selected", "true");
+    expect(await screen.findByText("별 잔액 12개")).toBeVisible();
+    expect(api.getGuardianProgress).toHaveBeenCalledOnce();
+    expect(api.getGuardianStars).toHaveBeenCalledOnce();
   });
 
   it("returns an existing guardian to the protected guardian space", async () => {

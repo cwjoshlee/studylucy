@@ -20,6 +20,27 @@
 .learning-section + .learning-section { margin-top: 28px; }
 .section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 
+.guardian-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
+  grid-template-areas:
+    "guardian-header guardian-header"
+    "guardian-tabs guardian-panel";
+  gap: 22px;
+  padding: 22px;
+  background: linear-gradient(145deg, #fffaf1, #f5efff 66%, #ecfbf3);
+}
+.guardian-header { grid-area: guardian-header; }
+.guardian-tabs {
+  grid-area: guardian-tabs;
+  display: grid;
+  align-self: start;
+  position: sticky;
+  top: 22px;
+}
+.guardian-panel { grid-area: guardian-panel; min-width: 0; }
+
 .login-shell, .guardian-placeholder {
   min-height: 100vh;
   display: grid;

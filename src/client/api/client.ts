@@ -6,11 +6,17 @@ import type {
   TodayPlan
 } from "../../shared/learning";
 import type {
+  AppliedStarResult,
+  ApprovalInput,
+  DailyPlanInput,
   GuardianDailyPlan,
   GuardianStarLedger,
   IdleEventInput,
   IdleEventResult,
+  ManualStarInput,
   PendingStarAdjustment,
+  ProcessedStarAdjustment,
+  StarReason,
   StudentStarSummary
 } from "../../shared/stars";
 
@@ -40,6 +46,14 @@ export type BackupStatus = {
   status: "never-run" | "success" | "failure";
   finishedAt?: string;
   filename?: string;
+};
+
+export type GuardianLedgerFilters = {
+  from?: string;
+  to?: string;
+  direction?: "all" | "earned" | "deducted";
+  reason?: StarReason;
+  cursor?: string;
 };
 
 export class ApiClient {
@@ -120,16 +134,71 @@ export class ApiClient {
     return this.request("GET", `/api/guardian/progress?from=${encodeURIComponent(from)}&to=${encodeURIComponent(to)}`);
   }
 
-  getGuardianStars(): Promise<GuardianStarLedger> {
-    return this.request("GET", "/api/guardian/stars");
+  getGuardianStars(filters: GuardianLedgerFilters = {}): Promise<GuardianStarLedger> {
+    const query = new URLSearchParams();
+    if (filters.from !== undefined) query.set("from", filters.from);
+    if (filters.to !== undefined) query.set("to", filters.to);
+    if (filters.direction !== undefined) query.set("direction", filters.direction);
+    if (filters.reason !== undefined) query.set("reason", filters.reason);
+    if (filters.cursor !== undefined) query.set("cursor", filters.cursor);
+    query.set("limit", "100");
+    return this.request("GET", `/api/guardian/stars?${query}`);
   }
 
   getStarAdjustments(): Promise<{ adjustments: PendingStarAdjustment[] }> {
     return this.request("GET", "/api/guardian/star-adjustments");
   }
 
+  approveStarAdjustment(
+    id: string,
+    input: ApprovalInput
+  ): Promise<ProcessedStarAdjustment> {
+    return this.request(
+      "POST",
+      `/api/guardian/star-adjustments/${encodeURIComponent(id)}/approve`,
+      input
+    );
+  }
+
+  waiveStarAdjustment(
+    id: string,
+    input: { note: string }
+  ): Promise<ProcessedStarAdjustment> {
+    return this.request(
+      "POST",
+      `/api/guardian/star-adjustments/${encodeURIComponent(id)}/waive`,
+      input
+    );
+  }
+
+  applyManualStars(input: ManualStarInput): Promise<AppliedStarResult> {
+    return this.request("POST", "/api/guardian/stars/manual", input);
+  }
+
+  reverseStarEvent(
+    eventId: string,
+    input: { note: string }
+  ): Promise<AppliedStarResult> {
+    return this.request(
+      "POST",
+      `/api/guardian/stars/${encodeURIComponent(eventId)}/reverse`,
+      input
+    );
+  }
+
   getGuardianDailyPlan(date: string): Promise<GuardianDailyPlan> {
     return this.request("GET", `/api/guardian/daily-plans/${encodeURIComponent(date)}`);
+  }
+
+  updateGuardianDailyPlan(
+    date: string,
+    input: DailyPlanInput
+  ): Promise<GuardianDailyPlan> {
+    return this.request(
+      "PUT",
+      `/api/guardian/daily-plans/${encodeURIComponent(date)}`,
+      input
+    );
   }
 
   getBackupStatus(): Promise<BackupStatus> {
@@ -147,4 +216,14 @@ export type ClientApi = Pick<ApiClient,
   | "logout"
   | "getToday"
   | "getStudentStars"
+  | "getGuardianProgress"
+  | "getGuardianStars"
+  | "getStarAdjustments"
+  | "approveStarAdjustment"
+  | "waiveStarAdjustment"
+  | "applyManualStars"
+  | "reverseStarEvent"
+  | "getGuardianDailyPlan"
+  | "updateGuardianDailyPlan"
+  | "getBackupStatus"
 >;
