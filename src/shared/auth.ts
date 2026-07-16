@@ -36,11 +36,10 @@ export type TrustedDeviceView = {
   name: string;
   createdAt: string;
   lastUsedAt: string | null;
-  revokedAt: string | null;
-  isCurrent: boolean;
+  status: "active" | "revoked";
+  current: boolean;
 };
 
 export type StudentLoginResult = {
-  user: CurrentUser;
-  trustedDevice: TrustedDeviceView;
+  offlineAccessUntil: string;
 };

@@ -44,7 +44,7 @@ async function loginGuardian(client: TestClient) {
 }
 
 describe("shared auth and study-date contracts", () => {
-  it("keeps device requests bounded and exposes additive login result types", () => {
+  it("keeps device requests bounded and exposes the exact additive wire contracts", () => {
     expect(RegisterDeviceRequest.parse({ name: "  수아 태블릿  " }))
       .toEqual({ name: "수아 태블릿" });
     expect(RenameDeviceRequest.parse({ name: "  새 태블릿  " }))
@@ -53,8 +53,17 @@ describe("shared auth and study-date contracts", () => {
       .toEqual({ publicId: "device-public-1" });
     expect(RenameDeviceRequest.safeParse({ name: "" }).success).toBe(false);
     expect(RevokeDeviceRequest.safeParse({ publicId: "" }).success).toBe(false);
-    expectTypeOf<StudentLoginResult["trustedDevice"]>()
-      .toEqualTypeOf<TrustedDeviceView>();
+    expectTypeOf<StudentLoginResult>().toEqualTypeOf<{
+      offlineAccessUntil: string;
+    }>();
+    expectTypeOf<TrustedDeviceView>().toEqualTypeOf<{
+      publicId: string;
+      name: string;
+      createdAt: string;
+      lastUsedAt: string | null;
+      status: "active" | "revoked";
+      current: boolean;
+    }>();
   });
 
   it.each([
