@@ -60,6 +60,33 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .subject-chip { width: fit-content; padding: 5px 9px; border-radius: 999px; color: var(--ink-soft); background: var(--mint); font-weight: 800; }
 .reward-claim { width: fit-content; padding: 6px 10px; border-radius: 999px; background: #fff3bd; font-weight: 900; }
 
+.learning-session {
+  display: grid;
+  width: min(100%, 900px);
+  gap: 18px;
+  margin: 0 auto;
+  padding: clamp(22px, 4vw, 42px);
+  border: 2px solid rgb(255 255 255 / 78%);
+  border-radius: var(--radius-large);
+  background: rgb(255 255 255 / 92%);
+  box-shadow: var(--shadow);
+}
+.learning-session h2 { margin: 0; font-size: clamp(1.8rem, 4vw, 2.8rem); }
+.learning-session p { margin: 0; line-height: 1.75; }
+.learning-session form, .learning-session label, .learning-session [aria-label="읽기 연습"] {
+  display: grid;
+  gap: 12px;
+}
+.learning-session textarea { min-height: 120px; width: 100%; resize: vertical; }
+.learning-session input { width: min(100%, 280px); }
+.learning-session aside, .learning-session [aria-label="읽기 결과"] {
+  display: grid;
+  gap: 10px;
+  padding: 16px;
+  border-radius: var(--radius-medium);
+  background: var(--mint);
+}
+
 .today-stars, .star-bunny, .login-card, .guardian-placeholder {
   margin: 0;
   padding: 22px;

@@ -1,0 +1,9 @@
+.git
+.env
+.local
+.superpowers
+.worktrees
+data
+dist
+node_modules
+npm-debug.log*

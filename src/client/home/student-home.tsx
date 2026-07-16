@@ -4,6 +4,7 @@ import type { StudentStarSummary } from "../../shared/stars";
 import type { ClientApi } from "../api/client";
 import { StarBunny } from "../delight/star-bunny";
 import { TodayStars } from "../delight/today-stars";
+import { LearningSession } from "../learning/learning-session";
 import {
   getQueueCounts,
   subscribeConfirmedStars,
@@ -25,6 +26,7 @@ export function StudentHome({ api }: { api: ClientApi }) {
   const [data, setData] = useState<StudentData | null>(null);
   const [failed, setFailed] = useState(false);
   const [queuedCount, setQueuedCount] = useState(0);
+  const [selectedItem, setSelectedItem] = useState<TodayPlan["items"][number] | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -56,6 +58,32 @@ export function StudentHome({ api }: { api: ClientApi }) {
   if (failed) return <main>오늘의 학습을 불러오지 못했어요. 잠시 후 다시 만나요.</main>;
   if (data === null) return <main aria-busy="true">오늘의 학습을 준비하고 있어요.</main>;
 
+  async function finishLearning(): Promise<void> {
+    try {
+      const [plan, stars] = await Promise.all([
+        api.getToday(studyDate()),
+        api.getStudentStars()
+      ]);
+      setData({ plan, stars });
+      setSelectedItem(null);
+    } catch {
+      setFailed(true);
+    }
+  }
+
+  if (selectedItem !== null) {
+    return (
+      <main className="student-learning-view">
+        <LearningSession
+          item={selectedItem}
+          api={api}
+          studyDate={data.plan.date}
+          onNext={finishLearning}
+        />
+      </main>
+    );
+  }
+
   const requiredIds = new Set(data.plan.requiredItemIds);
   const requiredItems = data.plan.items.filter((item) => requiredIds.has(item.id));
   const optionalItems = data.plan.items.filter((item) => !requiredIds.has(item.id));
@@ -71,6 +99,9 @@ export function StudentHome({ api }: { api: ClientApi }) {
           </span>
         ) : null}
         {completed ? <strong>완료했어요</strong> : null}
+        <button type="button" onClick={() => setSelectedItem(item)}>
+          {item.payload.title} 시작하기
+        </button>
       </article>
     );
   };

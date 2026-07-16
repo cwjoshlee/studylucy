@@ -20,6 +20,14 @@
 .learning-section + .learning-section { margin-top: 28px; }
 .section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
 
+.student-learning-view {
+  min-height: 100vh;
+  padding: 22px;
+  background:
+    radial-gradient(circle at 10% 8%, rgb(255 217 106 / 26%), transparent 24rem),
+    linear-gradient(145deg, #fffaf1, #f5efff 66%, #ecfbf3);
+}
+
 .guardian-shell {
   min-height: 100vh;
   display: grid;

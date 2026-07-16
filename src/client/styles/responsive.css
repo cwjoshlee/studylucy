@@ -6,6 +6,7 @@
       "left main"
       "left right";
   }
+  .student-learning-view { padding: 14px; }
   .student-shell__right { position: static; }
 }
 

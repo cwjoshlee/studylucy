@@ -151,6 +151,67 @@ describe("가족 로그인과 학생 홈", () => {
     expect(within(optional).queryByText(/\uBCC4 1\uAC1C/)).not.toBeInTheDocument();
   });
 
+  it.each([
+    ["필수", "바람과 꽃"],
+    ["선택", "구름 산책"]
+  ])("launches a selected %s item from the dashboard", async (_kind, title) => {
+    const user = userEvent.setup();
+    render(<App api={createFakeApi()} />);
+
+    await user.click(await screen.findByRole("button", { name: `${title} 시작하기` }));
+
+    expect(screen.getByRole("region", { name: `${title} 학습` })).toBeVisible();
+    expect(screen.queryByRole("heading", { name: "오늘의 학습" })).not.toBeInTheDocument();
+  });
+
+  it("returns after a gated completion with refreshed authoritative progress and stars", async () => {
+    const user = userEvent.setup();
+    const api = createFakeApi();
+    const initialPlan = await api.getToday("2026-07-16");
+    api.getToday.mockReset()
+      .mockResolvedValueOnce(initialPlan)
+      .mockResolvedValue({
+        ...initialPlan,
+        completedItemIds: ["ko-01"],
+        stars: {
+          balance: 8,
+          earnedToday: 3,
+          deductedToday: 1,
+          lastReason: "필수 학습을 마쳤어요."
+        }
+      });
+    api.getStudentStars.mockReset()
+      .mockResolvedValueOnce({
+        balance: 7,
+        earnedToday: 2,
+        deductedToday: 1,
+        lastReason: "필수 학습을 마쳤어요."
+      })
+      .mockResolvedValue({
+        balance: 8,
+        earnedToday: 3,
+        deductedToday: 1,
+        lastReason: "필수 학습을 마쳤어요."
+      });
+
+    render(<App api={api} />);
+    await user.click(await screen.findByRole("button", { name: "바람과 꽃 시작하기" }));
+    await user.type(screen.getByLabelText("읽은 내용 직접 입력"), "바람과 꽃");
+    await user.click(screen.getByRole("button", { name: "읽기 판정하기" }));
+
+    expect(await screen.findByText("별 1개를 모았어요")).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "다음 문제" }));
+
+    expect(await screen.findByRole("heading", { name: "오늘의 학습" })).toBeVisible();
+    expect(await screen.findByText("모은 별 8개")).toBeVisible();
+    const completedCard = screen.getByRole("heading", { name: "바람과 꽃" }).closest("article");
+    expect(completedCard).not.toBeNull();
+    expect(within(completedCard!).getByText("완료했어요")).toBeVisible();
+    expect(within(completedCard!).getByText("★ 받은 별 1개")).toBeVisible();
+    expect(api.getToday).toHaveBeenCalledTimes(2);
+    expect(api.getStudentStars).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps queued stars separate from the confirmed balance", () => {
     render(<TodayStars summary={{
       balance: 7,
@@ -254,6 +315,9 @@ describe("가족 로그인과 학생 홈", () => {
     expect(layout).toContain("225px minmax(0, 1fr) 225px");
     expect(components).toMatch(/(?:button|input)[^{]*\{[^}]*min-height:\s*var\(--touch-min\)/s);
     expect(components).toContain(":focus-visible");
+    expect(layout).toContain(".student-learning-view");
+    expect(components).toContain(".learning-session");
+    expect(components).toMatch(/\.learning-session textarea\s*\{[^}]*min-height:\s*120px/s);
     expect(responsive).toMatch(/@media\s*\(max-width:\s*950px\)/);
     expect(responsive).toMatch(/@media\s*\(max-width:\s*700px\)/);
     expect(responsive).toContain('"left right"');

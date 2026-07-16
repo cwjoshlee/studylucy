@@ -54,6 +54,25 @@ export function createFakeApi(overrides: Record<string, unknown> = {}) {
       deductedToday: 1,
       lastReason: "필수 학습을 마쳤어요."
     }),
+    saveAttempt: vi.fn().mockResolvedValue({
+      id: "attempt-server-1",
+      duplicate: false,
+      readingPass: true,
+      mathPass: null,
+      completed: true,
+      starAward: {
+        awarded: true,
+        amount: 1,
+        balance: 8,
+        eventId: "star-required-completion-1"
+      }
+    }),
+    sendIdleEvent: vi.fn().mockResolvedValue({
+      id: "idle-server-1",
+      outcome: "applied",
+      starEventId: "star-idle-1",
+      duplicate: false
+    }),
     getGuardianProgress: vi.fn().mockResolvedValue({
       completedItems: 4,
       totalAttempts: 6,
