@@ -34,14 +34,12 @@ import {
 
 type LearningApi = Pick<ApiClient, "saveAttempt" | "sendIdleEvent">;
 type PlanItem = TodayPlan["items"][number];
-type SessionItem = LearningItemPayload | PlanItem;
 
 export type LearningSessionProps = {
-  item: SessionItem;
+  item: PlanItem;
   api: LearningApi;
   planId: string;
   studyDate: string;
-  contentVersion?: number;
   reducedMotion?: boolean;
   onNext?: () => void;
   onExit?: () => void;
@@ -63,13 +61,12 @@ const IDLE_RESULT_TEXT: Record<IdleEventResult["outcome"], string> = {
 };
 
 export function LearningSession(props: LearningSessionProps) {
-  const resolved = resolveItem(props.item, props.contentVersion);
   return (
     <LearningSessionView
       {...props}
-      key={`${resolved.payload.id}:${resolved.version}`}
-      item={resolved.payload}
-      contentVersion={resolved.version}
+      key={`${props.item.id}:${props.item.version}`}
+      item={props.item.payload}
+      contentVersion={props.item.version}
       studyDate={props.studyDate}
     />
   );
@@ -86,7 +83,7 @@ function LearningSessionView({
   onExit,
   onActivityCursor,
   idFactory = createClientId
-}: Omit<LearningSessionProps, "item" | "contentVersion"> & {
+}: Omit<LearningSessionProps, "item"> & {
   item: LearningItemPayload;
   studyDate: string;
   contentVersion: number;
@@ -426,14 +423,6 @@ function LearningSessionView({
       </button>
     </section>
   );
-}
-
-function resolveItem(
-  item: SessionItem,
-  contentVersion: number | undefined
-): { payload: LearningItemPayload; version: number } {
-  if ("payload" in item) return { payload: item.payload, version: item.version };
-  return { payload: item, version: contentVersion ?? 1 };
 }
 
 function createClientId(prefix: string): string {

@@ -288,6 +288,7 @@ describe("authoritative learning API", () => {
       ...accepted.json(),
       duplicate: true
     });
+    expect(lateDuplicate.json().id).toBe(accepted.json().id);
 
     const expired = await student.request(
       "POST",
@@ -296,6 +297,150 @@ describe("authoritative learning API", () => {
     );
     expect(expired.statusCode).toBe(409);
     expect(expired.json()).toEqual({ code: "PLAN_SUBMISSION_EXPIRED" });
+    expect(harness.db.prepare("SELECT COUNT(*) AS count FROM attempts").get())
+      .toEqual({ count: 1 });
+    expect(harness.db.prepare(`
+      SELECT current_cursor AS currentCursor FROM student_activity_cursors
+    `).get()).toEqual({ currentCursor: 1 });
+  });
+
+  it("rejects a client attempt id reused by another otherwise-valid device plan", async () => {
+    const firstDevice = harness.client();
+    await authenticateStudent(harness, firstDevice);
+    const firstPlan = await getToday(firstDevice);
+    const firstItem = firstPlan.items[0]!;
+    const clientAttemptId = "attempt-cross-plan-reuse-0001";
+    const accepted = await firstDevice.request(
+      "POST",
+      "/api/student/attempts",
+      passingAttempt(firstPlan, firstItem, clientAttemptId)
+    );
+    expect(accepted.statusCode).toBe(201);
+
+    const before = harness.db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM attempts) AS attempts,
+        (SELECT COUNT(*) FROM star_events) AS starEvents,
+        (SELECT current_cursor FROM student_activity_cursors) AS activityCursor
+    `).get();
+    const secondDevice = harness.client();
+    await loginStudentOnNewDevice(secondDevice, "수아 두 번째 태블릿");
+    const secondPlan = await getToday(secondDevice);
+    const secondItem = secondPlan.items.find((item) => item.id === firstItem.id)!;
+    const rejected = await secondDevice.request(
+      "POST",
+      "/api/student/attempts",
+      passingAttempt(secondPlan, secondItem, clientAttemptId)
+    );
+
+    expect(rejected.statusCode).toBe(400);
+    expect(rejected.json()).toEqual({ code: "INVALID_REQUEST" });
+    expect(rejected.json()).not.toHaveProperty("id", accepted.json().id);
+    expect(harness.db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM attempts) AS attempts,
+        (SELECT COUNT(*) FROM star_events) AS starEvents,
+        (SELECT current_cursor FROM student_activity_cursors) AS activityCursor
+    `).get()).toEqual(before);
+  });
+
+  it("rejects same-plan attempt id reuse when any canonical input field changes", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    const plan = await getToday(student);
+    const item = plan.items.find(({ payload }) => payload.kind === "math-story")!;
+    const otherItem = plan.items.find(({ id }) => id !== item.id)!;
+    const clientAttemptId = "attempt-changed-body-reuse-0001";
+    const canonical = passingAttempt(plan, item, clientAttemptId);
+    const accepted = await student.request(
+      "POST",
+      "/api/student/attempts",
+      canonical
+    );
+    expect(accepted.statusCode).toBe(201);
+
+    const changedInputs = [
+      { ...canonical, itemId: otherItem.id, contentVersion: otherItem.version },
+      { ...canonical, contentVersion: item.version + 1 },
+      { ...canonical, studyDate: "2026-07-14" },
+      { ...canonical, occurredAt: "2026-07-15T03:06:00.000Z" },
+      { ...canonical, readingScore: 99 },
+      { ...canonical, missedTokens: ["바뀐 토큰"] },
+      { ...canonical, mathAnswer: null },
+      { ...canonical, durationMs: 12_001 },
+      { ...canonical, difficultyFeedback: "hard" }
+    ];
+    for (const changed of changedInputs) {
+      const rejected = await student.request(
+        "POST",
+        "/api/student/attempts",
+        changed
+      );
+      expect(rejected.statusCode).toBe(400);
+      expect(rejected.json()).toEqual({ code: "INVALID_REQUEST" });
+    }
+    expect(harness.db.prepare("SELECT COUNT(*) AS count FROM attempts").get())
+      .toEqual({ count: 1 });
+    expect(harness.db.prepare(`
+      SELECT current_cursor AS currentCursor FROM student_activity_cursors
+    `).get()).toEqual({ currentCursor: 1 });
+  });
+
+  it("enforces canonical binding in the transactional duplicate fallback", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    const plan = await getToday(student);
+    const item = plan.items[0]!;
+    const input = passingAttempt(
+      plan,
+      item,
+      "attempt-transaction-race-0001"
+    );
+    const accepted = await student.request(
+      "POST",
+      "/api/student/attempts",
+      input
+    );
+    expect(accepted.statusCode).toBe(201);
+
+    const studentId = (harness.db.prepare(`
+      SELECT id FROM users WHERE role = 'student'
+    `).get() as { id: string }).id;
+    const trustedDeviceId = (harness.db.prepare(`
+      SELECT trusted_device_id AS trustedDeviceId
+      FROM issued_daily_plans WHERE id = ?
+    `).get(plan.planId) as { trustedDeviceId: string }).trustedDeviceId;
+    const repository = new LearningRepository(harness.db);
+    const transactionInput = {
+      ...input,
+      id: "attempt-transaction-race-fallback",
+      userId: studentId,
+      trustedDeviceId,
+      createdAt: "2026-07-15T03:05:01.000Z",
+      snapshot: {
+        issuedPlanId: plan.planId,
+        studyDate: plan.date,
+        contentVersion: item.version,
+        payload: item.payload,
+        isRequired: plan.requiredItemIds.includes(item.id)
+      }
+    };
+    const exactRetry = repository.saveAttemptInTransaction(transactionInput);
+    expect(exactRetry).toMatchObject({
+      inserted: false,
+      receipt: { id: accepted.json().id, duplicate: true }
+    });
+
+    let mismatch: unknown;
+    try {
+      repository.saveAttemptInTransaction({
+        ...transactionInput,
+        missedTokens: ["경합 중 바뀐 토큰"]
+      });
+    } catch (error) {
+      mismatch = error;
+    }
+    expect(mismatch).toMatchObject({ code: "INVALID_REQUEST" });
     expect(harness.db.prepare("SELECT COUNT(*) AS count FROM attempts").get())
       .toEqual({ count: 1 });
     expect(harness.db.prepare(`

@@ -11,7 +11,10 @@ import {
   IssuedPlanError,
   IssuedPlanRepository
 } from "./issued-plan-repository";
-import { LearningRepository } from "./repository";
+import {
+  AttemptIdempotencyError,
+  LearningRepository
+} from "./repository";
 
 export class LearningError extends Error {
   readonly statusCode: 400 | 409;
@@ -82,8 +85,7 @@ export class LearningService {
       const duplicate = this.repository.findDuplicateAttemptForIssuedPlan(
         userId,
         trustedDeviceId,
-        input.planId,
-        input.clientAttemptId
+        input
       );
       if (duplicate !== null) return duplicate;
       const snapshot = this.issuedPlans.validateAttempt(
@@ -96,10 +98,14 @@ export class LearningService {
         ...input,
         id: randomUUID(),
         userId,
+        trustedDeviceId,
         createdAt: receivedAt.toISOString(),
         snapshot
       });
     } catch (error) {
+      if (error instanceof AttemptIdempotencyError) {
+        throw new LearningError(error.code);
+      }
       if (error instanceof IssuedPlanError) {
         throw new LearningError(error.code);
       }

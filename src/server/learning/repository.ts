@@ -33,11 +33,42 @@ type AttemptRow = {
   starEventId: string | null;
 };
 
+type CanonicalAttemptRow = AttemptRow & {
+  userId: string;
+  trustedDeviceId: string | null;
+  planId: string | null;
+  itemId: string;
+  contentVersion: number;
+  studyDate: string;
+  occurredAt: string | null;
+  readingScore: number;
+  missedTokensJson: string;
+  mathAnswerJson: string | null;
+  durationMs: number;
+  difficultyFeedback: AttemptInput["difficultyFeedback"];
+};
+
 type AttemptReceiptCore = Omit<AttemptReceipt, "activityCursor">;
 
 export type AttemptSaveResult = {
   receipt: AttemptReceiptCore;
   inserted: boolean;
+};
+
+export class AttemptIdempotencyError extends Error {
+  readonly code = "INVALID_REQUEST";
+
+  constructor() {
+    super("INVALID_REQUEST");
+  }
+}
+
+type AttemptWriteInput = AttemptInput & {
+  id: string;
+  userId: string;
+  trustedDeviceId: string;
+  createdAt: string;
+  snapshot: ValidatedAttemptSnapshot;
 };
 
 function receiptFromRow(
@@ -81,11 +112,37 @@ export class LearningRepository {
   findDuplicateAttemptForIssuedPlan(
     userId: string,
     trustedDeviceId: string,
-    planId: string,
-    clientAttemptId: string
+    input: AttemptInput
   ): AttemptReceipt | null {
+    const receipt = this.findCanonicalDuplicateCore(
+      userId,
+      trustedDeviceId,
+      input
+    );
+    return receipt === null
+      ? null
+      : { ...receipt, activityCursor: this.getActivityCursor(userId) };
+  }
+
+  private findCanonicalDuplicateCore(
+    userId: string,
+    trustedDeviceId: string,
+    input: AttemptInput
+  ): AttemptReceiptCore | null {
     const row = this.db.prepare(`
       SELECT a.id,
+             a.user_id AS userId,
+             a.issued_plan_id AS planId,
+             p.trusted_device_id AS trustedDeviceId,
+             a.item_id AS itemId,
+             a.content_version AS contentVersion,
+             a.study_date AS studyDate,
+             a.occurred_at AS occurredAt,
+             a.reading_score AS readingScore,
+             a.missed_tokens_json AS missedTokensJson,
+             a.math_answer_json AS mathAnswerJson,
+             a.duration_ms AS durationMs,
+             a.difficulty_feedback AS difficultyFeedback,
              a.reading_pass AS readingPass,
              a.math_pass AS mathPass,
              r.awarded AS starAwarded,
@@ -94,23 +151,28 @@ export class LearningRepository {
              r.event_id AS starEventId
       FROM attempts AS a
       JOIN attempt_star_receipts AS r ON r.attempt_id = a.id
-      JOIN issued_daily_plans AS p ON p.id = a.issued_plan_id
+      LEFT JOIN issued_daily_plans AS p ON p.id = a.issued_plan_id
       WHERE a.client_attempt_id = ?
-        AND a.user_id = ?
-        AND a.issued_plan_id = ?
-        AND p.trusted_device_id = ?
-    `).get(
-      clientAttemptId,
-      userId,
-      planId,
-      trustedDeviceId
-    ) as AttemptRow | undefined;
-    return row === undefined
+    `).get(input.clientAttemptId) as CanonicalAttemptRow | undefined;
+    if (row === undefined) return null;
+    const mathAnswerJson = input.mathAnswer === null
       ? null
-      : {
-          ...receiptFromRow(row, true),
-          activityCursor: this.getActivityCursor(userId)
-        };
+      : JSON.stringify(input.mathAnswer);
+    const matches =
+      row.userId === userId &&
+      row.trustedDeviceId === trustedDeviceId &&
+      row.planId === input.planId &&
+      row.itemId === input.itemId &&
+      row.contentVersion === input.contentVersion &&
+      row.studyDate === input.studyDate &&
+      row.occurredAt === input.occurredAt &&
+      row.readingScore === input.readingScore &&
+      row.missedTokensJson === JSON.stringify(input.missedTokens) &&
+      row.mathAnswerJson === mathAnswerJson &&
+      row.durationMs === input.durationMs &&
+      row.difficultyFeedback === input.difficultyFeedback;
+    if (!matches) throw new AttemptIdempotencyError();
+    return receiptFromRow(row, true);
   }
 
   private findDuplicateAttemptCore(
@@ -170,12 +232,7 @@ export class LearningRepository {
       .map((row) => row.itemId);
   }
 
-  saveAttempt(input: AttemptInput & {
-    id: string;
-    userId: string;
-    createdAt: string;
-    snapshot: ValidatedAttemptSnapshot;
-  }): AttemptReceipt {
+  saveAttempt(input: AttemptWriteInput): AttemptReceipt {
     return this.db.transaction(() => {
       const result = this.saveAttemptInTransaction(input);
       if (result.inserted) {
@@ -195,15 +252,11 @@ export class LearningRepository {
     }).immediate();
   }
 
-  saveAttemptInTransaction(input: AttemptInput & {
-    id: string;
-    userId: string;
-    createdAt: string;
-    snapshot: ValidatedAttemptSnapshot;
-  }): AttemptSaveResult {
-    const existing = this.findDuplicateAttemptCore(
+  saveAttemptInTransaction(input: AttemptWriteInput): AttemptSaveResult {
+    const existing = this.findCanonicalDuplicateCore(
       input.userId,
-      input.clientAttemptId
+      input.trustedDeviceId,
+      input
     );
     if (existing !== null) {
       return { receipt: existing, inserted: false };
