@@ -100,6 +100,58 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   background: var(--mint);
 }
 
+.problem-breakdown {
+  display: grid;
+  min-width: 0;
+  gap: 16px;
+}
+.story-sentences {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 12px;
+}
+.story-sentence {
+  min-width: 0;
+  margin: 0;
+  padding: 14px 16px;
+  border: 2px solid var(--line);
+  border-radius: var(--radius-medium);
+  background: var(--cloud);
+  font-size: clamp(1.12rem, 2vw, 1.45rem);
+  line-height: 1.75;
+  overflow-wrap: anywhere;
+}
+.learning-clues,
+.number-clues {
+  display: flex;
+  min-width: 0;
+  flex-wrap: wrap;
+  gap: 10px;
+}
+.learning-clues span,
+.number-clues span,
+.unit-badge {
+  max-width: 100%;
+  padding: 7px 11px;
+  border-radius: 999px;
+  background: var(--mint);
+  font-weight: 900;
+  overflow-wrap: anywhere;
+}
+.number-clues span { background: var(--sky); }
+.question-focus {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  min-width: 0;
+  padding: 16px;
+  border-radius: var(--radius-medium);
+  background: #fbf6ff;
+}
+.question-focus h3,
+.question-focus p { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.unit-badge { width: fit-content; background: #fff3bd; }
+
 .today-stars, .star-bunny, .login-card, .guardian-placeholder {
   margin: 0;
   padding: 22px;
