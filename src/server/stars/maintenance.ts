@@ -46,6 +46,14 @@ export function generateMissedPlanCandidates(
             AND se.reason_code = 'REQUIRED_ITEM_COMPLETED'
         )
         AND NOT EXISTS (
+          SELECT 1 FROM attempts AS a
+          WHERE a.user_id = dr.student_id
+            AND a.study_date = dr.study_date
+            AND a.item_id = dr.item_id
+            AND a.reading_pass = 1
+            AND (a.math_pass IS NULL OR a.math_pass = 1)
+        )
+        AND NOT EXISTS (
           SELECT 1 FROM pending_star_adjustments AS psa
           WHERE psa.student_id = dr.student_id
             AND psa.study_date = dr.study_date

@@ -7,6 +7,7 @@ import type {
   GuardianDailyPlan
 } from "../../shared/stars";
 import { kstStudyDate } from "./kst";
+import { getStudentStarSummary } from "./student-summary";
 
 export type RequiredPlan = {
   requiredItemIds: string[];
@@ -93,7 +94,7 @@ export class DailyPlanService {
 
       return {
         requiredItemIds: this.listRequirementIds(studentId, studyDate),
-        stars: this.getStarSummary(studentId, studyDate)
+        stars: getStudentStarSummary(this.db, studentId, studyDate)
       };
     }).immediate();
   }
@@ -181,39 +182,4 @@ export class DailyPlanService {
       .map((row) => row.itemId);
   }
 
-  private getStarSummary(
-    studentId: string,
-    studyDate: string
-  ): StudentStarSummary {
-    const balance = this.db.prepare(`
-      SELECT balance
-      FROM student_star_balances
-      WHERE student_id = ?
-    `).get(studentId) as { balance: number } | undefined;
-    const daily = this.db.prepare(`
-      SELECT COALESCE(SUM(CASE WHEN delta > 0 THEN delta ELSE 0 END), 0)
-               AS earnedToday,
-             COALESCE(SUM(CASE WHEN delta < 0 THEN -delta ELSE 0 END), 0)
-               AS deductedToday
-      FROM star_events
-      WHERE student_id = ? AND study_date = ?
-    `).get(studentId, studyDate) as {
-      earnedToday: number;
-      deductedToday: number;
-    };
-    const latest = this.db.prepare(`
-      SELECT reason_text AS reasonText
-      FROM star_events
-      WHERE student_id = ?
-      ORDER BY created_at DESC, rowid DESC
-      LIMIT 1
-    `).get(studentId) as { reasonText: string } | undefined;
-
-    return {
-      balance: balance?.balance ?? 0,
-      earnedToday: daily.earnedToday,
-      deductedToday: daily.deductedToday,
-      lastReason: latest?.reasonText ?? null
-    };
-  }
 }

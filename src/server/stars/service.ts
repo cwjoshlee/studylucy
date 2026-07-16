@@ -14,9 +14,10 @@ import type {
   StudentStarSummary
 } from "../../shared/stars";
 import { StarReasonSchema } from "../../shared/stars";
-import { kstStudyDate } from "./kst";
+import { isValidStudyDate, kstStudyDate } from "./kst";
 import { DailyPlanService } from "./daily-plan";
 import { StarRepository } from "./repository";
+import { getStudentStarSummary } from "./student-summary";
 
 type IdleEventRow = {
   id: string;
@@ -167,10 +168,21 @@ export class StarService {
   }
 
   getStudentStars(studentId: string): StudentStarSummary {
-    return this.getStarSummary(studentId, kstStudyDate(this.deps.now()));
+    return getStudentStarSummary(
+      this.deps.db,
+      studentId,
+      kstStudyDate(this.deps.now())
+    );
   }
 
   getGuardianStars(query: GuardianLedgerQuery): GuardianStarLedger {
+    if (
+      (query.from !== null && !isValidStudyDate(query.from))
+      || (query.to !== null && !isValidStudyDate(query.to))
+      || (query.from !== null && query.to !== null && query.from > query.to)
+    ) {
+      throw new StarServiceError(400, "INVALID_REQUEST");
+    }
     const studentId = this.getStudentId();
     if (query.cursor !== null && this.deps.db.prepare(`
       SELECT 1 FROM star_events WHERE id = ? AND student_id = ?
@@ -365,6 +377,7 @@ export class StarService {
   }
 
   getGuardianPlan(studyDate: string): GuardianDailyPlan {
+    this.requireValidStudyDate(studyDate);
     return this.dailyPlan.getGuardianPlan(this.getStudentId(), studyDate);
   }
 
@@ -373,6 +386,7 @@ export class StarService {
     input: DailyPlanInput,
     guardianId: string
   ): GuardianDailyPlan {
+    this.requireValidStudyDate(studyDate);
     try {
       return this.dailyPlan.updateGuardianPlan(
         this.getStudentId(),
@@ -398,33 +412,10 @@ export class StarService {
     return student.id;
   }
 
-  private getStarSummary(
-    studentId: string,
-    studyDate: string
-  ): StudentStarSummary {
-    const balance = this.deps.db.prepare(`
-      SELECT balance FROM student_star_balances WHERE student_id = ?
-    `).get(studentId) as { balance: number } | undefined;
-    const totals = this.deps.db.prepare(`
-      SELECT COALESCE(SUM(CASE WHEN delta > 0 THEN delta ELSE 0 END), 0)
-               AS earnedToday,
-             COALESCE(SUM(CASE WHEN delta < 0 THEN -delta ELSE 0 END), 0)
-               AS deductedToday
-      FROM star_events WHERE student_id = ? AND study_date = ?
-    `).get(studentId, studyDate) as {
-      earnedToday: number;
-      deductedToday: number;
-    };
-    const latest = this.deps.db.prepare(`
-      SELECT reason_text AS reasonText FROM star_events
-      WHERE student_id = ? ORDER BY rowid DESC LIMIT 1
-    `).get(studentId) as { reasonText: string } | undefined;
-    return {
-      balance: balance?.balance ?? 0,
-      earnedToday: totals.earnedToday,
-      deductedToday: totals.deductedToday,
-      lastReason: latest?.reasonText ?? null
-    };
+  private requireValidStudyDate(studyDate: string): void {
+    if (!isValidStudyDate(studyDate)) {
+      throw new StarServiceError(400, "INVALID_REQUEST");
+    }
   }
 
   private getAdjustment(id: string): PendingAdjustmentRow {

@@ -9,6 +9,7 @@ import {
 } from "../../shared/stars";
 import { requireRole } from "../auth/routes";
 import { z } from "zod";
+import { isValidStudyDate } from "./kst";
 import {
   StarService,
   StarServiceError,
@@ -23,16 +24,17 @@ const ClientCommandIdSchema = ManualStarInputSchema.pick({
 });
 const IdParamsSchema = z.object({ id: z.string().min(1) });
 const EventIdParamsSchema = z.object({ eventId: z.string().min(1) });
+const StudyDateSchema = z.string().refine(isValidStudyDate);
 const DateParamsSchema = z.object({
-  date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/)
+  date: StudyDateSchema
 });
 const LimitQuerySchema = z.object({
   limit: z.coerce.number().int().min(1).max(100).default(100)
 });
 const LedgerQuerySchema = LimitQuerySchema.extend({
   cursor: z.string().min(1).max(100).optional(),
-  from: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
-  to: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+  from: StudyDateSchema.optional(),
+  to: StudyDateSchema.optional(),
   direction: z.enum(["all", "earned", "deducted"]).default("all"),
   reason: StarReasonSchema.optional()
 }).refine((query) =>
