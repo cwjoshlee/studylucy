@@ -6,6 +6,7 @@ import {
   type StudentStarSummary
 } from "./stars";
 import { StudyDateSchema } from "./study-date";
+import { LearningDelightSchema } from "./companions";
 
 const BaseItem = z.object({
   id: z.string().min(1),
@@ -16,7 +17,8 @@ const BaseItem = z.object({
   readLabel: z.string().min(1),
   text: z.string().min(1),
   hint: z.string(),
-  tokens: z.array(z.string().min(1)).min(1)
+  tokens: z.array(z.string().min(1)).min(1),
+  delight: LearningDelightSchema.optional()
 });
 
 export const LearningItemPayloadSchema = z.discriminatedUnion("kind", [
