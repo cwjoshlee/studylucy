@@ -15,6 +15,11 @@ export const OFFLINE_DB_NAME = "sua-learning-v1";
 
 export type DeviceState = "ready" | "device-action-required";
 export type QueueCounts = { attempts: number; idleEvents: number };
+type QueueCountsListener = (counts: QueueCounts) => void;
+type ConfirmedStarsListener = (summary: StudentStarSummary) => void;
+
+const queueCountsListeners = new Set<QueueCountsListener>();
+const confirmedStarsListeners = new Set<ConfirmedStarsListener>();
 
 type OfflineMeta =
   | { key: "device-state"; value: DeviceState }
@@ -87,18 +92,38 @@ export function loadCachedTodayPlan(date: string): Promise<TodayPlan | undefined
   return withDatabase((database) => database.get("todayPlans", date));
 }
 
-export function queueAttempt(input: AttemptInput): Promise<void> {
-  const safeInput = AttemptInputSchema.parse(input);
-  return withDatabase(async (database) => {
-    await database.put("attemptQueue", safeInput);
-  });
+async function publishQueueCounts(): Promise<void> {
+  if (queueCountsListeners.size === 0) return;
+  const counts = await getQueueCounts();
+  for (const listener of queueCountsListeners) listener(counts);
 }
 
-export function queueIdleEvent(input: IdleEventInput): Promise<void> {
+export function subscribeQueueCounts(listener: QueueCountsListener): () => void {
+  queueCountsListeners.add(listener);
+  return () => queueCountsListeners.delete(listener);
+}
+
+export function subscribeConfirmedStars(
+  listener: ConfirmedStarsListener
+): () => void {
+  confirmedStarsListeners.add(listener);
+  return () => confirmedStarsListeners.delete(listener);
+}
+
+export async function queueAttempt(input: AttemptInput): Promise<void> {
+  const safeInput = AttemptInputSchema.parse(input);
+  await withDatabase(async (database) => {
+    await database.put("attemptQueue", safeInput);
+  });
+  await publishQueueCounts();
+}
+
+export async function queueIdleEvent(input: IdleEventInput): Promise<void> {
   const safeInput = IdleEventInputSchema.parse(input);
-  return withDatabase(async (database) => {
+  await withDatabase(async (database) => {
     await database.put("idleEventQueue", safeInput);
   });
+  await publishQueueCounts();
 }
 
 export function listQueuedAttempts(): Promise<AttemptInput[]> {
@@ -109,16 +134,18 @@ export function listQueuedIdleEvents(): Promise<IdleEventInput[]> {
   return withDatabase((database) => database.getAll("idleEventQueue"));
 }
 
-export function removeQueuedAttempt(clientAttemptId: string): Promise<void> {
-  return withDatabase(async (database) => {
+export async function removeQueuedAttempt(clientAttemptId: string): Promise<void> {
+  await withDatabase(async (database) => {
     await database.delete("attemptQueue", clientAttemptId);
   });
+  await publishQueueCounts();
 }
 
-export function removeQueuedIdleEvent(clientIdleEventId: string): Promise<void> {
-  return withDatabase(async (database) => {
+export async function removeQueuedIdleEvent(clientIdleEventId: string): Promise<void> {
+  await withDatabase(async (database) => {
     await database.delete("idleEventQueue", clientIdleEventId);
   });
+  await publishQueueCounts();
 }
 
 export function getQueueCounts(): Promise<QueueCounts> {
@@ -147,16 +174,17 @@ export function getDeviceState(): Promise<DeviceState> {
   });
 }
 
-export function storeConfirmedStars(summary: StudentStarSummary): Promise<void> {
+export async function storeConfirmedStars(summary: StudentStarSummary): Promise<void> {
   const confirmed: StudentStarSummary = {
     balance: summary.balance,
     earnedToday: summary.earnedToday,
     deductedToday: summary.deductedToday,
     lastReason: summary.lastReason
   };
-  return withDatabase(async (database) => {
+  await withDatabase(async (database) => {
     await database.put("meta", { key: "confirmed-stars", value: confirmed });
   });
+  for (const listener of confirmedStarsListeners) listener(confirmed);
 }
 
 export function getConfirmedStars(): Promise<StudentStarSummary | undefined> {

@@ -1,12 +1,21 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen } from "@testing-library/react";
+import "fake-indexeddb/auto";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { deleteDB } from "idb";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { ApiError } from "../../src/client/api/client";
 import type { AttemptReceipt, LearningItemPayload } from "../../src/shared/learning";
 import type { IdleEventResult } from "../../src/shared/stars";
 import { StarCelebration } from "../../src/client/delight/star-celebration";
 import { LearningSession } from "../../src/client/learning/learning-session";
 import { createSpeechController } from "../../src/client/learning/speech-recognition";
+import {
+  OFFLINE_DB_NAME,
+  getQueueCounts,
+  listQueuedAttempts,
+  listQueuedIdleEvents
+} from "../../src/client/offline/db";
 
 const mathItem: LearningItemPayload = {
   id: "math-01",
@@ -93,6 +102,14 @@ async function submitManualTranscript(transcript: string): Promise<void> {
   await user.click(screen.getByRole("button", { name: "읽기 판정하기" }));
 }
 
+function offlineId(prefix: "learning-session" | "attempt" | "idle-event"): string {
+  return `${prefix}-offline-0001`;
+}
+
+beforeEach(async () => {
+  await deleteDB(OFFLINE_DB_NAME);
+});
+
 afterEach(() => {
   cleanup();
   vi.useRealTimers();
@@ -151,6 +168,123 @@ describe("LearningSession", () => {
     }));
     expect(api.saveAttempt.mock.calls[0]![0]).not.toHaveProperty("transcript");
     expect(screen.getByRole("button", { name: "다음 문제" })).toBeEnabled();
+    await expect(getQueueCounts()).resolves.toEqual({ attempts: 0, idleEvents: 0 });
+  });
+
+  it.each([
+    ["network", new TypeError("offline")],
+    ["server", new ApiError(503, "SERVICE_UNAVAILABLE")],
+    ["expired session", new ApiError(401, "AUTH_REQUIRED")]
+  ])("queues a passing reading submission after a recoverable %s failure", async (_label, failure) => {
+    const api = createLearningApi();
+    api.saveAttempt.mockRejectedValue(failure);
+    render(<LearningSession
+      item={readingItem}
+      api={api}
+      studyDate="2026-07-16"
+      idFactory={offlineId}
+    />);
+
+    await submitManualTranscript(readingItem.text);
+
+    await waitFor(async () => {
+      expect(await listQueuedAttempts()).toHaveLength(1);
+    });
+    expect(await listQueuedAttempts()).toEqual([
+      expect.objectContaining({
+        clientAttemptId: "attempt-offline-0001",
+        itemId: "ko-01",
+        studyDate: "2026-07-16",
+        readingScore: 100,
+        mathAnswer: null
+      })
+    ]);
+    expect(screen.getByRole("button", { name: "다음 문제" })).toBeDisabled();
+  });
+
+  it("does not queue a rejected invalid attempt", async () => {
+    const api = createLearningApi();
+    api.saveAttempt.mockRejectedValue(new ApiError(400, "INVALID_ATTEMPT"));
+    render(<LearningSession item={readingItem} api={api} studyDate="2026-07-16" />);
+
+    await submitManualTranscript(readingItem.text);
+
+    await screen.findByText("학습 기록을 저장하지 못했어요. 다시 시도해 주세요.");
+    await expect(listQueuedAttempts()).resolves.toEqual([]);
+  });
+
+  it("queues a math answer after a network failure without unlocking Next", async () => {
+    const api = createLearningApi();
+    api.saveAttempt.mockRejectedValue(new TypeError("offline"));
+    const user = userEvent.setup();
+    render(<LearningSession
+      item={mathItem}
+      api={api}
+      studyDate="2026-07-16"
+      idFactory={offlineId}
+    />);
+    await submitManualTranscript(`${mathItem.text} ${mathItem.question}`);
+
+    await user.type(screen.getByLabelText("답 쓰기"), "5");
+    await user.click(screen.getByRole("button", { name: "답 확인" }));
+
+    await waitFor(async () => {
+      expect(await listQueuedAttempts()).toHaveLength(1);
+    });
+    expect(await listQueuedAttempts()).toEqual([
+      expect.objectContaining({
+        clientAttemptId: "attempt-offline-0001",
+        itemId: "math-01",
+        readingScore: 100,
+        mathAnswer: 5
+      })
+    ]);
+    expect(screen.getByRole("button", { name: "다음 문제" })).toBeDisabled();
+  });
+
+  it("queues an idle event after a network failure and keeps learning paused", async () => {
+    vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
+    vi.setSystemTime(new Date("2026-07-16T01:00:00.000Z"));
+    const api = createLearningApi();
+    api.sendIdleEvent.mockRejectedValue(new TypeError("offline"));
+    render(<LearningSession
+      item={readingItem}
+      api={api}
+      studyDate="2026-07-16"
+      idFactory={offlineId}
+    />);
+
+    await act(async () => {
+      vi.advanceTimersByTime(300_000);
+      await Promise.resolve();
+    });
+    vi.useRealTimers();
+    await waitFor(async () => {
+      expect(await listQueuedIdleEvents()).toHaveLength(1);
+    });
+    expect(await listQueuedIdleEvents()).toEqual([
+      expect.objectContaining({
+        clientIdleEventId: "idle-event-offline-0001",
+        learningSessionId: "learning-session-offline-0001",
+        itemId: "ko-01",
+        studyDate: "2026-07-16"
+      })
+    ]);
+    expect(screen.getByRole("button", { name: "학습 계속하기" })).toBeVisible();
+  });
+
+  it("leaves no idle queue row after a direct success", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-16T01:00:00.000Z"));
+    render(<LearningSession item={readingItem} api={createLearningApi()} studyDate="2026-07-16" />);
+
+    await act(async () => {
+      vi.advanceTimersByTime(300_000);
+      await Promise.resolve();
+    });
+    vi.useRealTimers();
+
+    await expect(listQueuedIdleEvents()).resolves.toEqual([]);
   });
 
   it.each([

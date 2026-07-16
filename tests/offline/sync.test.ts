@@ -229,6 +229,30 @@ describe("offline learning synchronization", () => {
     ]);
   });
 
+  it("refreshes confirmed stars after an acknowledged attempt before an idle network stop", async () => {
+    const calls: string[] = [];
+    await queueAttempt(attempt);
+    await queueIdleEvent(idleEvent);
+    const api = successfulApi(calls);
+    api.sendIdleEvent = async () => {
+      calls.push("idle:offline");
+      throw new TypeError("offline");
+    };
+
+    await expect(syncPending(api)).resolves.toEqual({
+      attempts: { sent: 1, remaining: 0 },
+      idleEvents: { sent: 0, remaining: 1 }
+    });
+
+    expect(calls).toEqual([
+      `attempt:${attempt.clientAttemptId}`,
+      "idle:offline",
+      "stars"
+    ]);
+    await expect(getConfirmedStars()).resolves.toEqual(confirmedStars);
+    await expect(getQueueCounts()).resolves.toEqual({ attempts: 0, idleEvents: 1 });
+  });
+
   it("marks device action required without deleting queues when the device is revoked", async () => {
     await queueAttempt(attempt);
     await queueIdleEvent(idleEvent);

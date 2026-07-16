@@ -4,6 +4,11 @@ import type { StudentStarSummary } from "../../shared/stars";
 import type { ClientApi } from "../api/client";
 import { StarBunny } from "../delight/star-bunny";
 import { TodayStars } from "../delight/today-stars";
+import {
+  getQueueCounts,
+  subscribeConfirmedStars,
+  subscribeQueueCounts
+} from "../offline/db";
 
 type StudentData = { plan: TodayPlan; stars: StudentStarSummary };
 
@@ -19,9 +24,20 @@ function studyDate(): string {
 export function StudentHome({ api }: { api: ClientApi }) {
   const [data, setData] = useState<StudentData | null>(null);
   const [failed, setFailed] = useState(false);
+  const [queuedCount, setQueuedCount] = useState(0);
 
   useEffect(() => {
     let active = true;
+    const updateQueueCounts = (counts: { attempts: number }) => {
+      if (active) setQueuedCount(counts.attempts);
+    };
+    const unsubscribe = subscribeQueueCounts(updateQueueCounts);
+    const unsubscribeConfirmedStars = subscribeConfirmedStars((stars) => {
+      if (active) {
+        setData((current) => current === null ? current : { ...current, stars });
+      }
+    });
+    void getQueueCounts().then(updateQueueCounts, () => undefined);
     void Promise.all([api.getToday(studyDate()), api.getStudentStars()]).then(
       ([plan, stars]) => {
         if (active) setData({ plan, stars });
@@ -32,6 +48,8 @@ export function StudentHome({ api }: { api: ClientApi }) {
     );
     return () => {
       active = false;
+      unsubscribe();
+      unsubscribeConfirmedStars();
     };
   }, [api]);
 
@@ -83,7 +101,7 @@ export function StudentHome({ api }: { api: ClientApi }) {
         </section>
       </main>
       <aside className="student-shell__right" aria-label="별 현황">
-        <TodayStars summary={data.stars} queuedCount={0} />
+        <TodayStars summary={data.stars} queuedCount={queuedCount} />
       </aside>
     </div>
   );

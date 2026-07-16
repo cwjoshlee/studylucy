@@ -12,9 +12,13 @@ import type {
   TodayPlan
 } from "../../shared/learning";
 import type { ReadingResult } from "../../shared/reading";
-import type { IdleEventResult } from "../../shared/stars";
+import type { IdleEventInput, IdleEventResult } from "../../shared/stars";
 import type { ApiClient } from "../api/client";
 import { StarCelebration } from "../delight/star-celebration";
+import {
+  preserveFailedAttempt,
+  preserveFailedIdleEvent
+} from "../offline/sync";
 import {
   createInactivityController,
   type InactivityActivity,
@@ -109,20 +113,24 @@ function LearningSessionView({
     setWaiting(true);
     setIdleUi({ phase: "waiting" });
     const clientIdleEventId = idFactory("idle-event");
+    const input: IdleEventInput = {
+      clientIdleEventId,
+      learningSessionId,
+      itemId: item.id,
+      studyDate,
+      idleStartedAt: event.idleStartedAt,
+      occurredAt: event.occurredAt
+    };
     try {
-      const result = await api.sendIdleEvent({
-        clientIdleEventId,
-        learningSessionId,
-        itemId: item.id,
-        studyDate,
-        idleStartedAt: event.idleStartedAt,
-        occurredAt: event.occurredAt
-      });
+      const result = await api.sendIdleEvent(input);
       setIdleUi({ phase: "paused", message: IDLE_RESULT_TEXT[result.outcome] });
-    } catch {
+    } catch (error) {
+      const queued = await preserveFailedIdleEvent(error, input).catch(() => false);
       setIdleUi({
         phase: "paused",
-        message: "쉬는 기록을 보내지 못했어요. 준비되면 다시 시작해 주세요."
+        message: queued
+          ? "쉬는 기록을 동기화 대기 중이에요. 준비되면 다시 시작해 주세요."
+          : "쉬는 기록을 보내지 못했어요. 준비되면 다시 시작해 주세요."
       });
     } finally {
       setWaiting(false);
@@ -189,16 +197,20 @@ function LearningSessionView({
   const saveReadingAttempt = useCallback(async (result: ReadingResult) => {
     controllerRef.current?.pause("server-wait");
     setWaiting(true);
+    const input = buildAttempt(result, null);
     try {
-      const receipt = await api.saveAttempt(buildAttempt(result, null));
+      const receipt = await api.saveAttempt(input);
       setAttemptReceipt(receipt);
       setNextUnlocked(receipt.completed);
       if (!receipt.readingPass) {
         setMathFeedback("서버 확인에서 읽기를 다시 해야 해요.");
       }
-    } catch {
+    } catch (error) {
+      const queued = await preserveFailedAttempt(error, input).catch(() => false);
       setNextUnlocked(false);
-      setMathFeedback("학습 기록을 저장하지 못했어요. 다시 시도해 주세요.");
+      setMathFeedback(queued
+        ? "학습 기록을 동기화 대기 중이에요. 연결되면 확인할게요."
+        : "학습 기록을 저장하지 못했어요. 다시 시도해 주세요.");
     } finally {
       setWaiting(false);
       controllerRef.current?.resume("server-wait");
@@ -246,17 +258,19 @@ function LearningSessionView({
     recordActivity("answer");
     controllerRef.current?.pause("server-wait");
     setWaiting(true);
+    const input = buildAttempt(readingResult, Number(mathAnswer));
     try {
-      const receipt = await api.saveAttempt(
-        buildAttempt(readingResult, Number(mathAnswer))
-      );
+      const receipt = await api.saveAttempt(input);
       setAttemptReceipt(receipt);
       const passed = receipt.readingPass && receipt.mathPass === true;
       setNextUnlocked(receipt.completed && passed);
       setMathFeedback(passed ? "정답이에요." : "답을 다시 생각해 봐요.");
-    } catch {
+    } catch (error) {
+      const queued = await preserveFailedAttempt(error, input).catch(() => false);
       setNextUnlocked(false);
-      setMathFeedback("답을 확인하지 못했어요. 다시 시도해 주세요.");
+      setMathFeedback(queued
+        ? "답을 동기화 대기 중이에요. 연결되면 확인할게요."
+        : "답을 확인하지 못했어요. 다시 시도해 주세요.");
     } finally {
       setWaiting(false);
       controllerRef.current?.resume("server-wait");

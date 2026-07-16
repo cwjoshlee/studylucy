@@ -1,9 +1,12 @@
 import type { ApiClient } from "../api/client";
-import type { SyncResult } from "../../shared/learning";
+import type { AttemptInput, SyncResult } from "../../shared/learning";
+import type { IdleEventInput } from "../../shared/stars";
 import {
   getQueueCounts,
   listQueuedAttempts,
   listQueuedIdleEvents,
+  queueAttempt,
+  queueIdleEvent,
   removeQueuedAttempt,
   removeQueuedIdleEvent,
   setDeviceActionRequired,
@@ -34,7 +37,30 @@ function failureKind(error: unknown): FailureKind {
   return "other";
 }
 
-type QueueSync = SyncResult & { stopped: boolean };
+export async function preserveFailedAttempt(
+  error: unknown,
+  input: AttemptInput
+): Promise<boolean> {
+  const kind = failureKind(error);
+  if (kind === "other") return false;
+  await queueAttempt(input);
+  if (kind === "device-revoked") await setDeviceActionRequired();
+  return true;
+}
+
+export async function preserveFailedIdleEvent(
+  error: unknown,
+  input: IdleEventInput
+): Promise<boolean> {
+  const kind = failureKind(error);
+  if (kind === "other") return false;
+  await queueIdleEvent(input);
+  if (kind === "device-revoked") await setDeviceActionRequired();
+  return true;
+}
+
+type StopKind = Exclude<FailureKind, "other">;
+type QueueSync = SyncResult & { stopped: StopKind | null };
 
 async function syncAttempts(api: SyncApi): Promise<QueueSync> {
   let sent = 0;
@@ -48,12 +74,12 @@ async function syncAttempts(api: SyncApi): Promise<QueueSync> {
       if (kind === "device-revoked") await setDeviceActionRequired();
       if (kind !== "other") {
         const { attempts } = await getQueueCounts();
-        return { sent, remaining: attempts, stopped: true };
+        return { sent, remaining: attempts, stopped: kind };
       }
     }
   }
   const { attempts } = await getQueueCounts();
-  return { sent, remaining: attempts, stopped: false };
+  return { sent, remaining: attempts, stopped: null };
 }
 
 async function syncIdleEvents(api: SyncApi): Promise<QueueSync> {
@@ -68,12 +94,22 @@ async function syncIdleEvents(api: SyncApi): Promise<QueueSync> {
       if (kind === "device-revoked") await setDeviceActionRequired();
       if (kind !== "other") {
         const { idleEvents } = await getQueueCounts();
-        return { sent, remaining: idleEvents, stopped: true };
+        return { sent, remaining: idleEvents, stopped: kind };
       }
     }
   }
   const { idleEvents } = await getQueueCounts();
-  return { sent, remaining: idleEvents, stopped: false };
+  return { sent, remaining: idleEvents, stopped: null };
+}
+
+async function refreshConfirmedStars(api: SyncApi): Promise<void> {
+  try {
+    await storeConfirmedStars(await api.getStudentStars());
+  } catch (error) {
+    if (failureKind(error) === "device-revoked") {
+      await setDeviceActionRequired();
+    }
+  }
 }
 
 export async function syncPending(api: SyncApi): Promise<{
@@ -81,7 +117,10 @@ export async function syncPending(api: SyncApi): Promise<{
   idleEvents: SyncResult;
 }> {
   const attempts = await syncAttempts(api);
-  if (attempts.stopped) {
+  if (attempts.stopped !== null) {
+    if (attempts.stopped === "retry" && attempts.sent > 0) {
+      await refreshConfirmedStars(api);
+    }
     const counts = await getQueueCounts();
     return {
       attempts: { sent: attempts.sent, remaining: attempts.remaining },
@@ -90,14 +129,9 @@ export async function syncPending(api: SyncApi): Promise<{
   }
 
   const idleEvents = await syncIdleEvents(api);
-  if (!idleEvents.stopped && attempts.sent + idleEvents.sent > 0) {
-    try {
-      await storeConfirmedStars(await api.getStudentStars());
-    } catch (error) {
-      if (failureKind(error) === "device-revoked") {
-        await setDeviceActionRequired();
-      }
-    }
+  const canRefresh = idleEvents.stopped === null || idleEvents.stopped === "retry";
+  if (canRefresh && attempts.sent + idleEvents.sent > 0) {
+    await refreshConfirmedStars(api);
   }
 
   return {

@@ -1,15 +1,26 @@
 // @vitest-environment jsdom
+import "fake-indexeddb/auto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { deleteDB } from "idb";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../../src/client/app";
 import { ApiError } from "../../src/client/api/client";
 import { TodayStars } from "../../src/client/delight/today-stars";
+import {
+  OFFLINE_DB_NAME,
+  queueAttempt,
+  removeQueuedAttempt,
+  storeConfirmedStars
+} from "../../src/client/offline/db";
 import { createFakeApi } from "../helpers/client";
 
 afterEach(cleanup);
+beforeEach(async () => {
+  await deleteDB(OFFLINE_DB_NAME);
+});
 
 describe("가족 로그인과 학생 홈", () => {
   it("shows setup only for SETUP_REQUIRED", async () => {
@@ -150,6 +161,66 @@ describe("가족 로그인과 학생 홈", () => {
     const queued = screen.getByRole("status", { name: "동기화 대기 별" });
     expect(within(queued).getByText("동기화 대기 별 3개")).toBeVisible();
     expect(within(queued).getByText("확정 잔액에 포함되지 않아요.")).toBeVisible();
+  });
+
+  it("shows the authoritative balance with a separate live queued-attempt count", async () => {
+    const api = createFakeApi({
+      getStudentStars: vi.fn().mockResolvedValue({
+        balance: 5,
+        earnedToday: 1,
+        deductedToday: 0,
+        lastReason: "필수 학습을 마쳤어요."
+      })
+    });
+    const queuedAttempt = {
+      clientAttemptId: "home-queued-attempt-0001",
+      itemId: "ko-01",
+      contentVersion: 1,
+      studyDate: "2026-07-16",
+      readingScore: 100,
+      missedTokens: [],
+      mathAnswer: null,
+      durationMs: 30_000,
+      difficultyFeedback: null
+    };
+    await queueAttempt(queuedAttempt);
+
+    render(<App api={api} />);
+
+    expect(await screen.findByText("모은 별 5개")).toBeVisible();
+    expect(screen.queryByText("모은 별 6개")).not.toBeInTheDocument();
+    expect(screen.getByText("동기화 대기 별 1개")).toBeVisible();
+
+    await act(async () => {
+      await queueAttempt({
+        ...queuedAttempt,
+        clientAttemptId: "home-queued-attempt-0002"
+      });
+    });
+
+    expect(await screen.findByText("동기화 대기 별 2개")).toBeVisible();
+    expect(screen.getByText("모은 별 5개")).toBeVisible();
+    expect(screen.queryByText("모은 별 7개")).not.toBeInTheDocument();
+
+    await act(async () => {
+      await storeConfirmedStars({
+        balance: 6,
+        earnedToday: 2,
+        deductedToday: 0,
+        lastReason: "동기화를 마쳤어요."
+      });
+    });
+
+    expect(await screen.findByText("모은 별 6개")).toBeVisible();
+    expect(screen.getByText("동기화 대기 별 2개")).toBeVisible();
+    expect(screen.queryByText("모은 별 8개")).not.toBeInTheDocument();
+
+    await act(async () => {
+      await removeQueuedAttempt("home-queued-attempt-0002");
+    });
+
+    expect(await screen.findByText("동기화 대기 별 1개")).toBeVisible();
+    expect(screen.getByText("모은 별 6개")).toBeVisible();
   });
 
   it("uses completed reward copy that cannot promise another star", async () => {
