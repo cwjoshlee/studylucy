@@ -64,6 +64,14 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
     await reply.send(error);
   });
 
+  app.addHook("onSend", async (request, reply, payload) => {
+    const path = request.url.split("?", 1)[0] ?? request.url;
+    if (path === "/api" || path.startsWith("/api/")) {
+      reply.header("Cache-Control", "no-store");
+    }
+    return payload;
+  });
+
   app.addHook("preHandler", createOriginGuard(deps.config.appOrigin));
   registerAuthRoutes(app, deps);
   registerBackupRoutes(app, deps);

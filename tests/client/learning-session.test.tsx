@@ -403,7 +403,7 @@ describe("LearningSession", () => {
     fireEvent(window, new Event("pagehide"));
 
     await act(async () => {
-      vi.advanceTimersByTime(2_000);
+      vi.advanceTimersByTime(1_000);
     });
     expect(screen.queryByText("별 1개를 모았어요")).not.toBeInTheDocument();
     await act(async () => {
@@ -473,7 +473,7 @@ describe("StarCelebration", () => {
     expect(screen.queryByRole("status", { name: "별 보상" })).not.toBeInTheDocument();
   });
 
-  it("completes once and removes the celebration after its display window", () => {
+  it("completes once and removes the celebration within one second", () => {
     vi.useFakeTimers();
     const onComplete = vi.fn();
     render(<StarCelebration starAward={{
@@ -483,7 +483,7 @@ describe("StarCelebration", () => {
       eventId: "star-celebration-completion-1"
     }} onComplete={onComplete} />);
 
-    act(() => vi.advanceTimersByTime(1_999));
+    act(() => vi.advanceTimersByTime(999));
     expect(onComplete).not.toHaveBeenCalled();
     act(() => vi.advanceTimersByTime(1));
     expect(onComplete).toHaveBeenCalledOnce();

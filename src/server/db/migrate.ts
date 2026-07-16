@@ -1,8 +1,9 @@
 import type Database from "better-sqlite3";
 import { initialMigration } from "./migrations/001-initial";
 import { starLedgerMigration } from "./migrations/002-star-ledger";
+import { authorityOfflineMigration } from "./migrations/003-authority-offline";
 
-const migrations = [initialMigration, starLedgerMigration];
+const migrations = [initialMigration, starLedgerMigration, authorityOfflineMigration];
 
 function hasMigrationTable(db: Database.Database): boolean {
   return db.prepare(`

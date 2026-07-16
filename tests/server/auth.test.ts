@@ -1,5 +1,17 @@
 import { createHash } from "node:crypto";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it } from "vitest";
+import {
+  RegisterDeviceRequest,
+  RenameDeviceRequest,
+  RevokeDeviceRequest,
+  type StudentLoginResult,
+  type TrustedDeviceView
+} from "../../src/shared/auth";
+import {
+  StudyDateSchema,
+  kstDayBounds,
+  kstStudyDate
+} from "../../src/shared/study-date";
 import {
   createTestHarness,
   type TestClient
@@ -30,6 +42,49 @@ async function loginGuardian(client: TestClient) {
   expect(response.statusCode).toBe(204);
   return response;
 }
+
+describe("shared auth and study-date contracts", () => {
+  it("keeps device requests bounded and exposes additive login result types", () => {
+    expect(RegisterDeviceRequest.parse({ name: "  수아 태블릿  " }))
+      .toEqual({ name: "수아 태블릿" });
+    expect(RenameDeviceRequest.parse({ name: "  새 태블릿  " }))
+      .toEqual({ name: "새 태블릿" });
+    expect(RevokeDeviceRequest.parse({ publicId: "device-public-1" }))
+      .toEqual({ publicId: "device-public-1" });
+    expect(RenameDeviceRequest.safeParse({ name: "" }).success).toBe(false);
+    expect(RevokeDeviceRequest.safeParse({ publicId: "" }).success).toBe(false);
+    expectTypeOf<StudentLoginResult["trustedDevice"]>()
+      .toEqualTypeOf<TrustedDeviceView>();
+  });
+
+  it.each([
+    ["2024-02-29", true],
+    ["2026-02-29", false],
+    ["2026-02-31", false],
+    ["2026-04-31", false],
+    ["2026-00-10", false],
+    ["2026-13-10", false],
+    ["2026-07-16", true]
+  ] as const)("validates %s as a real calendar date", (value, valid) => {
+    expect(StudyDateSchema.safeParse(value).success).toBe(valid);
+  });
+
+  it("derives KST study dates and UTC day bounds across KST midnight", () => {
+    expect(kstStudyDate(new Date("2026-07-15T14:59:59.999Z")))
+      .toBe("2026-07-15");
+    expect(kstStudyDate(new Date("2026-07-15T15:00:00.000Z")))
+      .toBe("2026-07-16");
+    expect(kstDayBounds("2026-07-16")).toEqual({
+      start: "2026-07-15T15:00:00.000Z",
+      end: "2026-07-16T15:00:00.000Z"
+    });
+    expect(kstDayBounds("2024-02-29")).toEqual({
+      start: "2024-02-28T15:00:00.000Z",
+      end: "2024-02-29T15:00:00.000Z"
+    });
+    expect(() => kstDayBounds("2026-02-31")).toThrow();
+  });
+});
 
 describe("family authentication", () => {
   let harness: Harness;

@@ -21,4 +21,14 @@ describe("PWA configuration boundaries", () => {
     expect(worker).toContain("denylist: [/^\\/api(?:\\/|$)/]");
     expect(worker).not.toMatch(/workbox-strategies|runtimeCaching|CacheFirst|NetworkFirst|StaleWhileRevalidate/);
   });
+
+  it("precaches both install icons through injectManifest", async () => {
+    const config = await readFile(
+      new URL("../../vite.config.ts", import.meta.url),
+      "utf8"
+    );
+
+    expect(config).toMatch(/globPatterns:[\s\S]*"assets\/icon-192\.png"/);
+    expect(config).toMatch(/globPatterns:[\s\S]*"assets\/icon-512\.png"/);
+  });
 });

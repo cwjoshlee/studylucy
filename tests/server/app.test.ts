@@ -23,6 +23,18 @@ describe("Fastify application shell", () => {
     expect(response.headers["content-security-policy"]).toContain("frame-ancestors 'none'");
   });
 
+  it.each([
+    "/api",
+    "/api/health",
+    "/api/auth/me",
+    "/api/student/today?date=2026-07-16",
+    "/api/guardian/progress?from=2026-07-01&to=2026-07-16"
+  ])("prevents API responses from being stored for %s", async (url) => {
+    const response = await harness.app.inject({ method: "GET", url });
+
+    expect(response.headers["cache-control"]).toBe("no-store");
+  });
+
   it("rejects a state-changing cross-origin API request", async () => {
     harness.app.post("/api/test-write", async () => ({ ok: true }));
 

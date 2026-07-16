@@ -1,7 +1,22 @@
 import { afterEach, describe, expect, it } from "vitest";
+import { AuthRepository } from "../../src/server/auth/repository";
 import { openDatabase } from "../../src/server/db/client";
 import { migrate } from "../../src/server/db/migrate";
+import { initialMigration } from "../../src/server/db/migrations/001-initial";
+import { starLedgerMigration } from "../../src/server/db/migrations/002-star-ledger";
 import { seedInitialContent } from "../../src/server/db/seed";
+
+function openVersionTwoDatabase() {
+  const db = openDatabase(":memory:");
+  db.pragma("foreign_keys = ON");
+  initialMigration.up(db);
+  db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+    .run(1, "2026-07-16T00:00:00.000Z");
+  starLedgerMigration.up(db);
+  db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+    .run(2, "2026-07-16T00:00:01.000Z");
+  return db;
+}
 
 describe("database bootstrap", () => {
   const db = openDatabase(":memory:");
@@ -13,7 +28,7 @@ describe("database bootstrap", () => {
     migrate(db);
 
     expect(db.prepare("select count(*) as count from schema_migrations").get())
-      .toEqual({ count: 2 });
+      .toEqual({ count: 3 });
   });
 
   it("seeds the exact ten Korean and ten math items", () => {
@@ -26,5 +41,146 @@ describe("database bootstrap", () => {
       { subject: "korean", count: 10 },
       { subject: "math", count: 10 }
     ]);
+  });
+
+  it("migrates version-two authority data without rewriting existing records", () => {
+    const versionTwo = openVersionTwoDatabase();
+    try {
+      seedInitialContent(versionTwo);
+      versionTwo.exec(`
+        INSERT INTO users (id, role, display_name, credential_hash, created_at)
+        VALUES
+          ('guardian-1', 'guardian', '보호자', 'hash', '2026-07-16T00:00:00.000Z'),
+          ('student-1', 'student', '수아', NULL, '2026-07-16T00:00:00.000Z');
+        INSERT INTO trusted_devices (id, name, token_hash, created_at)
+        VALUES ('device-1', '기존 태블릿', 'token-hash-1', '2026-07-16T00:01:00.000Z');
+        INSERT INTO attempts (
+          id, client_attempt_id, user_id, item_id, content_version,
+          study_date, reading_score, reading_pass, missed_tokens_json,
+          math_answer_json, math_pass, duration_ms, difficulty_feedback,
+          created_at
+        ) VALUES (
+          'attempt-1', 'client-attempt-1', 'student-1', 'ko-01', 1,
+          '2026-07-16', 91, 1, '[]', NULL, NULL, 8000, 'thinking',
+          '2026-07-16T00:02:00.000Z'
+        );
+        INSERT INTO student_star_balances (student_id, balance, updated_at)
+        VALUES ('student-1', 4, '2026-07-16T00:03:00.000Z');
+        INSERT INTO star_events (
+          id, student_id, requested_delta, delta, balance_after,
+          reason_code, reason_text, study_date, item_id, attempt_id,
+          idle_event_id, pending_adjustment_id, actor_type, actor_user_id,
+          source_key, reverses_event_id, created_at
+        ) VALUES (
+          'star-1', 'student-1', -1, -1, 4,
+          'IDLE_TIMEOUT', '기존 자리비움', '2026-07-16', 'ko-01', 'attempt-1',
+          'idle-1', NULL, 'system', NULL,
+          'idle:student-1:idle-1', NULL, '2026-07-16T00:03:00.000Z'
+        );
+        INSERT INTO idle_events (
+          id, student_id, study_date, item_id, learning_session_id,
+          idle_started_at, occurred_at, outcome, star_event_id, created_at
+        ) VALUES (
+          'idle-1', 'student-1', '2026-07-16', 'ko-01', 'legacy-session-1',
+          '2026-07-16T00:02:00.000Z', '2026-07-16T00:03:00.000Z',
+          'applied', 'star-1', '2026-07-16T00:03:00.000Z'
+        );
+      `);
+
+      const attemptBefore = versionTwo.prepare("SELECT * FROM attempts WHERE id = 'attempt-1'").get();
+      const idleBefore = versionTwo.prepare("SELECT * FROM idle_events WHERE id = 'idle-1'").get();
+      const starBefore = versionTwo.prepare("SELECT * FROM star_events WHERE id = 'star-1'").get();
+
+      migrate(versionTwo);
+      migrate(versionTwo);
+
+      expect(versionTwo.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get())
+        .toEqual({ count: 3 });
+      const deviceColumns = versionTwo.prepare("PRAGMA table_info('trusted_devices')").all()
+        .map((column) => (column as { name: string }).name);
+      expect(deviceColumns).toEqual(expect.arrayContaining(["public_id", "last_used_at"]));
+      const attemptColumns = versionTwo.prepare("PRAGMA table_info('attempts')").all()
+        .map((column) => (column as { name: string }).name);
+      expect(attemptColumns).toEqual(expect.arrayContaining(["issued_plan_id", "occurred_at"]));
+
+      const publicId = (versionTwo.prepare(`
+        SELECT public_id AS publicId FROM trusted_devices WHERE id = 'device-1'
+      `).get() as { publicId: string }).publicId;
+      expect(publicId).toMatch(/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/);
+      expect(() => versionTwo.prepare(`
+        UPDATE trusted_devices SET public_id = '' WHERE id = 'device-1'
+      `).run()).toThrow(/TRUSTED_DEVICE_PUBLIC_ID_REQUIRED/);
+
+      const repository = new AuthRepository(versionTwo);
+      repository.createTrustedDevice({
+        id: "device-2",
+        name: "호환 태블릿",
+        tokenHash: "token-hash-2",
+        createdAt: "2026-07-16T00:04:00.000Z"
+      });
+      const publicIds = versionTwo.prepare(`
+        SELECT public_id AS publicId FROM trusted_devices ORDER BY id
+      `).all() as Array<{ publicId: string }>;
+      expect(publicIds).toHaveLength(2);
+      expect(publicIds.every(({ publicId: value }) => value.length > 0)).toBe(true);
+      expect(new Set(publicIds.map(({ publicId: value }) => value)).size).toBe(2);
+
+      const attemptAfter = versionTwo.prepare(`
+        SELECT id, client_attempt_id, user_id, item_id, content_version,
+               study_date, reading_score, reading_pass, missed_tokens_json,
+               math_answer_json, math_pass, duration_ms, difficulty_feedback,
+               created_at
+        FROM attempts WHERE id = 'attempt-1'
+      `).get();
+      expect(attemptAfter).toEqual(attemptBefore);
+      expect(versionTwo.prepare(`
+        SELECT issued_plan_id AS issuedPlanId, occurred_at AS occurredAt
+        FROM attempts WHERE id = 'attempt-1'
+      `).get()).toEqual({ issuedPlanId: null, occurredAt: null });
+      expect(versionTwo.prepare("SELECT * FROM idle_events WHERE id = 'idle-1'").get())
+        .toEqual(idleBefore);
+      expect(versionTwo.prepare("SELECT * FROM star_events WHERE id = 'star-1'").get())
+        .toEqual(starBefore);
+
+      expect(() => versionTwo.prepare(`
+        INSERT INTO idle_events (
+          id, student_id, study_date, item_id, learning_session_id,
+          idle_started_at, occurred_at, outcome, star_event_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        "idle-waived-1", "student-1", "2026-07-16", "ko-01", null,
+        "2026-07-16T00:05:00.000Z", "2026-07-16T00:06:00.000Z",
+        "order-conflict-waived", null, "2026-07-16T00:06:00.000Z"
+      )).not.toThrow();
+      expect(() => versionTwo.prepare(`
+        INSERT INTO idle_events (
+          id, student_id, study_date, item_id, learning_session_id,
+          idle_started_at, occurred_at, outcome, star_event_id, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        "idle-invalid-1", "student-1", "2026-07-16", "ko-01", null,
+        "2026-07-16T00:05:00.000Z", "2026-07-16T00:06:00.000Z",
+        "applied", null, "2026-07-16T00:06:00.000Z"
+      )).toThrow(/CHECK constraint failed/);
+
+      const authorityTables = versionTwo.prepare(`
+        SELECT name FROM sqlite_master
+        WHERE type = 'table' AND name IN (
+          'issued_daily_plans', 'issued_plan_items', 'issued_learning_sessions',
+          'student_activity_cursors', 'offline_batches',
+          'offline_activity_receipts'
+        ) ORDER BY name
+      `).all().map((row) => (row as { name: string }).name);
+      expect(authorityTables).toEqual([
+        "issued_daily_plans",
+        "issued_learning_sessions",
+        "issued_plan_items",
+        "offline_activity_receipts",
+        "offline_batches",
+        "student_activity_cursors"
+      ]);
+    } finally {
+      versionTwo.close();
+    }
   });
 });

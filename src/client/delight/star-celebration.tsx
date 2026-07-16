@@ -2,7 +2,7 @@ import { useEffect, useRef, useState } from "react";
 import type { StarAwardReceipt } from "../../shared/learning";
 
 const celebratedEventIds = new Set<string>();
-const CELEBRATION_DISPLAY_MS = 2_000;
+const CELEBRATION_DISPLAY_MS = 1_000;
 
 export function StarCelebration({
   starAward,
