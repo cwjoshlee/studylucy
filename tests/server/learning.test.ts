@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { INITIAL_CONTENT_VERSION } from "../../src/server/db/seed";
 import { LearningRepository } from "../../src/server/learning/repository";
 import type { TodayPlan } from "../../src/shared/learning";
 import {
@@ -590,7 +591,8 @@ describe("authoritative learning API", () => {
     const issuedMath = plan.items.find((item) => item.id === "math-01")!;
     expect(issuedMath.payload.kind).toBe("math-story");
 
-    const publishedV2 = {
+    const nextContentVersion = INITIAL_CONTENT_VERSION + 1;
+    const publishedNextVersion = {
       ...issuedMath.payload,
       title: "바뀐 수학 문제",
       text: "정답이 완전히 달라진 새 문제예요.",
@@ -598,20 +600,21 @@ describe("authoritative learning API", () => {
     };
     harness.db.prepare(`
       INSERT INTO content_versions (item_id, version, payload_json, created_at)
-      VALUES (?, 2, ?, ?)
+      VALUES (?, ?, ?, ?)
     `).run(
       issuedMath.id,
-      JSON.stringify(publishedV2),
+      nextContentVersion,
+      JSON.stringify(publishedNextVersion),
       "2026-07-15T03:02:00.000Z"
     );
     harness.db.prepare(`
-      UPDATE content_items SET active_version = 2 WHERE id = ?
-    `).run(issuedMath.id);
+      UPDATE content_items SET active_version = ? WHERE id = ?
+    `).run(nextContentVersion, issuedMath.id);
 
     const response = await student.request(
       "POST",
       "/api/student/attempts",
-      passingAttempt(plan, issuedMath, "attempt-issued-v1-0001")
+      passingAttempt(plan, issuedMath, "attempt-issued-current-0001")
     );
     expect(response.statusCode).toBe(201);
     expect(response.json()).toMatchObject({
@@ -623,8 +626,8 @@ describe("authoritative learning API", () => {
       SELECT content_version AS contentVersion, issued_plan_id AS planId,
              occurred_at AS occurredAt
       FROM attempts WHERE client_attempt_id = ?
-    `).get("attempt-issued-v1-0001")).toEqual({
-      contentVersion: 1,
+    `).get("attempt-issued-current-0001")).toEqual({
+      contentVersion: INITIAL_CONTENT_VERSION,
       planId: plan.planId,
       occurredAt: "2026-07-15T03:05:00.000Z"
     });

@@ -2,7 +2,12 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
-import { INITIAL_ITEMS } from "../../src/server/db/seed";
+import { INITIAL_ITEMS_V1 } from "../../src/server/db/seed-v1";
+import {
+  INITIAL_CONTENT_VERSION,
+  INITIAL_ITEMS
+} from "../../src/server/db/seed";
+import { LearningItemPayloadSchema } from "../../src/shared/learning";
 
 const PAYLOAD_HASHES = {
   "ko-01": "add18e0a89b8d54bf5ffbbf9190fad68f3a6b4ee20647dbdc48997221b2ed694",
@@ -34,6 +39,36 @@ const ICON_HASHES = {
   "study-desk.png": "7f88d5d04ead8d5bc1854d14d1d19702c089e122f836dafdbfa37edf9bb0cd2d"
 } as const;
 
+const APPROVED_V2_IDS = [
+  "ko-01", "ko-02", "ko-03", "ko-04", "ko-05",
+  "ko-06", "ko-07", "ko-08", "ko-09", "ko-10",
+  "math-01", "math-02", "math-03", "math-04", "math-05",
+  "math-06", "math-07", "math-08", "math-09", "math-10"
+] as const;
+
+const APPROVED_V2_TITLES = [
+  "낱말 수첩이 풍덩",
+  "양말을 쓴 조개",
+  "콧수염이 된 미역",
+  "거꾸로 붙은 이름표",
+  "웃음 나는 우산",
+  "문장 기차가 덜컹",
+  "쉼표가 숨은 곳",
+  "루미의 양말 주문",
+  "봉봉의 비눗방울 편지",
+  "젖지 않는 수첩의 비밀",
+  "포도알 주판",
+  "꼬리 리본 세기",
+  "주판 알의 낮잠",
+  "양말을 신은 숫자",
+  "비눗방울 덧셈",
+  "거꾸로 켜진 등불",
+  "숲속 간식 배달",
+  "별 계단 세 칸",
+  "의자가 된 숫자 카드",
+  "우당탕 축하 모자"
+] as const;
+
 function canonical(value: unknown): string {
   if (Array.isArray(value)) {
     return `[${value.map(canonical).join(",")}]`;
@@ -52,12 +87,12 @@ function sha256(value: string | Buffer): string {
 
 describe("retired prototype parity manifest", () => {
   it("preserves all 20 normalized learning payload hashes", () => {
-    const actual = Object.fromEntries(INITIAL_ITEMS.map((item) => [
+    const actual = Object.fromEntries(INITIAL_ITEMS_V1.map((item) => [
       item.id,
       sha256(canonical(item))
     ]));
 
-    expect(INITIAL_ITEMS).toHaveLength(20);
+    expect(INITIAL_ITEMS_V1).toHaveLength(20);
     expect(actual).toEqual(PAYLOAD_HASHES);
   });
 
@@ -70,5 +105,20 @@ describe("retired prototype parity manifest", () => {
     ));
 
     expect(actual).toEqual(ICON_HASHES);
+  });
+});
+
+describe("approved version 2 content contract", () => {
+  it("publishes the exact ordered IDs and titles as active content version 2", () => {
+    expect(INITIAL_CONTENT_VERSION).toBe(2);
+    expect(INITIAL_ITEMS.map(({ id }) => id)).toEqual(APPROVED_V2_IDS);
+    expect(INITIAL_ITEMS.map(({ title }) => title)).toEqual(APPROVED_V2_TITLES);
+  });
+
+  it("round-trips every approved payload through the shared schema", () => {
+    const roundTripped = INITIAL_ITEMS.map((item) =>
+      LearningItemPayloadSchema.parse(JSON.parse(JSON.stringify(item))));
+
+    expect(roundTripped).toEqual(INITIAL_ITEMS);
   });
 });

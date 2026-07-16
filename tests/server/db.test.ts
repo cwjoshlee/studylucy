@@ -52,6 +52,66 @@ describe("database bootstrap", () => {
     ]);
   });
 
+  it("activates initial content version 2 without rewriting an existing v1", () => {
+    const upgrade = openDatabase(":memory:");
+    try {
+      migrate(upgrade);
+      seedInitialContent(upgrade);
+      const v1Before = upgrade.prepare(`
+        SELECT payload_json AS payloadJson FROM content_versions
+        WHERE item_id = 'ko-01' AND version = 1
+      `).get() as { payloadJson: string };
+      const v2 = upgrade.prepare(`
+        SELECT payload_json AS payloadJson FROM content_versions
+        WHERE item_id = 'ko-01' AND version = 2
+      `).get() as { payloadJson: string };
+
+      upgrade.prepare("UPDATE content_items SET active_version = 1 WHERE id = 'ko-01'").run();
+      upgrade.prepare("DELETE FROM content_versions WHERE item_id = 'ko-01' AND version = 2").run();
+
+      seedInitialContent(upgrade);
+
+      expect(upgrade.prepare(`
+        SELECT active_version AS activeVersion FROM content_items WHERE id = 'ko-01'
+      `).get()).toEqual({ activeVersion: 2 });
+      expect(upgrade.prepare(`
+        SELECT payload_json AS payloadJson FROM content_versions
+        WHERE item_id = 'ko-01' AND version = 1
+      `).get()).toEqual({ payloadJson: v1Before.payloadJson });
+      expect(upgrade.prepare(`
+        SELECT payload_json AS payloadJson FROM content_versions
+        WHERE item_id = 'ko-01' AND version = 2
+      `).get()).toEqual({ payloadJson: v2.payloadJson });
+    } finally {
+      upgrade.close();
+    }
+  });
+
+  it("never downgrades guardian-authored active version 3", () => {
+    const edited = openDatabase(":memory:");
+    try {
+      migrate(edited);
+      seedInitialContent(edited);
+      const v2 = edited.prepare(`
+        SELECT payload_json AS payloadJson FROM content_versions
+        WHERE item_id = 'ko-01' AND version = 2
+      `).get() as { payloadJson: string };
+      edited.prepare(`
+        INSERT INTO content_versions (item_id, version, payload_json, created_at)
+        VALUES ('ko-01', 3, ?, '2026-07-17T00:00:00.000Z')
+      `).run(v2.payloadJson);
+      edited.prepare("UPDATE content_items SET active_version = 3 WHERE id = 'ko-01'").run();
+
+      seedInitialContent(edited);
+
+      expect(edited.prepare(`
+        SELECT active_version AS activeVersion FROM content_items WHERE id = 'ko-01'
+      `).get()).toEqual({ activeVersion: 3 });
+    } finally {
+      edited.close();
+    }
+  });
+
   it("migrates version-two authority data without rewriting existing records", () => {
     const versionTwo = openVersionTwoDatabase();
     try {
