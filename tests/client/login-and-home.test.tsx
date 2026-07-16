@@ -24,22 +24,9 @@ beforeEach(async () => {
   await deleteDB(OFFLINE_DB_NAME);
 });
 
-function createAppApi(overrides: Record<string, unknown> = {}) {
-  const lifecycle = {
-    endSession: vi.fn().mockResolvedValue(undefined),
-    listTrustedDevices: vi.fn().mockResolvedValue([]),
-    revokeTrustedDevice: vi.fn()
-  };
-  return {
-    ...createFakeApi({ ...lifecycle, ...overrides }),
-    ...lifecycle,
-    ...overrides
-  } as ReturnType<typeof createFakeApi> & typeof lifecycle;
-}
-
 describe("가족 로그인과 학생 홈", () => {
   it("shows setup only for SETUP_REQUIRED", async () => {
-    const api = createAppApi({
+    const api = createFakeApi({
       me: vi.fn().mockRejectedValue(new ApiError(409, "SETUP_REQUIRED"))
     });
 
@@ -51,7 +38,7 @@ describe("가족 로그인과 학생 홈", () => {
   });
 
   it("does not open setup for an unrelated 409 code", async () => {
-    const api = createAppApi({
+    const api = createFakeApi({
       me: vi.fn().mockRejectedValue(new ApiError(409, "PLAN_LOCKED"))
     });
 
@@ -66,7 +53,7 @@ describe("가족 로그인과 학생 홈", () => {
   it("reveals setup, guardian, device, PIN, and student login one step at a time", async () => {
     const user = userEvent.setup();
     const endSession = vi.fn().mockResolvedValue(undefined);
-    const api = createAppApi({
+    const api = createFakeApi({
       endSession,
       me: vi.fn()
         .mockRejectedValueOnce(new ApiError(409, "SETUP_REQUIRED"))
@@ -113,7 +100,7 @@ describe("가족 로그인과 학생 홈", () => {
   });
 
   it("gives an authenticated guardian a clear protected entry", async () => {
-    const api = createAppApi({
+    const api = createFakeApi({
       me: vi.fn().mockResolvedValue({
         id: "guardian-1",
         role: "guardian",
@@ -132,7 +119,7 @@ describe("가족 로그인과 학생 홈", () => {
 
   it("returns an existing guardian to the protected guardian space", async () => {
     const user = userEvent.setup();
-    const api = createAppApi({
+    const api = createFakeApi({
       me: vi.fn()
         .mockRejectedValueOnce(new ApiError(401, "AUTH_REQUIRED"))
         .mockResolvedValue({
@@ -159,8 +146,10 @@ describe("가족 로그인과 학생 홈", () => {
   it("ends the guardian session before requiring a fresh student PIN", async () => {
     const user = userEvent.setup();
     const endSession = vi.fn().mockResolvedValue(undefined);
-    const studentLogin = vi.fn().mockResolvedValue(undefined);
-    const api = createAppApi({
+    const studentLogin = vi.fn().mockResolvedValue({
+      offlineAccessUntil: "2026-07-16T14:59:59.999Z"
+    });
+    const api = createFakeApi({
       endSession,
       studentLogin,
       me: vi.fn()
@@ -200,7 +189,7 @@ describe("가족 로그인과 학생 홈", () => {
     const user = userEvent.setup();
     const endSession = vi.fn().mockResolvedValue(undefined);
     const guardianLogin = vi.fn().mockResolvedValue(undefined);
-    const api = createAppApi({
+    const api = createFakeApi({
       endSession,
       guardianLogin,
       me: vi.fn()
@@ -239,7 +228,7 @@ describe("가족 로그인과 학생 홈", () => {
   it("uses session end for logout and returns to the normal student login", async () => {
     const user = userEvent.setup();
     const endSession = vi.fn().mockResolvedValue(undefined);
-    const api = createAppApi({ endSession });
+    const api = createFakeApi({ endSession });
     render(<App api={api} />);
 
     await screen.findByText("수아야, 오늘도 한 걸음!");
@@ -252,7 +241,7 @@ describe("가족 로그인과 학생 홈", () => {
   });
 
   it("shows the A layout, required stars, and original friend", async () => {
-    render(<App api={createAppApi()} />);
+    render(<App api={createFakeApi()} />);
 
     expect(await screen.findByText("오늘의 학습")).toBeVisible();
     expect(screen.getByText("수아야, 오늘도 한 걸음!")).toBeVisible();
@@ -269,7 +258,7 @@ describe("가족 로그인과 학생 홈", () => {
     ["선택", "구름 산책"]
   ])("launches a selected %s item from the dashboard", async (_kind, title) => {
     const user = userEvent.setup();
-    render(<App api={createAppApi()} />);
+    render(<App api={createFakeApi()} />);
 
     await user.click(await screen.findByRole("button", { name: `${title} 시작하기` }));
 
@@ -279,7 +268,7 @@ describe("가족 로그인과 학생 홈", () => {
 
   it("returns after a gated completion with refreshed authoritative progress and stars", async () => {
     const user = userEvent.setup();
-    const api = createAppApi();
+    const api = createFakeApi();
     const initialPlan = await api.getToday("2026-07-16");
     api.getToday.mockReset()
       .mockResolvedValueOnce(initialPlan)
@@ -327,7 +316,7 @@ describe("가족 로그인과 학생 홈", () => {
 
   it("returns with an offline attempt queued then refetches authoritative home state after sync", async () => {
     const user = userEvent.setup();
-    const api = createAppApi();
+    const api = createFakeApi();
     const initialPlan = await api.getToday("2026-07-16");
     const confirmedAfterSync = {
       balance: 8,
@@ -409,7 +398,7 @@ describe("가족 로그인과 학생 홈", () => {
   });
 
   it("shows the authoritative balance with a separate live queued-attempt count", async () => {
-    const api = createAppApi({
+    const api = createFakeApi({
       getStudentStars: vi.fn().mockResolvedValue({
         balance: 5,
         earnedToday: 1,
@@ -469,7 +458,7 @@ describe("가족 로그인과 학생 홈", () => {
   });
 
   it("uses completed reward copy that cannot promise another star", async () => {
-    const api = createAppApi();
+    const api = createFakeApi();
     const plan = await api.getToday("2026-07-16");
     api.getToday.mockResolvedValue({
       ...plan,

@@ -37,16 +37,22 @@ async function authenticateFamily(harness: Harness): Promise<{
   expect((await guardian.request("POST", "/api/auth/guardian/login", {
     password: FAMILY.password
   })).statusCode).toBe(204);
-  expect((await guardian.request("POST", "/api/auth/devices", {
+  expect((await guardian.request("POST", "/api/guardian/devices/current", {
     name: "수아 갤럭시 탭"
   })).statusCode).toBe(201);
   expect((await guardian.request("PUT", "/api/auth/student-pin", {
     pin: "2580"
   })).statusCode).toBe(204);
   student.setCookie("sua_device", guardian.cookie("sua_device")!);
-  expect((await student.request("POST", "/api/auth/student/login", {
-    pin: "2580"
-  })).statusCode).toBe(204);
+  const studentLogin = await student.request(
+    "POST",
+    "/api/auth/student/login",
+    { pin: "2580" }
+  );
+  expect(studentLogin.statusCode).toBe(200);
+  expect(studentLogin.json()).toEqual({
+    offlineAccessUntil: "2026-07-15T14:59:59.999Z"
+  });
   const studentId = (harness.db.prepare(
     "SELECT id FROM users WHERE role = 'student'"
   ).get() as { id: string }).id;

@@ -46,7 +46,7 @@ async function authenticateStudent(
   ).toBe(204);
   expect(
     (
-      await student.request("POST", "/api/auth/devices", {
+      await student.request("POST", "/api/guardian/devices/current", {
         name: "수아 갤럭시 탭"
       })
     ).statusCode
@@ -61,13 +61,15 @@ async function authenticateStudent(
   expect(
     (await student.request("POST", "/api/auth/logout")).statusCode
   ).toBe(204);
-  expect(
-    (
-      await student.request("POST", "/api/auth/student/login", {
-        pin: "2580"
-      })
-    ).statusCode
-  ).toBe(204);
+  const studentLogin = await student.request(
+    "POST",
+    "/api/auth/student/login",
+    { pin: "2580" }
+  );
+  expect(studentLogin.statusCode).toBe(200);
+  expect(studentLogin.json()).toEqual({
+    offlineAccessUntil: "2026-07-15T14:59:59.999Z"
+  });
 }
 
 async function loginGuardian(guardian: TestClient): Promise<void> {

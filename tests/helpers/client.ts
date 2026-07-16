@@ -8,6 +8,19 @@ const items = [
   ["optional-01", "korean", "선택 읽기", "구름 산책"]
 ] as const;
 
+const trustedDevice = {
+  publicId: "device-public-1",
+  name: "수아 갤럭시 탭",
+  createdAt: "2026-07-15T03:00:00.000Z",
+  lastUsedAt: null,
+  status: "active" as const,
+  current: true
+};
+
+const studentLoginResult = {
+  offlineAccessUntil: "2026-07-16T14:59:59.999Z"
+};
+
 export function createFakeApi(overrides: Record<string, unknown> = {}) {
   return {
     me: vi.fn().mockResolvedValue({
@@ -17,10 +30,16 @@ export function createFakeApi(overrides: Record<string, unknown> = {}) {
     }),
     setup: vi.fn().mockResolvedValue({ status: "created" }),
     guardianLogin: vi.fn().mockResolvedValue(undefined),
-    registerDevice: vi.fn().mockResolvedValue({ status: "created" }),
+    registerDevice: vi.fn().mockResolvedValue(trustedDevice),
+    listTrustedDevices: vi.fn().mockResolvedValue([trustedDevice]),
+    revokeTrustedDevice: vi.fn().mockResolvedValue({
+      ...trustedDevice,
+      status: "revoked" as const
+    }),
     setStudentPin: vi.fn().mockResolvedValue(undefined),
+    endSession: vi.fn().mockResolvedValue(undefined),
     logout: vi.fn().mockResolvedValue(undefined),
-    studentLogin: vi.fn().mockResolvedValue(undefined),
+    studentLogin: vi.fn().mockResolvedValue(studentLoginResult),
     getToday: vi.fn().mockResolvedValue({
       date: "2026-07-16",
       completedItemIds: [],

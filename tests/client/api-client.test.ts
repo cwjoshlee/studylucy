@@ -17,10 +17,14 @@ describe("ApiClient", () => {
   });
 
   it("sends JSON with same-origin credentials", async () => {
-    const fetcher = vi.fn().mockResolvedValue(new Response(null, { status: 204 }));
+    const result = { offlineAccessUntil: "2026-07-16T14:59:59.999Z" };
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(result), {
+      status: 200,
+      headers: { "content-type": "application/json" }
+    }));
     const api = new ApiClient(fetcher);
 
-    await api.studentLogin("2580");
+    await expect(api.studentLogin("2580")).resolves.toEqual(result);
 
     expect(fetcher).toHaveBeenCalledWith("/api/auth/student/login", {
       method: "POST",

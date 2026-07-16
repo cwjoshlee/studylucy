@@ -338,7 +338,7 @@ describe("guardian backup status", () => {
     expect((await student.request("POST", "/api/auth/guardian/login", {
       password: "correct horse battery staple"
     })).statusCode).toBe(204);
-    expect((await student.request("POST", "/api/auth/devices", {
+    expect((await student.request("POST", "/api/guardian/devices/current", {
       name: "수아 태블릿"
     })).statusCode).toBe(201);
     expect((await student.request("PUT", "/api/auth/student-pin", {
@@ -346,9 +346,15 @@ describe("guardian backup status", () => {
     })).statusCode).toBe(204);
     expect((await student.request("POST", "/api/auth/logout")).statusCode)
       .toBe(204);
-    expect((await student.request("POST", "/api/auth/student/login", {
-      pin: "2580"
-    })).statusCode).toBe(204);
+    const studentLogin = await student.request(
+      "POST",
+      "/api/auth/student/login",
+      { pin: "2580" }
+    );
+    expect(studentLogin.statusCode).toBe(200);
+    expect(studentLogin.json()).toEqual({
+      offlineAccessUntil: "2026-07-15T14:59:59.999Z"
+    });
 
     const forbidden = await student.request(
       "GET",
