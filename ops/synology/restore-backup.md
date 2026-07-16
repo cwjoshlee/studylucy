@@ -45,7 +45,8 @@ test ! -e "${ROLLBACK}-wal"
 test ! -e "${ROLLBACK}-shm"
 
 docker compose stop app
-test -z "$(docker compose ps --status running --services app)"
+RUNNING_APP_SERVICES=$(docker compose ps --status running --services app)
+test -z "$RUNNING_APP_SERVICES"
 
 cp -p -- "$BACKUP" "$CANDIDATE"
 cp -p -- ./data/sua-learning.db "$ROLLBACK"
@@ -87,7 +88,8 @@ test ! -e "${ROLLBACK_CANDIDATE}-wal"
 test ! -e "${ROLLBACK_CANDIDATE}-shm"
 
 docker compose stop app
-test -z "$(docker compose ps --status running --services app)"
+RUNNING_APP_SERVICES=$(docker compose ps --status running --services app)
+test -z "$RUNNING_APP_SERVICES"
 
 cp -p -- "$ROLLBACK" "$ROLLBACK_CANDIDATE"
 if [[ -f "${ROLLBACK}-wal" ]]; then

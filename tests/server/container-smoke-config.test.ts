@@ -96,11 +96,16 @@ describe("isolated container smoke configuration", () => {
     const rollback = shellBlocks.find((block) =>
       block.includes("rollback-candidate-${RESTORE_STAMP}.sqlite")
     ) ?? "";
-    const stoppedAssertion = 'test -z "$(docker compose ps --status running --services app)"';
+    const runningAssignment =
+      "RUNNING_APP_SERVICES=$(docker compose ps --status running --services app)";
+    const stoppedAssertion = 'test -z "$RUNNING_APP_SERVICES"';
 
     expect(replacement).toContain("set -euo pipefail");
+    expect(replacement).toContain(runningAssignment);
     expect(replacement).toContain(stoppedAssertion);
     expect(replacement.indexOf("docker compose stop app"))
+      .toBeLessThan(replacement.indexOf(runningAssignment));
+    expect(replacement.indexOf(runningAssignment))
       .toBeLessThan(replacement.indexOf(stoppedAssertion));
     expect(replacement.indexOf(stoppedAssertion))
       .toBeLessThan(replacement.indexOf("rm -f -- ./data/sua-learning.db-wal"));
@@ -110,12 +115,20 @@ describe("isolated container smoke configuration", () => {
       .toBeLessThan(replacement.indexOf("rm -f -- ./data/sua-learning.db-wal"));
 
     expect(rollback).toContain("set -euo pipefail");
+    expect(rollback).toContain(runningAssignment);
     expect(rollback).toContain(stoppedAssertion);
+    expect(rollback.indexOf("docker compose stop app"))
+      .toBeLessThan(rollback.indexOf(runningAssignment));
+    expect(rollback.indexOf(runningAssignment))
+      .toBeLessThan(rollback.indexOf(stoppedAssertion));
     expect(rollback.indexOf('test -f "$ROLLBACK"'))
       .toBeLessThan(rollback.indexOf("rm -f -- ./data/sua-learning.db-wal"));
     expect(rollback.indexOf('cp -p -- "$ROLLBACK" "$ROLLBACK_CANDIDATE"'))
       .toBeLessThan(rollback.indexOf("rm -f -- ./data/sua-learning.db-wal"));
     expect(`${replacement}\n${rollback}`).not.toMatch(/2>\/dev\/null|\|\| true/);
+    expect(`${replacement}\n${rollback}`).not.toContain(
+      'test -z "$(docker compose ps --status running --services app)"'
+    );
     expect(guide.match(/cp -p -- "\$BACKUP" "\$CANDIDATE"/g)).toHaveLength(1);
   });
 });
