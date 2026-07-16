@@ -349,7 +349,7 @@ export class LearningRepository {
       };
     }
 
-    const applied = this.stars.apply({
+    const applied = this.stars.applyInTransaction({
       studentId: input.studentId,
       delta: 1,
       reason: "REQUIRED_ITEM_COMPLETED",

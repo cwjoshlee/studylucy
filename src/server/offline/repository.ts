@@ -53,7 +53,7 @@ export type InsertActivityInput = {
   clientEventId: string;
   eventFingerprint: string;
   studyDate: string;
-  itemId: string;
+  itemId: string | null;
   kind: "attempt" | "idle";
   receipt: ActivityReceipt;
   createdAt: string;

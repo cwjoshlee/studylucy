@@ -3,6 +3,7 @@ import type {
   OfflineBatchInput,
   TodayPlan
 } from "../../src/shared/learning";
+import { kstDayBounds } from "../../src/shared/study-date";
 import { OfflineBatchService } from "../../src/server/offline/service";
 import { StarRepository } from "../../src/server/stars/repository";
 import {
@@ -175,6 +176,39 @@ function studentId(harness: Harness): string {
   ).get() as { id: string }).id;
 }
 
+function insertUnissuedPublishedItem(
+  harness: Harness,
+  template: TodayPlan["items"][number],
+  itemId: string
+): void {
+  const skill = harness.db.prepare(`
+    SELECT skill_id AS skillId FROM content_items WHERE id = ?
+  `).get(template.id) as { skillId: string };
+  harness.db.prepare(`
+    INSERT INTO content_items (
+      id, skill_id, subject, status, active_version, created_at
+    ) VALUES (?, ?, ?, 'published', 1, '2026-07-15T03:01:00.000Z')
+  `).run(itemId, skill.skillId, template.payload.subject);
+  harness.db.prepare(`
+    INSERT INTO content_versions (item_id, version, payload_json, created_at)
+    VALUES (?, 1, ?, '2026-07-15T03:01:00.000Z')
+  `).run(itemId, JSON.stringify({ ...template.payload, id: itemId }));
+}
+
+async function revokeDevice(
+  harness: Harness,
+  publicId: string
+): Promise<void> {
+  const guardian = harness.client();
+  expect((await guardian.request("POST", "/api/auth/guardian/login", {
+    password: FAMILY.password
+  })).statusCode).toBe(204);
+  expect((await guardian.request(
+    "POST",
+    `/api/guardian/devices/${publicId}/revoke`
+  )).statusCode).toBe(200);
+}
+
 type MutationCounts = {
   attempts: number;
   idleEvents: number;
@@ -297,6 +331,35 @@ describe("ordered offline activity batches", () => {
         reason: "REQUIRED_ITEM_COMPLETED"
       }
     ]);
+  });
+
+  it("opens only the outer immediate transaction for a successful required offline attempt", async () => {
+    const student = harness.client();
+    await bootstrapStudent(harness, student);
+    const plan = await getToday(student);
+    const required = plan.items.find((item) =>
+      plan.requiredItemIds.includes(item.id)
+    )!;
+    const transaction = vi.spyOn(harness.db, "transaction");
+
+    const response = await student.request(
+      "POST",
+      "/api/student/offline-batches",
+      batch(plan, "batch-single-transaction-0001", [
+        attemptEvent(passingAttempt(
+          plan,
+          required,
+          "attempt-single-transaction-0001"
+        ), 1)
+      ])
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({
+      receipts: [{ status: "APPLIED", attempt: { completed: true } }],
+      stars: { balance: 1 }
+    });
+    expect(transaction).toHaveBeenCalledTimes(1);
   });
 
   it("uses one canonical batch receive time for every write inside the immediate transaction", async () => {
@@ -478,6 +541,163 @@ describe("ordered offline activity batches", () => {
       }
     ]);
     expect(mixed.json().batchEndCursor).toBe(2);
+  });
+
+  it("commits valid siblings while rejected receipts persist only authoritative plan metadata", async () => {
+    const student = harness.client();
+    await bootstrapStudent(harness, student);
+    const plan = await getToday(student);
+    const item = plan.items.find((candidate) =>
+      plan.requiredItemIds.includes(candidate.id)
+    )!;
+    const unrelatedItemId = "unissued-existing-item";
+    const unknownItemId = "unknown-sensitive-item";
+    insertUnissuedPublishedItem(harness, item, unrelatedItemId);
+    const valid = passingAttempt(
+      plan,
+      item,
+      "attempt-valid-mixed-0001"
+    );
+    const unknown = passingAttempt(
+      plan,
+      item,
+      "attempt-unknown-mixed-0001",
+      "2026-07-15T03:05:00.000Z",
+      {
+        itemId: unknownItemId,
+        mathAnswer: 424242,
+        missedTokens: ["LEAKED_UNKNOWN_TOKEN"],
+        transcript: "LEAKED_TRANSCRIPT",
+        learningSessionId: "LEAKED_SESSION_ID",
+        deviceId: "LEAKED_DEVICE_ID"
+      }
+    );
+    const unrelated = passingAttempt(
+      plan,
+      item,
+      "attempt-unrelated-mixed-0001",
+      "2026-07-15T03:05:00.000Z",
+      { itemId: unrelatedItemId, missedTokens: ["LEAKED_UNRELATED_TOKEN"] }
+    );
+    const wrongDate = passingAttempt(
+      plan,
+      item,
+      "attempt-wrong-date-mixed-0001",
+      "2026-07-15T03:05:00.000Z",
+      { studyDate: "2026-07-14", missedTokens: ["LEAKED_DATE_TOKEN"] }
+    );
+    const wrongVersion = passingAttempt(
+      plan,
+      item,
+      "attempt-wrong-version-mixed-0001",
+      "2026-07-15T03:05:00.000Z",
+      {
+        contentVersion: item.version + 100,
+        missedTokens: ["LEAKED_VERSION_TOKEN"]
+      }
+    );
+
+    const response = await student.request(
+      "POST",
+      "/api/student/offline-batches",
+      batch(plan, "batch-authoritative-metadata-0001", [
+        attemptEvent(valid, 1),
+        attemptEvent(unknown, 2),
+        attemptEvent(unrelated, 3),
+        attemptEvent(wrongDate, 4),
+        attemptEvent(wrongVersion, 5)
+      ])
+    );
+
+    expect(response.statusCode).toBe(200);
+    expect(response.json().receipts).toMatchObject([
+      { clientId: valid.clientAttemptId, status: "APPLIED", code: null },
+      {
+        clientId: unknown.clientAttemptId,
+        status: "REJECTED",
+        code: "PLAN_NOT_ISSUED"
+      },
+      {
+        clientId: unrelated.clientAttemptId,
+        status: "REJECTED",
+        code: "PLAN_NOT_ISSUED"
+      },
+      {
+        clientId: wrongDate.clientAttemptId,
+        status: "REJECTED",
+        code: "INVALID_REQUEST"
+      },
+      {
+        clientId: wrongVersion.clientAttemptId,
+        status: "REJECTED",
+        code: "CONTENT_VERSION_CONFLICT"
+      }
+    ]);
+    expect(mutationCounts(harness)).toMatchObject({
+      attempts: 1,
+      starEvents: 1,
+      batches: 1,
+      receipts: 5,
+      activityCursor: 5
+    });
+    const rows = harness.db.prepare(`
+      SELECT client_event_id AS clientEventId,
+             study_date AS studyDate, item_id AS itemId,
+             receipt_json AS receiptJson
+      FROM offline_activity_receipts
+      ORDER BY client_event_id
+    `).all() as Array<{
+      clientEventId: string;
+      studyDate: string;
+      itemId: string | null;
+      receiptJson: string;
+    }>;
+    expect(rows.map(({ clientEventId, studyDate, itemId }) => ({
+      clientEventId,
+      studyDate,
+      itemId
+    }))).toEqual([
+      {
+        clientEventId: unknown.clientAttemptId,
+        studyDate: plan.date,
+        itemId: null
+      },
+      {
+        clientEventId: unrelated.clientAttemptId,
+        studyDate: plan.date,
+        itemId: null
+      },
+      {
+        clientEventId: valid.clientAttemptId,
+        studyDate: plan.date,
+        itemId: item.id
+      },
+      {
+        clientEventId: wrongDate.clientAttemptId,
+        studyDate: plan.date,
+        itemId: item.id
+      },
+      {
+        clientEventId: wrongVersion.clientAttemptId,
+        studyDate: plan.date,
+        itemId: null
+      }
+    ]);
+    const storedReceiptJson = rows.map((row) => row.receiptJson).join("\n");
+    for (const secret of [
+      unknownItemId,
+      unrelatedItemId,
+      "424242",
+      "LEAKED_UNKNOWN_TOKEN",
+      "LEAKED_UNRELATED_TOKEN",
+      "LEAKED_DATE_TOKEN",
+      "LEAKED_VERSION_TOKEN",
+      "LEAKED_TRANSCRIPT",
+      "LEAKED_SESSION_ID",
+      "LEAKED_DEVICE_ID"
+    ]) {
+      expect(storedReceiptJson).not.toContain(secret);
+    }
   });
 
   it("uses receive time for a reconciled legacy attempt and makes a legacy idle waiver-only", async () => {
@@ -912,12 +1132,48 @@ describe("ordered offline activity batches", () => {
     const student = harness.client();
     await bootstrapStudent(harness, student);
     const oldPlan = await getToday(student);
+    const oldItem = oldPlan.items[0]!;
+    const unrelatedItemId = "expired-unissued-existing-item";
+    insertUnissuedPublishedItem(harness, oldItem, unrelatedItemId);
+    const valid = passingAttempt(
+      oldPlan,
+      oldItem,
+      "attempt-expired-terminal-0001"
+    );
+    const unknown = passingAttempt(
+      oldPlan,
+      oldItem,
+      "attempt-expired-unknown-0001",
+      "2026-07-15T03:05:00.000Z",
+      { itemId: "expired-unknown-sensitive-item" }
+    );
+    const unrelated = passingAttempt(
+      oldPlan,
+      oldItem,
+      "attempt-expired-unrelated-0001",
+      "2026-07-15T03:05:00.000Z",
+      { itemId: unrelatedItemId }
+    );
+    const wrongDate = passingAttempt(
+      oldPlan,
+      oldItem,
+      "attempt-expired-wrong-date-0001",
+      "2026-07-15T03:05:00.000Z",
+      { studyDate: "2026-07-14" }
+    );
+    const wrongVersion = passingAttempt(
+      oldPlan,
+      oldItem,
+      "attempt-expired-wrong-version-0001",
+      "2026-07-15T03:05:00.000Z",
+      { contentVersion: oldItem.version + 100 }
+    );
     const request = batch(oldPlan, "batch-expired-terminal-0001", [
-      attemptEvent(passingAttempt(
-        oldPlan,
-        oldPlan.items[0]!,
-        "attempt-expired-terminal-0001"
-      ), 1)
+      attemptEvent(valid, 1),
+      attemptEvent(unknown, 2),
+      attemptEvent(unrelated, 3),
+      attemptEvent(wrongDate, 4),
+      attemptEvent(wrongVersion, 5)
     ]);
     harness.advanceTime(36 * 60 * 60 * 1_000 + 1);
     await getToday(student);
@@ -930,23 +1186,57 @@ describe("ordered offline activity batches", () => {
     expect(first.statusCode).toBe(200);
     expect(first.json()).toMatchObject({
       duplicate: false,
-      batchEndCursor: 1,
-      receipts: [{
-        clientId: "attempt-expired-terminal-0001",
-        status: "REJECTED",
-        code: "PLAN_SUBMISSION_EXPIRED",
-        attempt: null,
-        idle: null
-      }]
+      batchEndCursor: 5,
+      receipts: [valid, unknown, unrelated, wrongDate, wrongVersion].map(
+        (attempt) => ({
+          clientId: attempt.clientAttemptId,
+          status: "REJECTED",
+          code: "PLAN_SUBMISSION_EXPIRED",
+          attempt: null,
+          idle: null
+        })
+      )
     });
     const counts = mutationCounts(harness);
     expect(counts).toMatchObject({
       attempts: 0,
       idleEvents: 0,
       batches: 1,
-      receipts: 1,
-      activityCursor: 1
+      receipts: 5,
+      activityCursor: 5
     });
+    expect(harness.db.prepare(`
+      SELECT client_event_id AS clientEventId,
+             study_date AS studyDate, item_id AS itemId
+      FROM offline_activity_receipts
+      ORDER BY client_event_id
+    `).all()).toEqual([
+      {
+        clientEventId: valid.clientAttemptId,
+        studyDate: oldPlan.date,
+        itemId: oldItem.id
+      },
+      {
+        clientEventId: unknown.clientAttemptId,
+        studyDate: oldPlan.date,
+        itemId: null
+      },
+      {
+        clientEventId: unrelated.clientAttemptId,
+        studyDate: oldPlan.date,
+        itemId: null
+      },
+      {
+        clientEventId: wrongDate.clientAttemptId,
+        studyDate: oldPlan.date,
+        itemId: oldItem.id
+      },
+      {
+        clientEventId: wrongVersion.clientAttemptId,
+        studyDate: oldPlan.date,
+        itemId: null
+      }
+    ]);
     const retry = await student.request(
       "POST",
       "/api/student/offline-batches",
@@ -978,14 +1268,7 @@ describe("ordered offline activity batches", () => {
       WHERE plan_kind = 'recovery'
     `).get()).toEqual({ count: 0 });
 
-    const guardian = harness.client();
-    expect((await guardian.request("POST", "/api/auth/guardian/login", {
-      password: FAMILY.password
-    })).statusCode).toBe(204);
-    expect((await guardian.request(
-      "POST",
-      `/api/guardian/devices/${sourceDevice.publicId}/revoke`
-    )).statusCode).toBe(200);
+    await revokeDevice(harness, sourceDevice.publicId);
 
     const issued = await currentClient.request(
       "POST",
@@ -1039,7 +1322,11 @@ describe("ordered offline activity batches", () => {
     expect(applied.statusCode).toBe(200);
     expect(applied.json()).toMatchObject({
       processedPlan: { planId: recovery.planId, planKind: "recovery" },
-      currentDailyPlan: { planId: currentDaily.planId, planKind: "daily" },
+      currentDailyPlan: {
+        planId: currentDaily.planId,
+        planKind: "daily",
+        completedItemIds: expect.arrayContaining([item.id])
+      },
       receipts: [
         {
           clientId: recoveredIdle.clientIdleEventId,
@@ -1051,6 +1338,7 @@ describe("ordered offline activity batches", () => {
         }
       ]
     });
+    expect((await getToday(currentClient)).completedItemIds).toContain(item.id);
 
     harness.advanceTime(36 * 60 * 60 * 1_000 + 1);
     const expiredRetry = await currentClient.request(
@@ -1064,5 +1352,171 @@ describe("ordered offline activity batches", () => {
       SELECT COUNT(*) AS count FROM issued_daily_plans
       WHERE plan_kind = 'recovery' AND recovery_source_plan_id = ?
     `).get(sourcePlan.planId)).toEqual({ count: 1 });
+  });
+
+  it("keeps a same-date old-version recovery attempt historical without completing the newer daily item", async () => {
+    const sourceClient = harness.client();
+    const sourceDevice = await bootstrapStudent(harness, sourceClient);
+    const sourcePlan = await getToday(sourceClient);
+    const sourceItem = sourcePlan.items.find((item) =>
+      sourcePlan.requiredItemIds.includes(item.id)
+    )!;
+    const newerVersion = sourceItem.version + 1;
+    harness.db.prepare(`
+      INSERT INTO content_versions (item_id, version, payload_json, created_at)
+      VALUES (?, ?, ?, '2026-07-15T03:01:00.000Z')
+    `).run(
+      sourceItem.id,
+      newerVersion,
+      JSON.stringify({
+        ...sourceItem.payload,
+        title: `${sourceItem.payload.title} 새 버전`
+      })
+    );
+    harness.db.prepare(`
+      UPDATE content_items SET active_version = ? WHERE id = ?
+    `).run(newerVersion, sourceItem.id);
+
+    const currentClient = harness.client();
+    await loginStudentOnNewDevice(currentClient, "수아 새 버전 태블릿");
+    const currentDaily = await getToday(currentClient);
+    expect(currentDaily.items.find((item) => item.id === sourceItem.id)?.version)
+      .toBe(newerVersion);
+    await revokeDevice(harness, sourceDevice.publicId);
+    const recoveryResponse = await currentClient.request(
+      "POST",
+      "/api/student/recovery-plans",
+      { sourcePlanId: sourcePlan.planId }
+    );
+    expect(recoveryResponse.statusCode).toBe(200);
+    const recovery = recoveryResponse.json() as TodayPlan;
+    expect(recovery.items.find((item) => item.id === sourceItem.id)?.version)
+      .toBe(sourceItem.version);
+
+    const applied = await currentClient.request(
+      "POST",
+      "/api/student/offline-batches",
+      batch(recovery, "batch-recovery-old-version-0001", [
+        attemptEvent(passingAttempt(
+          recovery,
+          recovery.items.find((item) => item.id === sourceItem.id)!,
+          "attempt-recovery-old-version-0001"
+        ), 1)
+      ])
+    );
+
+    expect(applied.statusCode).toBe(200);
+    expect(applied.json()).toMatchObject({
+      receipts: [{ status: "APPLIED", attempt: { completed: true } }],
+      processedPlan: {
+        planId: recovery.planId,
+        completedItemIds: expect.arrayContaining([sourceItem.id])
+      },
+      currentDailyPlan: {
+        planId: currentDaily.planId,
+        completedItemIds: []
+      }
+    });
+    expect(harness.db.prepare(`
+      SELECT content_version AS contentVersion,
+             issued_plan_id AS issuedPlanId
+      FROM attempts WHERE client_attempt_id = ?
+    `).get("attempt-recovery-old-version-0001")).toEqual({
+      contentVersion: sourceItem.version,
+      issuedPlanId: recovery.planId
+    });
+    expect((await getToday(currentClient)).completedItemIds)
+      .not.toContain(sourceItem.id);
+  });
+
+  it("returns yesterday recovery as processed while today's daily authority keeps independent completions and stars", async () => {
+    const sourceClient = harness.client();
+    const sourceDevice = await bootstrapStudent(harness, sourceClient);
+    const sourcePlan = await getToday(sourceClient);
+    const sourceRequired = sourcePlan.items.find((item) =>
+      sourcePlan.requiredItemIds.includes(item.id)
+    )!;
+
+    harness.advanceTime(12 * 60 * 60 * 1_000);
+    const currentClient = harness.client();
+    await loginStudentOnNewDevice(currentClient, "수아 다음날 태블릿");
+    const currentDaily = await getToday(currentClient);
+    expect(currentDaily.date).not.toBe(sourcePlan.date);
+    const currentRequired = currentDaily.items.find((item) =>
+      currentDaily.requiredItemIds.includes(item.id) &&
+      item.id !== sourceRequired.id
+    )!;
+    expect(currentRequired).toBeDefined();
+    const currentOccurredAt = new Date(
+      Date.parse(kstDayBounds(currentDaily.date).start) + 5 * 60 * 1_000
+    ).toISOString();
+    const currentApplied = await currentClient.request(
+      "POST",
+      "/api/student/offline-batches",
+      batch(currentDaily, "batch-current-day-before-recovery-0001", [
+        attemptEvent(passingAttempt(
+          currentDaily,
+          currentRequired,
+          "attempt-current-day-before-recovery-0001",
+          currentOccurredAt
+        ), 1)
+      ])
+    );
+    expect(currentApplied.statusCode).toBe(200);
+    expect(currentApplied.json()).toMatchObject({
+      currentDailyPlan: {
+        planId: currentDaily.planId,
+        completedItemIds: expect.arrayContaining([currentRequired.id]),
+        stars: { balance: 1, earnedToday: 1 }
+      }
+    });
+
+    await revokeDevice(harness, sourceDevice.publicId);
+    const recoveryResponse = await currentClient.request(
+      "POST",
+      "/api/student/recovery-plans",
+      { sourcePlanId: sourcePlan.planId }
+    );
+    expect(recoveryResponse.statusCode).toBe(200);
+    const recovery = recoveryResponse.json() as TodayPlan;
+    const recoveredRequired = recovery.items.find((item) =>
+      item.id === sourceRequired.id
+    )!;
+    const recoveryApplied = await currentClient.request(
+      "POST",
+      "/api/student/offline-batches",
+      batch(recovery, "batch-yesterday-recovery-0001", [
+        attemptEvent(passingAttempt(
+          recovery,
+          recoveredRequired,
+          "attempt-yesterday-recovery-0001"
+        ), 2)
+      ])
+    );
+
+    expect(recoveryApplied.statusCode).toBe(200);
+    expect(recoveryApplied.json()).toMatchObject({
+      processedPlan: {
+        planId: recovery.planId,
+        planKind: "recovery",
+        date: sourcePlan.date,
+        completedItemIds: expect.arrayContaining([sourceRequired.id]),
+        stars: { balance: 2, earnedToday: 1 }
+      },
+      currentDailyPlan: {
+        planId: currentDaily.planId,
+        planKind: "daily",
+        date: currentDaily.date,
+        completedItemIds: expect.arrayContaining([currentRequired.id]),
+        stars: { balance: 2, earnedToday: 1 }
+      },
+      stars: { balance: 2, earnedToday: 1 }
+    });
+    expect(recoveryApplied.json().currentDailyPlan.planId)
+      .not.toBe(recovery.planId);
+    expect(recoveryApplied.json().currentDailyPlan.completedItemIds)
+      .not.toContain(sourceRequired.id);
+    expect(recoveryApplied.json().processedPlan.completedItemIds)
+      .not.toContain(currentRequired.id);
   });
 });

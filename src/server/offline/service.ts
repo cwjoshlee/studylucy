@@ -76,10 +76,6 @@ function itemIdOf(event: ActivityEvent): string {
   return event.payload.itemId;
 }
 
-function studyDateOf(event: ActivityEvent): string {
-  return event.payload.studyDate;
-}
-
 function duplicateActivityReceipt(receipt: ActivityReceipt): ActivityReceipt {
   return {
     ...receipt,
@@ -215,6 +211,9 @@ export class OfflineBatchService {
         Date.parse(authority.snapshot.submitUntil);
       const receipts: ActivityReceipt[] = [];
       const pendingActivities: PendingActivityReceipt[] = [];
+      const issuedItemVersions = new Map(
+        authority.snapshot.items.map((item) => [item.id, item.version])
+      );
       const batchActivities = new Map<string, {
         eventFingerprint: string;
         receipt: ActivityReceipt;
@@ -269,11 +268,23 @@ export class OfflineBatchService {
           }
         }
         receipts.push(receipt);
+        const clientItemId = itemIdOf(event.wire);
+        const clientContentVersion = "contentVersion" in event.wire.payload
+          ? event.wire.payload.contentVersion
+          : null;
+        const issuedContentVersion = issuedItemVersions.get(clientItemId);
         pendingActivities.push({
           clientEventId: event.clientId,
           eventFingerprint: event.eventFingerprint,
-          studyDate: studyDateOf(event.wire),
-          itemId: itemIdOf(event.wire),
+          studyDate: authority.snapshot.studyDate,
+          itemId:
+            issuedContentVersion !== undefined &&
+            (
+              clientContentVersion === null ||
+              clientContentVersion === issuedContentVersion
+            )
+              ? clientItemId
+              : null,
           kind: event.wire.kind,
           receipt
         });

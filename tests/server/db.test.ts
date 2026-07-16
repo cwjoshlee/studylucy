@@ -4,6 +4,7 @@ import { openDatabase } from "../../src/server/db/client";
 import { migrate } from "../../src/server/db/migrate";
 import { initialMigration } from "../../src/server/db/migrations/001-initial";
 import { starLedgerMigration } from "../../src/server/db/migrations/002-star-ledger";
+import { authorityOfflineMigration } from "../../src/server/db/migrations/003-authority-offline";
 import { seedInitialContent } from "../../src/server/db/seed";
 
 function openVersionTwoDatabase() {
@@ -18,6 +19,14 @@ function openVersionTwoDatabase() {
   return db;
 }
 
+function openVersionThreeDatabase() {
+  const db = openVersionTwoDatabase();
+  authorityOfflineMigration.up(db);
+  db.prepare("INSERT INTO schema_migrations (version, applied_at) VALUES (?, ?)")
+    .run(3, "2026-07-16T00:00:02.000Z");
+  return db;
+}
+
 describe("database bootstrap", () => {
   const db = openDatabase(":memory:");
 
@@ -28,7 +37,7 @@ describe("database bootstrap", () => {
     migrate(db);
 
     expect(db.prepare("select count(*) as count from schema_migrations").get())
-      .toEqual({ count: 3 });
+      .toEqual({ count: 4 });
   });
 
   it("seeds the exact ten Korean and ten math items", () => {
@@ -95,7 +104,7 @@ describe("database bootstrap", () => {
       migrate(versionTwo);
 
       expect(versionTwo.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get())
-        .toEqual({ count: 3 });
+        .toEqual({ count: 4 });
       const deviceColumns = versionTwo.prepare("PRAGMA table_info('trusted_devices')").all()
         .map((column) => (column as { name: string }).name);
       expect(deviceColumns).toEqual(expect.arrayContaining(["public_id", "last_used_at"]));
@@ -181,6 +190,104 @@ describe("database bootstrap", () => {
       ]);
     } finally {
       versionTwo.close();
+    }
+  });
+
+  it("migrates version-three offline receipts to nullable authoritative item metadata without losing constraints", () => {
+    const versionThree = openVersionThreeDatabase();
+    try {
+      seedInitialContent(versionThree);
+      versionThree.exec(`
+        INSERT INTO users (id, role, display_name, credential_hash, created_at)
+        VALUES ('student-v3', 'student', '수아', NULL, '2026-07-16T00:00:00.000Z');
+        INSERT INTO trusted_devices (
+          id, name, token_hash, created_at, public_id, last_used_at
+        ) VALUES (
+          'device-v3', '기존 태블릿', 'device-token-v3',
+          '2026-07-16T00:00:00.000Z', 'device-public-v3', NULL
+        );
+        INSERT INTO student_activity_cursors (
+          student_id, next_epoch, current_cursor, updated_at
+        ) VALUES ('student-v3', 2, 1, '2026-07-16T00:00:00.000Z');
+        INSERT INTO issued_daily_plans (
+          id, student_id, trusted_device_id, plan_kind,
+          recovery_source_plan_id, study_date, issued_at, submit_until,
+          offline_epoch, start_cursor
+        ) VALUES (
+          'plan-v3', 'student-v3', 'device-v3', 'daily', NULL,
+          '2026-07-16', '2026-07-16T00:00:00.000Z',
+          '2026-07-17T00:00:00.000Z', 1, 0
+        );
+        INSERT INTO offline_batches (
+          client_batch_id, request_fingerprint, student_id,
+          original_device_id, submitting_device_id, plan_id, offline_epoch,
+          start_cursor, end_cursor, outcome, response_json, created_at
+        ) VALUES (
+          'batch-v3-existing', 'fingerprint-v3', 'student-v3',
+          'device-v3', 'device-v3', 'plan-v3', 1, 0, 1,
+          'applied', '{}', '2026-07-16T00:01:00.000Z'
+        );
+        INSERT INTO offline_activity_receipts (
+          student_id, client_event_id, client_batch_id, study_date,
+          item_id, kind, status, code, receipt_json, created_at
+        ) VALUES (
+          'student-v3', 'event-v3-existing', 'batch-v3-existing',
+          '2026-07-16', 'ko-01', 'attempt', 'rejected',
+          'CONTENT_VERSION_CONFLICT', '{}', '2026-07-16T00:01:00.000Z'
+        );
+      `);
+      const receiptBefore = versionThree.prepare(`
+        SELECT * FROM offline_activity_receipts
+        WHERE client_event_id = 'event-v3-existing'
+      `).get();
+
+      migrate(versionThree);
+      migrate(versionThree);
+
+      expect(versionThree.prepare(`
+        SELECT COUNT(*) AS count FROM schema_migrations
+      `).get()).toEqual({ count: 4 });
+      expect(versionThree.prepare(`
+        SELECT * FROM offline_activity_receipts
+        WHERE client_event_id = 'event-v3-existing'
+      `).get()).toEqual(receiptBefore);
+      const itemColumn = versionThree.prepare(`
+        PRAGMA table_info('offline_activity_receipts')
+      `).all().find((column) =>
+        (column as { name: string }).name === "item_id"
+      ) as { notnull: number };
+      expect(itemColumn.notnull).toBe(0);
+      expect(versionThree.prepare(`
+        SELECT sql FROM sqlite_master
+        WHERE type = 'index'
+          AND name = 'offline_activity_receipts_guardian_rejection_idx'
+      `).get()).toEqual({
+        sql: expect.stringContaining("WHERE status = 'rejected'")
+      });
+      expect(versionThree.prepare("PRAGMA foreign_key_check").all()).toEqual([]);
+
+      expect(() => versionThree.prepare(`
+        INSERT INTO offline_activity_receipts (
+          student_id, client_event_id, client_batch_id, study_date,
+          item_id, kind, status, code, receipt_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        "student-v3", "event-v3-null-item", "batch-v3-existing",
+        "2026-07-16", null, "attempt", "rejected", "PLAN_NOT_ISSUED",
+        "{}", "2026-07-16T00:02:00.000Z"
+      )).not.toThrow();
+      expect(() => versionThree.prepare(`
+        INSERT INTO offline_activity_receipts (
+          student_id, client_event_id, client_batch_id, study_date,
+          item_id, kind, status, code, receipt_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      `).run(
+        "student-v3", "event-v3-missing-item", "batch-v3-existing",
+        "2026-07-16", "missing-content-item", "attempt", "rejected",
+        "PLAN_NOT_ISSUED", "{}", "2026-07-16T00:03:00.000Z"
+      )).toThrow(/FOREIGN KEY constraint failed/);
+    } finally {
+      versionThree.close();
     }
   });
 });
