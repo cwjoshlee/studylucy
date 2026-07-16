@@ -817,20 +817,114 @@ describe("가족 로그인과 학생 홈", () => {
     await expect(listQueuedAttempts()).resolves.toHaveLength(1);
   });
 
-  it("shows the A layout, required stars, and original friend", async () => {
+  it("shows the magical friend room with one star aside in reading order", async () => {
     const api = createFakeApi();
     await markStudentAuthenticated();
     render(<App api={api} />);
 
-    expect(await screen.findByText("오늘의 학습")).toBeVisible();
+    expect(await screen.findByRole("heading", { name: "오늘의 학습" })).toBeVisible();
     expect(screen.getByText("수아야, 오늘도 한 걸음!")).toBeVisible();
-    expect(screen.getByLabelText("별토끼 마법 친구")).toBeVisible();
+    const friendRoom = screen.getByRole("complementary", {
+      name: "마법 친구 쉼터"
+    });
+    expect(friendRoom).toBeVisible();
+    const friendCast = within(friendRoom).getByRole("list");
+    expect(within(friendCast).getByText("별토끼 루미")).toBeVisible();
+    expect(within(friendCast).getByText("수달 또또")).toBeVisible();
+    expect(within(friendCast).getByText("너구리 모모")).toBeVisible();
+    expect(within(friendCast).getByText("아기용 봉봉")).toBeVisible();
+    expect(screen.getAllByRole("status", { name: "마법 친구 말풍선" }))
+      .toHaveLength(1);
     expect(screen.getByText("모은 별 7개")).toBeVisible();
     expect(screen.getAllByTestId("required-star")).toHaveLength(4);
+    const required = screen.getByRole("region", { name: "필수 학습" });
+    const starAside = screen.getByRole("complementary", { name: "별 현황" });
     const optional = screen.getByRole("region", { name: "선택 학습" });
+    expect(screen.getAllByRole("complementary", { name: "별 현황" }))
+      .toHaveLength(1);
+    expect(required.compareDocumentPosition(starAside) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
+    expect(starAside.compareDocumentPosition(optional) & Node.DOCUMENT_POSITION_FOLLOWING)
+      .toBeTruthy();
     expect(within(optional).getByText("구름 산책")).toBeVisible();
     expect(within(optional).queryByText(/\uBCC4 1\uAC1C/)).not.toBeInTheDocument();
     expect(api.getToday).toHaveBeenCalledWith();
+  });
+
+  it("shows delighted and legacy cards with their production companion cues", async () => {
+    await markStudentAuthenticated();
+    render(<App api={createFakeApi()} />);
+
+    const delightedKoreanCard = (await screen.findByRole("heading", {
+      name: "바람과 꽃"
+    })).closest("article");
+    expect(delightedKoreanCard).not.toBeNull();
+    expect(within(delightedKoreanCard!).getByText("오늘의 우당탕 사건"))
+      .toBeVisible();
+    expect(within(delightedKoreanCard!).getByText("또또의 수첩이 수영부터 배우겠대요."))
+      .toBeVisible();
+    expect(within(delightedKoreanCard!).getByText("수달 또또")).toBeVisible();
+    expect(within(delightedKoreanCard!).getByText("★ 완료하면 별 1개"))
+      .toBeVisible();
+    expect(within(delightedKoreanCard!).getByRole("button", {
+      name: "바람과 꽃 시작하기"
+    })).toBeVisible();
+
+    const delightedMathCard = screen.getByRole("heading", {
+      name: "별을 세어요"
+    }).closest("article");
+    expect(delightedMathCard).not.toBeNull();
+    expect(within(delightedMathCard!).getByText("모모가 주판 알 대신 포도알을 올렸어요."))
+      .toBeVisible();
+    expect(within(delightedMathCard!).getByText("너구리 모모")).toBeVisible();
+
+    const legacyCard = screen.getByRole("heading", {
+      name: "작은 씨앗"
+    }).closest("article");
+    expect(legacyCard).not.toBeNull();
+    expect(within(legacyCard!).getByText("수달 또또")).toBeVisible();
+    expect(within(legacyCard!).queryByText("오늘의 우당탕 사건"))
+      .not.toBeInTheDocument();
+  });
+
+  it("makes Bongbong current after all required learning without another star promise", async () => {
+    const api = createFakeApi();
+    const plan = await api.getToday();
+    api.getToday.mockResolvedValue({
+      ...plan,
+      completedItemIds: [...plan.requiredItemIds]
+    });
+    await markStudentAuthenticated();
+    render(<App api={api} />);
+
+    await screen.findByRole("heading", { name: "오늘의 학습" });
+    const currentFriend = screen.getByRole("listitem", { current: true });
+    expect(within(currentFriend).getByText("아기용 봉봉")).toBeVisible();
+    expect(screen.getByText("마법 걸음 4/4")).toBeVisible();
+    expect(screen.getAllByText("함께 해결했어요")).toHaveLength(4);
+    expect(screen.getAllByText("★ 받은 별 1개")).toHaveLength(4);
+    expect(screen.queryByText("★ 완료하면 별 1개")).not.toBeInTheDocument();
+  });
+
+  it("keeps Lumi current and an honest zero trail on a required-free rest day", async () => {
+    const api = createFakeApi();
+    const plan = await api.getToday();
+    api.getToday.mockResolvedValue({
+      ...plan,
+      requiredItemIds: [],
+      completedItemIds: []
+    });
+    await markStudentAuthenticated();
+    render(<App api={api} />);
+
+    expect(await screen.findByRole("heading", { name: "오늘의 학습" }))
+      .toBeVisible();
+    const currentFriend = screen.getByRole("listitem", { current: true });
+    expect(within(currentFriend).getByText("별토끼 루미")).toBeVisible();
+    expect(within(currentFriend).queryByText("아기용 봉봉"))
+      .not.toBeInTheDocument();
+    expect(screen.getByText("오늘은 쉬는 날이에요")).toBeVisible();
+    expect(screen.getByText("마법 걸음 0/0")).toBeVisible();
   });
 
   it.each([
@@ -959,7 +1053,7 @@ describe("가족 로그인과 학생 홈", () => {
     expect(await screen.findByText("모은 별 8개")).toBeVisible();
     const completedCard = screen.getByRole("heading", { name: "바람과 꽃" }).closest("article");
     expect(completedCard).not.toBeNull();
-    expect(within(completedCard!).getByText("완료했어요")).toBeVisible();
+    expect(within(completedCard!).getByText("함께 해결했어요")).toBeVisible();
     expect(within(completedCard!).getByText("★ 받은 별 1개")).toBeVisible();
     expect(api.getToday).toHaveBeenCalledTimes(2);
     expect(api.getStudentStars).toHaveBeenCalledTimes(2);
@@ -1066,7 +1160,7 @@ describe("가족 로그인과 학생 홈", () => {
     await waitFor(() => {
       const completedCard = screen.getByRole("heading", { name: "바람과 꽃" }).closest("article");
       expect(completedCard).not.toBeNull();
-      expect(within(completedCard!).getByText("완료했어요")).toBeVisible();
+      expect(within(completedCard!).getByText("함께 해결했어요")).toBeVisible();
       expect(within(completedCard!).getByText("★ 받은 별 1개")).toBeVisible();
     });
     await expect(listQueuedAttempts()).resolves.toHaveLength(0);
@@ -1174,7 +1268,7 @@ describe("가족 로그인과 학생 홈", () => {
       name: "바람과 꽃"
     }).closest("article");
     expect(completedCard).not.toBeNull();
-    expect(within(completedCard!).getByText("완료했어요")).toBeVisible();
+    expect(within(completedCard!).getByText("함께 해결했어요")).toBeVisible();
     await expect(loadCachedTodayPlan(oldPlan.date)).resolves.toMatchObject({
       activityCursor: 1,
       completedItemIds: ["ko-01"],
@@ -1402,18 +1496,21 @@ describe("가족 로그인과 학생 홈", () => {
     ]);
 
     expect(tokens).toContain("--touch-min: 48px");
-    expect(layout).toContain("225px minmax(0, 1fr) 225px");
+    expect(layout).toMatch(/grid-template-columns:\s*260px\s+minmax\(0,\s*1fr\)\s+240px/);
+    expect(layout).toMatch(/\.student-shell__main[^{]*\{[^}]*grid-template-columns:\s*minmax\(0,\s*1fr\)\s+240px/s);
     expect(components).toMatch(/(?:button|input)[^{]*\{[^}]*min-height:\s*var\(--touch-min\)/s);
     expect(components).toContain(":focus-visible");
     expect(layout).toContain(".student-learning-view");
     expect(components).toContain(".learning-session");
     expect(components).toMatch(/\.learning-session textarea\s*\{[^}]*min-height:\s*120px/s);
     expect(responsive).toMatch(/@media\s*\(max-width:\s*950px\)/);
-    expect(responsive).toMatch(/@media\s*\(max-width:\s*700px\)/);
-    expect(responsive).toContain('"left right"');
+    expect(responsive).toMatch(/max-width:\s*850px/);
+    expect(responsive).toContain(".friend-stage__cast");
+    expect(responsive).not.toMatch(/\.friend-stage\s*\{[^}]*display:\s*none/s);
     expect(responsive).toContain('"right"');
     expect(responsive).not.toMatch(/\.student-shell__right\s*\{[^}]*display:\s*none/s);
     expect(responsive).toMatch(/@media\s*\(prefers-reduced-motion:\s*reduce\)/);
+    expect(components).toMatch(/\.companion-bubble\s*\{[^}]*overflow-wrap:\s*anywhere/s);
     expect(components).toMatch(
       /\.account-menu button,\s*\.device-management button\s*\{[^}]*min-height:\s*48px/s
     );

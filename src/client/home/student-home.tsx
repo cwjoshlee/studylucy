@@ -1,8 +1,11 @@
 import { useEffect, useRef, useState } from "react";
+import type { CompanionId } from "../../shared/companions";
 import type { TodayPlan } from "../../shared/learning";
 import type { StudentStarSummary } from "../../shared/stars";
 import type { ClientApi } from "../api/client";
-import { StarBunny } from "../delight/star-bunny";
+import { COMPANION_CAST } from "../companions/cast";
+import { CompanionAvatar } from "../companions/companion-avatar";
+import { FriendStage, FriendTrail } from "../companions/friend-stage";
 import { TodayStars } from "../delight/today-stars";
 import { LearningSession } from "../learning/learning-session";
 import {
@@ -208,19 +211,43 @@ export function StudentHome({
   const requiredIds = new Set(data.plan.requiredItemIds);
   const requiredItems = data.plan.items.filter((item) => requiredIds.has(item.id));
   const optionalItems = data.plan.items.filter((item) => !requiredIds.has(item.id));
+  const completedRequiredCount = requiredItems.filter((item) =>
+    data.plan.completedItemIds.includes(item.id)
+  ).length;
+  const nextRequired = requiredItems.find((item) =>
+    !data.plan.completedItemIds.includes(item.id)
+  ) ?? requiredItems[0] ?? null;
+  const metCompanions = Array.from(new Set(data.plan.completedItemIds.flatMap((id) => {
+    const item = data.plan.items.find((candidate) => candidate.id === id);
+    return item === undefined
+      ? []
+      : [item.payload.delight?.companion ?? (item.payload.subject === "korean" ? "toto" : "momo")];
+  }))) as CompanionId[];
   const renderCard = (item: TodayPlan["items"][number], required: boolean) => {
     const completed = data.plan.completedItemIds.includes(item.id);
     const provisional = provisionalItemIds.has(item.id) && !completed;
+    const companion = item.payload.delight?.companion
+      ?? (item.payload.subject === "korean" ? "toto" : "momo");
     return (
       <article className={`study-card ${required ? "study-card--required" : ""}`} key={item.id}>
         <p className="subject-chip">{item.payload.subject === "korean" ? "국어" : "수학"} · {item.payload.unit}</p>
         <h3>{item.payload.title}</h3>
+        <div className="study-card__friend">
+          <CompanionAvatar id={companion} size="small" decorative />
+          <strong>{COMPANION_CAST[companion].name}</strong>
+        </div>
+        {item.payload.delight === undefined ? null : (
+          <div className="study-card__mishap">
+            <strong>오늘의 우당탕 사건</strong>
+            <p>{item.payload.delight.mishap}</p>
+          </div>
+        )}
         {required ? (
           <span className="reward-claim" data-testid="required-star">
             {completed ? "★ 받은 별 1개" : "★ 완료하면 별 1개"}
           </span>
         ) : null}
-        {completed ? <strong>완료했어요</strong> : null}
+        {completed ? <strong>함께 해결했어요</strong> : null}
         {provisional ? <strong className="provisional-label">동기화 대기</strong> : null}
         <button type="button" onClick={() => setSelectedItem(item)}>
           {item.payload.title} 시작하기
@@ -246,23 +273,42 @@ export function StudentHome({
           </button>
         </div>
       </header>
-      <aside className="student-shell__left" aria-label="마법 친구">
-        <StarBunny />
+      <aside className="student-shell__left" aria-label="마법 친구 쉼터">
+        <FriendStage
+          studyDate={data.plan.date}
+          itemId={nextRequired?.id ?? null}
+          subject={nextRequired?.payload.subject ?? null}
+          completedCount={completedRequiredCount}
+          totalCount={requiredItems.length}
+        />
       </aside>
       <main className="student-shell__main">
-        {offlineMode ? <p className="offline-learning-banner" role="status">오프라인 학습 중</p> : null}
-        {recoveryGuidance === null ? null : (
-          <p className="recovery-guidance" role="status">{recoveryGuidance}</p>
-        )}
-        <h1>오늘의 학습</h1>
-        <section className="learning-section" aria-labelledby="required-title">
+        <div className="student-shell__intro">
+          {offlineMode ? <p className="offline-learning-banner" role="status">오프라인 학습 중</p> : null}
+          {recoveryGuidance === null ? null : (
+            <p className="recovery-guidance" role="status">{recoveryGuidance}</p>
+          )}
+          <h1>오늘의 학습</h1>
+        </div>
+        <section className="learning-section student-shell__required" aria-labelledby="required-title">
           <div className="section-heading">
             <h2 id="required-title">필수 학습</h2>
             <span>{requiredItems.length}개의 마법 걸음</span>
           </div>
           <div className="study-grid">{requiredItems.map((item) => renderCard(item, true))}</div>
         </section>
-        <section className="learning-section learning-section--optional" aria-labelledby="optional-title">
+        <aside className="student-shell__right" aria-label="별 현황">
+          <TodayStars summary={data.stars} queuedCount={queuedCount} />
+          <FriendTrail
+            completedCount={completedRequiredCount}
+            totalCount={requiredItems.length}
+            metCompanions={metCompanions}
+          />
+          {requiredItems.length === 0 ? (
+            <p className="friend-trail__zero-progress">마법 걸음 0/0</p>
+          ) : null}
+        </aside>
+        <section className="learning-section learning-section--optional student-shell__optional" aria-labelledby="optional-title">
           <div className="section-heading">
             <h2 id="optional-title">선택 학습</h2>
             <span>더 해 보고 싶을 때 만나요</span>
@@ -270,9 +316,6 @@ export function StudentHome({
           <div className="study-grid">{optionalItems.map((item) => renderCard(item, false))}</div>
         </section>
       </main>
-      <aside className="student-shell__right" aria-label="별 현황">
-        <TodayStars summary={data.stars} queuedCount={queuedCount} />
-      </aside>
     </div>
   );
 }

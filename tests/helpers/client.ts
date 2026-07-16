@@ -79,7 +79,22 @@ export function createFakeApi(overrides: Record<string, unknown> = {}) {
           text: title,
           hint: "천천히 읽어 봐요.",
           tokens: [title],
-          kind: "korean-reading"
+          kind: "korean-reading",
+          ...(id === "ko-01" ? {
+            delight: {
+              companion: "toto" as const,
+              mishap: "또또의 수첩이 수영부터 배우겠대요.",
+              openingCue: "수첩보다 또또의 꼬리가 먼저 젖었대요. 낱말을 구하러 가 볼까요?",
+              celebrationCue: "낱말을 모두 건졌어요! 또또가 수첩에 수건을 덮어 줬어요."
+            }
+          } : id === "math-01" ? {
+            delight: {
+              companion: "momo" as const,
+              mishap: "모모가 주판 알 대신 포도알을 올렸어요.",
+              openingCue: "포도알 하나가 계산 전에 도망가려 해요. 8과 7을 잘 지켜봐요.",
+              celebrationCue: "15개를 모두 찾았어요! 모모가 포도알 주판을 먹지 않고 참았어요."
+            }
+          } : {})
         }
       }))
     }),
