@@ -106,8 +106,12 @@ export type ProcessedStarAdjustment = PendingStarAdjustment & {
   duplicate: boolean;
 };
 
+export type GuardianStarEvent = StarEvent & {
+  isReversed: boolean;
+};
+
 export type GuardianStarLedger = {
   summary: StudentStarSummary;
-  events: StarEvent[];
+  events: GuardianStarEvent[];
   nextCursor: string | null;
 };

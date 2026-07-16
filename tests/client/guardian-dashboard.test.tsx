@@ -6,6 +6,10 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GuardianDashboard } from "../../src/client/guardian/guardian-dashboard";
 import { ApiError } from "../../src/client/api/client";
+import type {
+  AppliedStarResult,
+  ProcessedStarAdjustment
+} from "../../src/shared/stars";
 
 afterEach(cleanup);
 
@@ -36,7 +40,8 @@ function createGuardianApi(overrides: Record<string, unknown> = {}) {
         itemId: "item-private-1",
         actorType: "system" as const,
         createdAt: "2026-07-16T03:00:00.000Z",
-        reversesEventId: null
+        reversesEventId: null,
+        isReversed: false
       }],
       nextCursor: null
     }),
@@ -56,6 +61,16 @@ function createGuardianApi(overrides: Record<string, unknown> = {}) {
     getBackupStatus: vi.fn().mockResolvedValue({ status: "never-run" as const }),
     ...overrides
   };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
 }
 
 describe("GuardianDashboard", () => {
@@ -171,6 +186,215 @@ describe("GuardianDashboard", () => {
     ));
     expect(await screen.findByText("승인 0개")).toBeVisible();
     expect(screen.getByText("실제 적용 0개")).toBeVisible();
+  });
+
+  it("distinguishes approved-zero and waived adjustments with their audit notes", async () => {
+    const user = userEvent.setup();
+    const common = {
+      itemId: "ko-private-1",
+      requestedStars: 1,
+      approvedStars: 0,
+      appliedStars: 0,
+      starEventId: null,
+      createdAt: "2026-07-16T03:00:00.000Z",
+      processedAt: "2026-07-16T04:00:00.000Z"
+    };
+    const api = createGuardianApi({
+      getStarAdjustments: vi.fn().mockResolvedValue({
+        adjustments: [{
+          ...common,
+          id: "approved-private",
+          studyDate: "2026-07-14",
+          status: "approved" as const,
+          note: "차감 없이 승인"
+        }, {
+          ...common,
+          id: "waived-private",
+          studyDate: "2026-07-15",
+          status: "waived" as const,
+          note: "아픈 날 면제"
+        }]
+      })
+    });
+    render(<GuardianDashboard api={api} />);
+
+    await user.click(screen.getByRole("tab", { name: "차감 승인" }));
+    const approved = await screen.findByRole("article", { name: "2026-07-14 차감 요청" });
+    const waived = screen.getByRole("article", { name: "2026-07-15 차감 요청" });
+
+    expect(within(approved).getByText("처리 상태 승인")).toBeVisible();
+    expect(within(approved).getByText("처리 메모 차감 없이 승인")).toBeVisible();
+    expect(within(waived).getByText("처리 상태 면제")).toBeVisible();
+    expect(within(waived).getByText("처리 메모 아픈 날 면제")).toBeVisible();
+  });
+
+  it("guards approval in flight and reconciles an uncertain response", async () => {
+    const user = userEvent.setup();
+    const pending = {
+      id: "pending-approval",
+      studyDate: "2026-07-15",
+      itemId: "ko-private-1",
+      requestedStars: 1,
+      approvedStars: null,
+      appliedStars: null,
+      status: "pending" as const,
+      note: null,
+      starEventId: null,
+      createdAt: "2026-07-16T03:00:00.000Z",
+      processedAt: null
+    };
+    const processed = {
+      ...pending,
+      approvedStars: 1,
+      appliedStars: 1,
+      status: "approved" as const,
+      note: "확인했어요",
+      starEventId: "event-private-approved",
+      processedAt: "2026-07-16T04:00:00.000Z"
+    };
+    const uncertain = deferred<never>();
+    const getStarAdjustments = vi.fn()
+      .mockResolvedValueOnce({ adjustments: [pending] })
+      .mockResolvedValueOnce({ adjustments: [processed] });
+    const approveStarAdjustment = vi.fn().mockReturnValue(uncertain.promise);
+    const api = createGuardianApi({ getStarAdjustments, approveStarAdjustment });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<GuardianDashboard api={api} />);
+
+    await user.click(screen.getByRole("tab", { name: "차감 승인" }));
+    const card = await screen.findByRole("article", { name: "2026-07-15 차감 요청" });
+    await user.type(within(card).getByLabelText("승인 메모 (선택)"), "확인했어요");
+    const approveButton = within(card).getByRole("button", { name: "차감 승인" });
+    await user.click(approveButton);
+    await user.click(approveButton);
+
+    expect(approveStarAdjustment).toHaveBeenCalledOnce();
+    expect(approveButton).toBeDisabled();
+    uncertain.reject(new ApiError(503, "TEMPORARY_FAILURE"));
+
+    expect(await within(card).findByRole("alert")).toHaveTextContent(
+      "차감 승인을 완료하지 못했어요. 최신 상태를 확인했어요."
+    );
+    expect(await within(card).findByText("처리 상태 승인")).toBeVisible();
+    expect(within(card).queryByRole("button", { name: "차감 승인" })).not.toBeInTheDocument();
+    expect(getStarAdjustments).toHaveBeenCalledTimes(2);
+    confirm.mockRestore();
+  });
+
+  it("guards waiver in flight and retries the same intent after reconciliation", async () => {
+    const user = userEvent.setup();
+    const pending = {
+      id: "pending-waiver",
+      studyDate: "2026-07-15",
+      itemId: "ko-private-1",
+      requestedStars: 1,
+      approvedStars: null,
+      appliedStars: null,
+      status: "pending" as const,
+      note: null,
+      starEventId: null,
+      createdAt: "2026-07-16T03:00:00.000Z",
+      processedAt: null
+    };
+    const processed = {
+      ...pending,
+      approvedStars: 0,
+      appliedStars: 0,
+      status: "waived" as const,
+      note: "아파서 쉬었어요",
+      processedAt: "2026-07-16T04:00:00.000Z",
+      duplicate: true
+    };
+    const uncertain = deferred<never>();
+    const getStarAdjustments = vi.fn()
+      .mockResolvedValueOnce({ adjustments: [pending] })
+      .mockResolvedValueOnce({ adjustments: [pending] });
+    const waiveStarAdjustment = vi.fn()
+      .mockReturnValueOnce(uncertain.promise)
+      .mockResolvedValueOnce(processed);
+    const api = createGuardianApi({ getStarAdjustments, waiveStarAdjustment });
+    render(<GuardianDashboard api={api} />);
+
+    await user.click(screen.getByRole("tab", { name: "차감 승인" }));
+    const card = await screen.findByRole("article", { name: "2026-07-15 차감 요청" });
+    await user.type(within(card).getByLabelText("면제 사유"), "아파서 쉬었어요");
+    const waiveButton = within(card).getByRole("button", { name: "아픈 날로 면제" });
+    await user.click(waiveButton);
+    await user.click(waiveButton);
+
+    expect(waiveStarAdjustment).toHaveBeenCalledOnce();
+    expect(waiveButton).toBeDisabled();
+    uncertain.reject(new ApiError(503, "TEMPORARY_FAILURE"));
+    expect(await within(card).findByRole("alert")).toHaveTextContent(
+      "면제를 완료하지 못했어요. 최신 상태를 확인했어요."
+    );
+
+    await user.click(within(card).getByRole("button", { name: "아픈 날로 면제" }));
+    await waitFor(() => expect(waiveStarAdjustment).toHaveBeenCalledTimes(2));
+    expect(waiveStarAdjustment.mock.calls[0]).toEqual(waiveStarAdjustment.mock.calls[1]);
+    expect(await within(card).findByText("처리 상태 면제")).toBeVisible();
+  });
+
+  it("serializes mutations across two adjustment rows", async () => {
+    const user = userEvent.setup();
+    const pending = (id: string, studyDate: string) => ({
+      id,
+      studyDate,
+      itemId: `item-${id}`,
+      requestedStars: 1,
+      approvedStars: null,
+      appliedStars: null,
+      status: "pending" as const,
+      note: null,
+      starEventId: null,
+      createdAt: "2026-07-16T03:00:00.000Z",
+      processedAt: null
+    });
+    const first = pending("pending-first", "2026-07-14");
+    const second = pending("pending-second", "2026-07-15");
+    const approval = deferred<ProcessedStarAdjustment>();
+    const approveStarAdjustment = vi.fn().mockReturnValue(approval.promise);
+    const waiveStarAdjustment = vi.fn().mockResolvedValue({
+      ...second,
+      approvedStars: 0,
+      appliedStars: 0,
+      status: "waived" as const,
+      note: "두 번째 요청",
+      processedAt: "2026-07-16T04:00:00.000Z",
+      duplicate: false
+    });
+    const api = createGuardianApi({
+      getStarAdjustments: vi.fn().mockResolvedValue({ adjustments: [first, second] }),
+      approveStarAdjustment,
+      waiveStarAdjustment
+    });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<GuardianDashboard api={api} />);
+
+    await user.click(screen.getByRole("tab", { name: "차감 승인" }));
+    const firstCard = await screen.findByRole("article", { name: "2026-07-14 차감 요청" });
+    const secondCard = screen.getByRole("article", { name: "2026-07-15 차감 요청" });
+    await user.type(within(secondCard).getByLabelText("면제 사유"), "두 번째 요청");
+    await user.click(within(firstCard).getByRole("button", { name: "차감 승인" }));
+    const secondWaive = within(secondCard).getByRole("button", { name: "아픈 날로 면제" });
+    await user.click(secondWaive);
+
+    expect(approveStarAdjustment).toHaveBeenCalledOnce();
+    expect(waiveStarAdjustment).not.toHaveBeenCalled();
+    expect(secondWaive).toBeDisabled();
+
+    approval.resolve({
+      ...first,
+      approvedStars: 1,
+      appliedStars: 1,
+      status: "approved",
+      note: "",
+      starEventId: "event-private-approved",
+      processedAt: "2026-07-16T04:00:00.000Z",
+      duplicate: false
+    });
+    expect(await within(firstCard).findByText("처리 상태 승인")).toBeVisible();
+    confirm.mockRestore();
   });
 
   it("filters and paginates the ledger in bounded 100-row pages", async () => {
@@ -335,7 +559,8 @@ describe("GuardianDashboard", () => {
       itemId: null,
       actorType: "guardian" as const,
       createdAt: "2026-07-16T03:00:00.000Z",
-      reversesEventId: null
+      reversesEventId: null,
+      isReversed: false
     };
     const reversal = {
       id: "event-private-reversal",
@@ -350,21 +575,24 @@ describe("GuardianDashboard", () => {
       createdAt: "2026-07-16T04:00:00.000Z",
       reversesEventId: original.id
     };
-    const reverseStarEvent = vi.fn().mockResolvedValue({
-      event: reversal,
-      duplicate: false
+    let reversedOnServer = false;
+    const reverseStarEvent = vi.fn().mockImplementation(async () => {
+      reversedOnServer = true;
+      return { event: reversal, duplicate: false };
     });
     const api = createGuardianApi({
-      getGuardianStars: vi.fn().mockResolvedValue({
+      getGuardianStars: vi.fn().mockImplementation(async () => ({
         summary: {
-          balance: 12,
+          balance: reversedOnServer ? 10 : 12,
           earnedToday: 2,
-          deductedToday: 0,
-          lastReason: "약속 보너스"
+          deductedToday: reversedOnServer ? 2 : 0,
+          lastReason: reversedOnServer ? "잘못 입력했어요" : "약속 보너스"
         },
-        events: [original],
+        events: reversedOnServer
+          ? [{ ...reversal, isReversed: false }, { ...original, isReversed: true }]
+          : [original],
         nextCursor: null
-      }),
+      })),
       reverseStarEvent
     });
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
@@ -387,6 +615,217 @@ describe("GuardianDashboard", () => {
     expect(screen.getByText("원래 기록에 연결된 되돌리기")).toBeVisible();
     expect(screen.queryByRole("button", { name: /삭제/ })).not.toBeInTheDocument();
     expect(document.body.textContent).not.toMatch(/event-private-original|event-private-reversal/);
+    confirm.mockRestore();
+  });
+
+  it("hides reversal controls when server metadata marks a filtered-page original reversed", async () => {
+    const user = userEvent.setup();
+    const api = createGuardianApi({
+      getGuardianStars: vi.fn().mockResolvedValue({
+        summary: {
+          balance: 10,
+          earnedToday: 2,
+          deductedToday: 2,
+          lastReason: "잘못 입력했어요"
+        },
+        events: [{
+          id: "event-private-original",
+          requestedDelta: 2,
+          delta: 2,
+          balanceAfter: 12,
+          reason: "GUARDIAN_BONUS" as const,
+          reasonText: "필터된 원래 기록",
+          studyDate: "2026-07-16",
+          itemId: null,
+          actorType: "guardian" as const,
+          createdAt: "2026-07-16T03:00:00.000Z",
+          reversesEventId: null,
+          isReversed: true
+        }],
+        nextCursor: "cursor-private-next-page"
+      })
+    });
+    render(<GuardianDashboard api={api} />);
+
+    await user.click(screen.getByRole("tab", { name: "별 기록" }));
+    expect(await screen.findByText("필터된 원래 기록")).toBeVisible();
+    expect(screen.queryByLabelText("되돌리기 사유")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "기록 되돌리기" })).not.toBeInTheDocument();
+  });
+
+  it("guards reversal in flight and reconciles a 409 from authoritative ledger metadata", async () => {
+    const user = userEvent.setup();
+    const original = {
+      id: "event-private-original",
+      requestedDelta: 2,
+      delta: 2,
+      balanceAfter: 12,
+      reason: "GUARDIAN_BONUS" as const,
+      reasonText: "동시 취소 대상",
+      studyDate: "2026-07-16",
+      itemId: null,
+      actorType: "guardian" as const,
+      createdAt: "2026-07-16T03:00:00.000Z",
+      reversesEventId: null,
+      isReversed: false
+    };
+    const ledger = (isReversed: boolean) => ({
+      summary: {
+        balance: isReversed ? 10 : 12,
+        earnedToday: 2,
+        deductedToday: isReversed ? 2 : 0,
+        lastReason: isReversed ? "다른 요청에서 취소" : "동시 취소 대상"
+      },
+      events: [{ ...original, isReversed }],
+      nextCursor: null
+    });
+    const getGuardianStars = vi.fn()
+      .mockResolvedValueOnce(ledger(false))
+      .mockResolvedValueOnce(ledger(false))
+      .mockResolvedValueOnce(ledger(true));
+    const uncertain = deferred<never>();
+    const reverseStarEvent = vi.fn().mockReturnValue(uncertain.promise);
+    const api = createGuardianApi({ getGuardianStars, reverseStarEvent });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<GuardianDashboard api={api} />);
+
+    await user.click(screen.getByRole("tab", { name: "별 기록" }));
+    const reason = await screen.findByLabelText("되돌리기 사유");
+    await user.type(reason, "동시에 취소했어요");
+    const reverseButton = screen.getByRole("button", { name: "기록 되돌리기" });
+    await user.click(reverseButton);
+    await user.click(reverseButton);
+
+    expect(reverseStarEvent).toHaveBeenCalledOnce();
+    expect(reverseButton).toBeDisabled();
+    uncertain.reject(new ApiError(409, "EVENT_ALREADY_REVERSED"));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "기록을 되돌리지 못했어요. 최신 별 기록을 확인했어요."
+    );
+    expect(screen.queryByRole("button", { name: "기록 되돌리기" })).not.toBeInTheDocument();
+    expect(getGuardianStars).toHaveBeenLastCalledWith({ direction: "all" });
+    confirm.mockRestore();
+  });
+
+  it("keeps newer ledger filters when an older reversal finishes uncertainly", async () => {
+    const user = userEvent.setup();
+    const event = {
+      id: "event-private-filter-race",
+      requestedDelta: 2,
+      delta: 2,
+      balanceAfter: 12,
+      reason: "GUARDIAN_BONUS" as const,
+      studyDate: "2026-07-16",
+      itemId: null,
+      actorType: "guardian" as const,
+      createdAt: "2026-07-16T03:00:00.000Z",
+      reversesEventId: null,
+      isReversed: false
+    };
+    const response = (reasonText: string) => ({
+      summary: {
+        balance: 12,
+        earnedToday: 2,
+        deductedToday: 0,
+        lastReason: reasonText
+      },
+      events: [{ ...event, reasonText }],
+      nextCursor: null
+    });
+    const getGuardianStars = vi.fn(async (query?: { reason?: string }) =>
+      query?.reason === "GUARDIAN_BONUS"
+        ? response("필터 결과 유지")
+        : response("이전 전체 결과"));
+    const uncertain = deferred<never>();
+    const reverseStarEvent = vi.fn().mockReturnValue(uncertain.promise);
+    const api = createGuardianApi({ getGuardianStars, reverseStarEvent });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<GuardianDashboard api={api} />);
+
+    await user.click(screen.getByRole("tab", { name: "별 기록" }));
+    await user.type(await screen.findByLabelText("되돌리기 사유"), "응답을 잃었어요");
+    await user.click(screen.getByRole("button", { name: "기록 되돌리기" }));
+    await user.selectOptions(screen.getByLabelText("사유"), "GUARDIAN_BONUS");
+    await user.click(screen.getByRole("button", { name: "필터 적용" }));
+    expect(await screen.findByText("필터 결과 유지")).toBeVisible();
+
+    uncertain.reject(new ApiError(503, "TEMPORARY_FAILURE"));
+
+    expect(await screen.findByRole("alert")).toBeVisible();
+    expect(getGuardianStars).toHaveBeenLastCalledWith({
+      direction: "all",
+      reason: "GUARDIAN_BONUS"
+    });
+    expect(screen.getByText("필터 결과 유지")).toBeVisible();
+    expect(screen.queryByText("이전 전체 결과")).not.toBeInTheDocument();
+    confirm.mockRestore();
+  });
+
+  it("reconciles a successful reversal against filters selected while it was in flight", async () => {
+    const user = userEvent.setup();
+    let reversed = false;
+    const original = {
+      id: "event-private-success-race",
+      requestedDelta: 2,
+      delta: 2,
+      balanceAfter: 12,
+      reason: "GUARDIAN_BONUS" as const,
+      reasonText: "성공 중 필터 변경",
+      studyDate: "2026-07-16",
+      itemId: null,
+      actorType: "guardian" as const,
+      createdAt: "2026-07-16T03:00:00.000Z",
+      reversesEventId: null,
+      isReversed: false
+    };
+    const getGuardianStars = vi.fn(async () => ({
+      summary: {
+        balance: reversed ? 10 : 12,
+        earnedToday: 2,
+        deductedToday: reversed ? 2 : 0,
+        lastReason: "성공 중 필터 변경"
+      },
+      events: [{ ...original, isReversed: reversed }],
+      nextCursor: null
+    }));
+    const reversal = deferred<AppliedStarResult>();
+    const api = createGuardianApi({
+      getGuardianStars,
+      reverseStarEvent: vi.fn().mockReturnValue(reversal.promise)
+    });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<GuardianDashboard api={api} />);
+
+    await user.click(screen.getByRole("tab", { name: "별 기록" }));
+    await user.type(await screen.findByLabelText("되돌리기 사유"), "성공 취소 기록");
+    await user.click(screen.getByRole("button", { name: "기록 되돌리기" }));
+    await user.selectOptions(screen.getByLabelText("사유"), "GUARDIAN_BONUS");
+    await user.click(screen.getByRole("button", { name: "필터 적용" }));
+    await waitFor(() => expect(getGuardianStars).toHaveBeenCalledTimes(3));
+
+    reversed = true;
+    reversal.resolve({
+      event: {
+        ...original,
+        requestedDelta: -2,
+        delta: -2,
+        balanceAfter: 10,
+        reason: "REVERSAL",
+        reasonText: "성공 취소 기록",
+        createdAt: "2026-07-16T04:00:00.000Z",
+        reversesEventId: original.id
+      },
+      duplicate: false
+    });
+
+    await waitFor(() => expect(getGuardianStars).toHaveBeenCalledTimes(4));
+    expect(getGuardianStars).toHaveBeenLastCalledWith({
+      direction: "all",
+      reason: "GUARDIAN_BONUS"
+    });
+    expect(screen.queryByText("성공 취소 기록")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "기록 되돌리기" })).not.toBeInTheDocument();
     confirm.mockRestore();
   });
 
@@ -427,6 +866,77 @@ describe("GuardianDashboard", () => {
       { koreanTarget: 2, mathTarget: 2, isRestDay: true }
     ));
     expect(await screen.findByText("쉬는 날 계획을 저장했어요.")).toBeVisible();
+  });
+
+  it("clears date A plan and blocks saving until date B is loaded", async () => {
+    const user = userEvent.setup();
+    const getGuardianDailyPlan = vi.fn(async (date: string) => ({
+      studyDate: date,
+      koreanTarget: date === "2026-07-17" ? 7 : 3,
+      mathTarget: 2,
+      isRestDay: false,
+      requiredItemIds: []
+    }));
+    const updateGuardianDailyPlan = vi.fn();
+    const api = createGuardianApi({ getGuardianDailyPlan, updateGuardianDailyPlan });
+    render(<GuardianDashboard api={api} />);
+
+    await user.click(screen.getByRole("tab", { name: "학습 계획" }));
+    const date = await screen.findByLabelText("계획 날짜");
+    await user.clear(date);
+    await user.type(date, "2026-07-17");
+    await user.click(screen.getByRole("button", { name: "계획 불러오기" }));
+    expect(await screen.findByLabelText("국어 목표")).toHaveValue(7);
+
+    await user.clear(date);
+    await user.type(date, "2026-07-18");
+
+    expect(screen.queryByLabelText("국어 목표")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "학습 계획 저장" })).not.toBeInTheDocument();
+    expect(updateGuardianDailyPlan).not.toHaveBeenCalled();
+  });
+
+  it("ignores a stale date A response after date B is selected and loaded", async () => {
+    const user = userEvent.setup();
+    const dateA = deferred<{
+      studyDate: string;
+      koreanTarget: number;
+      mathTarget: number;
+      isRestDay: boolean;
+      requiredItemIds: string[];
+    }>();
+    const getGuardianDailyPlan = vi.fn((date: string) => date === "2026-07-17"
+      ? dateA.promise
+      : Promise.resolve({
+          studyDate: date,
+          koreanTarget: 3,
+          mathTarget: 4,
+          isRestDay: false,
+          requiredItemIds: []
+        }));
+    const api = createGuardianApi({ getGuardianDailyPlan });
+    render(<GuardianDashboard api={api} />);
+
+    await user.click(screen.getByRole("tab", { name: "학습 계획" }));
+    const date = await screen.findByLabelText("계획 날짜");
+    await user.clear(date);
+    await user.type(date, "2026-07-17");
+    await user.click(screen.getByRole("button", { name: "계획 불러오기" }));
+    await user.clear(date);
+    await user.type(date, "2026-07-18");
+    await user.click(screen.getByRole("button", { name: "계획 불러오기" }));
+    expect(await screen.findByLabelText("국어 목표")).toHaveValue(3);
+
+    dateA.resolve({
+      studyDate: "2026-07-17",
+      koreanTarget: 7,
+      mathTarget: 8,
+      isRestDay: false,
+      requiredItemIds: []
+    });
+
+    await waitFor(() => expect(screen.getByLabelText("국어 목표")).toHaveValue(3));
+    expect(screen.getByLabelText("수학 목표")).toHaveValue(4);
   });
 
   it("locks plan targets and rest-day changes after PLAN_LOCKED", async () => {

@@ -104,12 +104,11 @@ export class StarRepository {
       }
 
       const existingReversal = this.db.prepare(`
-        SELECT 1
-        FROM star_events
+        ${STAR_EVENT_SELECT}
         WHERE reverses_event_id = ?
-      `).get(eventId);
+      `).get(eventId) as StarEventRow | undefined;
       if (existingReversal !== undefined) {
-        throw new Error("EVENT_ALREADY_REVERSED");
+        return { event: eventFromRow(existingReversal), duplicate: true };
       }
 
       return this.applyInTransaction(

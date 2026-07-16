@@ -499,14 +499,13 @@ describe("append-only star ledger", () => {
         createdAt: "2026-07-16T04:00:00.000Z"
       }
     });
-    expect(() =>
-      repository.reverse(
-        earned.event.id,
-        GUARDIAN_ID,
-        "다시 취소",
-        new Date("2026-07-16T05:00:00.000Z")
-      )
-    ).toThrowError("EVENT_ALREADY_REVERSED");
+    const reversalRetry = repository.reverse(
+      earned.event.id,
+      GUARDIAN_ID,
+      "다시 취소",
+      new Date("2026-07-16T05:00:00.000Z")
+    );
+    expect(reversalRetry).toEqual({ ...reversed, duplicate: true });
     expect(
       db.prepare("SELECT COUNT(*) AS count FROM star_events").get()
     ).toEqual({ count: 3 });
@@ -582,13 +581,15 @@ describe("append-only star ledger", () => {
         reversesEventId: earned.event.id
       }
     });
-    expect(() =>
-      repository.reverse(
-        earned.event.id,
-        GUARDIAN_ID,
-        "두 번째 취소",
-        new Date("2026-07-16T05:00:00.000Z")
-      )
-    ).toThrowError("EVENT_ALREADY_REVERSED");
+    const reversalRetry = repository.reverse(
+      earned.event.id,
+      GUARDIAN_ID,
+      "두 번째 취소",
+      new Date("2026-07-16T05:00:00.000Z")
+    );
+    expect(reversalRetry).toEqual({ ...reversed, duplicate: true });
+    expect(
+      db.prepare("SELECT COUNT(*) AS count FROM star_events").get()
+    ).toEqual({ count: 3 });
   });
 });

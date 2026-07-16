@@ -222,11 +222,12 @@ export function registerStarRoutes(
         return;
       }
       try {
-        await reply.code(201).send(service.reverseEvent(
+        const result = service.reverseEvent(
           params.data.eventId,
           request.currentUser!.id,
           body.data.note
-        ));
+        );
+        await reply.code(result.duplicate ? 200 : 201).send(result);
       } catch (error) {
         await handleStarError(error, reply);
       }

@@ -563,11 +563,13 @@ describe("idle deductions and missed-plan maintenance", () => {
       reason: "REVERSAL",
       reversesEventId: bonus.json().event.id
     });
-    expect((await guardian.request(
+    const reversalRetry = await guardian.request(
       "POST",
       `/api/guardian/stars/${bonus.json().event.id}/reverse`,
       { note: "두 번째 취소" }
-    )).statusCode).toBe(409);
+    );
+    expect(reversalRetry.statusCode).toBe(200);
+    expect(reversalRetry.json()).toEqual({ ...reversed.json(), duplicate: true });
 
     const noBalance = await guardian.request(
       "POST",
@@ -598,6 +600,55 @@ describe("idle deductions and missed-plan maintenance", () => {
       `/api/guardian/stars/${adjustment.json().event.id}/reverse`,
       { note: "" }
     )).statusCode).toBe(400);
+  });
+
+  it("marks reversed originals authoritatively across filtered ledger pages", async () => {
+    const { guardian } = await authenticateFamily(harness);
+    const original = await guardian.request(
+      "POST",
+      "/api/guardian/stars/manual",
+      {
+        delta: 1,
+        reason: "페이지 밖에서 취소될 기록",
+        clientCommandId: "guardian-reversed-page-0001"
+      }
+    );
+    await guardian.request(
+      "POST",
+      `/api/guardian/stars/${original.json().event.id}/reverse`,
+      { note: "필터에서 숨겨진 취소" }
+    );
+    for (let index = 2; index <= 3; index += 1) {
+      await guardian.request(
+        "POST",
+        "/api/guardian/stars/manual",
+        {
+          delta: 1,
+          reason: `나중 보너스 ${index}`,
+          clientCommandId: `guardian-reversed-page-000${index}`
+        }
+      );
+    }
+
+    const first = await guardian.request(
+      "GET",
+      "/api/guardian/stars?reason=GUARDIAN_BONUS&limit=1"
+    );
+    const second = await guardian.request(
+      "GET",
+      `/api/guardian/stars?reason=GUARDIAN_BONUS&limit=1&cursor=${first.json().nextCursor}`
+    );
+    const third = await guardian.request(
+      "GET",
+      `/api/guardian/stars?reason=GUARDIAN_BONUS&limit=1&cursor=${second.json().nextCursor}`
+    );
+
+    expect(first.json().events[0]).toMatchObject({ isReversed: false });
+    expect(second.json().events[0]).toMatchObject({ isReversed: false });
+    expect(third.json().events[0]).toMatchObject({
+      reasonText: "페이지 밖에서 취소될 기록",
+      isReversed: true
+    });
   });
 
   it("gets and atomically replaces deterministic daily plans until the first required completion", async () => {

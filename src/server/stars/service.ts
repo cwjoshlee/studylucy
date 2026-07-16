@@ -3,6 +3,7 @@ import type {
   ApprovalInput,
   DailyPlanInput,
   GuardianDailyPlan,
+  GuardianStarEvent,
   GuardianStarLedger,
   IdleEventInput,
   IdleEventResult,
@@ -29,7 +30,10 @@ type PendingAdjustmentRow = PendingStarAdjustment & {
   studentId: string;
 };
 
-type StarEventRow = Omit<StarEvent, "reason"> & { reason: string };
+type GuardianStarEventRow = Omit<GuardianStarEvent, "reason" | "isReversed"> & {
+  reason: string;
+  isReversed: 0 | 1;
+};
 
 export type GuardianLedgerQuery = {
   limit: number;
@@ -190,25 +194,30 @@ export class StarService {
       throw new StarServiceError(400, "INVALID_REQUEST");
     }
     const rows = this.deps.db.prepare(`
-      SELECT id, requested_delta AS requestedDelta, delta,
-             balance_after AS balanceAfter, reason_code AS reason,
-             reason_text AS reasonText, study_date AS studyDate,
-             item_id AS itemId, actor_type AS actorType,
-             created_at AS createdAt, reverses_event_id AS reversesEventId
-      FROM star_events
-      WHERE student_id = ?
-        AND (? IS NULL OR study_date >= ?)
-        AND (? IS NULL OR study_date <= ?)
+      SELECT se.id, se.requested_delta AS requestedDelta, se.delta,
+             se.balance_after AS balanceAfter, se.reason_code AS reason,
+             se.reason_text AS reasonText, se.study_date AS studyDate,
+             se.item_id AS itemId, se.actor_type AS actorType,
+             se.created_at AS createdAt,
+             se.reverses_event_id AS reversesEventId,
+             EXISTS (
+               SELECT 1 FROM star_events AS reversal
+               WHERE reversal.reverses_event_id = se.id
+             ) AS isReversed
+      FROM star_events AS se
+      WHERE se.student_id = ?
+        AND (? IS NULL OR se.study_date >= ?)
+        AND (? IS NULL OR se.study_date <= ?)
         AND (
           ? = 'all'
           OR (? = 'earned' AND requested_delta > 0)
           OR (? = 'deducted' AND requested_delta < 0)
         )
-        AND (? IS NULL OR reason_code = ?)
-        AND (? IS NULL OR rowid < (
+        AND (? IS NULL OR se.reason_code = ?)
+        AND (? IS NULL OR se.rowid < (
           SELECT rowid FROM star_events WHERE id = ? AND student_id = ?
         ))
-      ORDER BY rowid DESC
+      ORDER BY se.rowid DESC
       LIMIT ?
     `).all(
       studentId,
@@ -225,14 +234,15 @@ export class StarService {
       query.cursor,
       studentId,
       query.limit + 1
-    ) as StarEventRow[];
+    ) as GuardianStarEventRow[];
     const hasNext = rows.length > query.limit;
     const page = rows.slice(0, query.limit);
     return {
       summary: this.getStudentStars(studentId),
       events: page.map((row) => ({
         ...row,
-        reason: StarReasonSchema.parse(row.reason)
+        reason: StarReasonSchema.parse(row.reason),
+        isReversed: row.isReversed === 1
       })),
       nextCursor: hasNext ? page.at(-1)!.id : null
     };

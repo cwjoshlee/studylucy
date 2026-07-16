@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { GuardianProgress } from "../../shared/learning";
 import type {
   GuardianStarLedger,
@@ -33,6 +33,12 @@ type DashboardData = {
 
 const TABS = ["진도", "별 기록", "차감 승인", "학습 계획", "백업"] as const;
 type GuardianTab = typeof TABS[number];
+
+const ADJUSTMENT_STATUS_LABELS: Record<PendingStarAdjustment["status"], string> = {
+  pending: "대기",
+  approved: "승인",
+  waived: "면제"
+};
 
 function studyDate(date: Date): string {
   return new Intl.DateTimeFormat("en-CA", {
@@ -189,17 +195,23 @@ function DailyPlanPanel({ api }: { api: GuardianDashboardApi }) {
   const [isRestDay, setIsRestDay] = useState(false);
   const [message, setMessage] = useState("");
   const [locked, setLocked] = useState(false);
+  const planVersion = useRef(0);
 
   const loadPlan = async () => {
+    const requestedDate = date;
+    const requestVersion = ++planVersion.current;
+    setPlan(null);
     setMessage("");
     setLocked(false);
     try {
-      const loaded = await api.getGuardianDailyPlan(date);
+      const loaded = await api.getGuardianDailyPlan(requestedDate);
+      if (planVersion.current !== requestVersion) return;
       setPlan(loaded);
       setKoreanTarget(loaded.koreanTarget);
       setMathTarget(loaded.mathTarget);
       setIsRestDay(loaded.isRestDay);
     } catch {
+      if (planVersion.current !== requestVersion) return;
       setPlan(null);
       setMessage("학습 계획을 불러오지 못했어요.");
     }
@@ -207,17 +219,22 @@ function DailyPlanPanel({ api }: { api: GuardianDashboardApi }) {
 
   const savePlan = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
+    if (plan === null || plan.studyDate !== date) return;
+    const requestedDate = date;
+    const requestVersion = planVersion.current;
     try {
-      const updated = await api.updateGuardianDailyPlan(date, {
+      const updated = await api.updateGuardianDailyPlan(requestedDate, {
         koreanTarget,
         mathTarget,
         isRestDay
       });
+      if (planVersion.current !== requestVersion) return;
       setPlan(updated);
       setMessage(updated.isRestDay
         ? "쉬는 날 계획을 저장했어요."
         : "학습 계획을 저장했어요.");
     } catch (error) {
+      if (planVersion.current !== requestVersion) return;
       if (error instanceof ApiError && error.code === "PLAN_LOCKED") {
         setLocked(true);
         setMessage("학습을 시작한 날짜와 지난 날짜의 계획은 바꿀 수 없어요.");
@@ -235,7 +252,11 @@ function DailyPlanPanel({ api }: { api: GuardianDashboardApi }) {
           계획 날짜
           <input
             onChange={(event) => {
-              setDate(event.currentTarget.value);
+              const value = event.currentTarget.value;
+              planVersion.current += 1;
+              setDate(value);
+              setPlan(null);
+              setMessage("");
               setLocked(false);
             }}
             type="date"
@@ -244,7 +265,7 @@ function DailyPlanPanel({ api }: { api: GuardianDashboardApi }) {
         </label>
         <button type="button" onClick={() => void loadPlan()}>계획 불러오기</button>
       </div>
-      {plan !== null ? (
+      {plan !== null && plan.studyDate === date ? (
         <form className="guardian-plan-form" onSubmit={savePlan}>
           <label>
             국어 목표
@@ -312,7 +333,8 @@ function ledgerQuery(filters: LedgerFilterForm): GuardianLedgerFilters {
 
 function LedgerPanel({ api }: { api: GuardianDashboardApi }) {
   const [draft, setDraft] = useState<LedgerFilterForm>(EMPTY_LEDGER_FILTERS);
-  const [applied, setApplied] = useState<GuardianLedgerFilters>({ direction: "all" });
+  const applied = useRef<GuardianLedgerFilters>({ direction: "all" });
+  const loadVersion = useRef(0);
   const [ledger, setLedger] = useState<GuardianStarLedger | null>(null);
   const [failed, setFailed] = useState(false);
   const [manualDelta, setManualDelta] = useState("");
@@ -320,17 +342,28 @@ function LedgerPanel({ api }: { api: GuardianDashboardApi }) {
   const [manualCommandId, setManualCommandId] = useState<string | null>(null);
   const [manualMessage, setManualMessage] = useState("");
   const [reversalNotes, setReversalNotes] = useState<Record<string, string>>({});
+  const [reversalErrors, setReversalErrors] = useState<Record<string, string>>({});
+  const reversalInFlight = useRef(new Set<string>());
+  const [reversingIds, setReversingIds] = useState<Set<string>>(new Set());
 
-  const load = async (query: GuardianLedgerFilters, append = false) => {
+  const load = async (
+    query: GuardianLedgerFilters,
+    append = false
+  ): Promise<boolean> => {
+    const requestVersion = ++loadVersion.current;
     setFailed(false);
     try {
       const loaded = await api.getGuardianStars(query);
+      if (loadVersion.current !== requestVersion) return true;
       setLedger((current) => append && current !== null ? {
         ...loaded,
         events: [...current.events, ...loaded.events]
       } : loaded);
+      return true;
     } catch {
+      if (loadVersion.current !== requestVersion) return true;
       setFailed(true);
+      return false;
     }
   };
 
@@ -341,7 +374,7 @@ function LedgerPanel({ api }: { api: GuardianDashboardApi }) {
   const applyFilters = (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const query = ledgerQuery(draft);
-    setApplied(query);
+    applied.current = query;
     void load(query);
   };
 
@@ -359,7 +392,7 @@ function LedgerPanel({ api }: { api: GuardianDashboardApi }) {
       setLedger((current) => current === null ? current : {
         ...current,
         summary: { ...current.summary, balance: result.event.balanceAfter },
-        events: [result.event, ...current.events]
+        events: [{ ...result.event, isReversed: false }, ...current.events]
       });
       setManualCommandId(null);
       setManualDelta("");
@@ -370,15 +403,34 @@ function LedgerPanel({ api }: { api: GuardianDashboardApi }) {
   };
 
   const reverse = async (eventId: string) => {
+    if (reversalInFlight.current.has(eventId)) return;
     const note = reversalNotes[eventId]?.trim() ?? "";
     if (note.length === 0) return;
     if (!window.confirm("이 별 기록을 되돌릴까요?")) return;
-    const result = await api.reverseStarEvent(eventId, { note });
-    setLedger((current) => current === null ? current : {
-      ...current,
-      summary: { ...current.summary, balance: result.event.balanceAfter },
-      events: [result.event, ...current.events]
-    });
+    reversalInFlight.current.add(eventId);
+    setReversingIds(new Set(reversalInFlight.current));
+    setReversalErrors((current) => ({ ...current, [eventId]: "" }));
+    try {
+      await api.reverseStarEvent(eventId, { note });
+      const reconciled = await load(applied.current);
+      if (!reconciled) {
+        setReversalErrors((current) => ({
+          ...current,
+          [eventId]: "기록은 되돌렸지만 최신 별 기록을 불러오지 못했어요. 다시 불러와 주세요."
+        }));
+      }
+    } catch {
+      const reconciled = await load(applied.current);
+      setReversalErrors((current) => ({
+        ...current,
+        [eventId]: reconciled
+          ? "기록을 되돌리지 못했어요. 최신 별 기록을 확인했어요."
+          : "기록을 되돌리지 못했고 최신 별 기록도 불러오지 못했어요. 다시 시도해 주세요."
+      }));
+    } finally {
+      reversalInFlight.current.delete(eventId);
+      setReversingIds(new Set(reversalInFlight.current));
+    }
   };
 
   return (
@@ -485,9 +537,6 @@ function LedgerPanel({ api }: { api: GuardianDashboardApi }) {
           {ledger.events.length === 0 ? <p>조건에 맞는 별 기록이 없어요.</p> : null}
           <div className="guardian-list">
             {ledger.events.map((event) => {
-              const alreadyReversed = ledger.events.some(
-                (candidate) => candidate.reversesEventId === event.id
-              );
               return (
                 <article
                   aria-label={`${event.studyDate} 별 기록`}
@@ -502,11 +551,12 @@ function LedgerPanel({ api }: { api: GuardianDashboardApi }) {
                   {event.reversesEventId !== null ? (
                     <p className="ledger-link">원래 기록에 연결된 되돌리기</p>
                   ) : null}
-                  {event.reason !== "REVERSAL" && !alreadyReversed ? (
+                  {event.reason !== "REVERSAL" && !event.isReversed ? (
                     <>
                       <label>
                         되돌리기 사유
                         <input
+                          disabled={reversingIds.has(event.id)}
                           maxLength={200}
                           onChange={(inputEvent) => {
                             const value = inputEvent.currentTarget.value;
@@ -520,10 +570,17 @@ function LedgerPanel({ api }: { api: GuardianDashboardApi }) {
                           value={reversalNotes[event.id] ?? ""}
                         />
                       </label>
-                      <button type="button" onClick={() => void reverse(event.id)}>
+                      <button
+                        disabled={reversingIds.has(event.id)}
+                        type="button"
+                        onClick={() => void reverse(event.id)}
+                      >
                         기록 되돌리기
                       </button>
                     </>
+                  ) : null}
+                  {reversalErrors[event.id] ? (
+                    <p role="alert">{reversalErrors[event.id]}</p>
                   ) : null}
                 </article>
               );
@@ -533,7 +590,7 @@ function LedgerPanel({ api }: { api: GuardianDashboardApi }) {
             <button
               type="button"
               onClick={() => void load({
-                ...applied,
+                ...applied.current,
                 cursor: ledger.nextCursor ?? undefined
               }, true)}
             >
@@ -552,6 +609,9 @@ function AdjustmentsPanel({ api }: { api: GuardianDashboardApi }) {
   const [notes, setNotes] = useState<Record<string, string>>({});
   const [waiverNotes, setWaiverNotes] = useState<Record<string, string>>({});
   const [failed, setFailed] = useState(false);
+  const mutationInFlight = useRef(new Set<string>());
+  const [mutatingIds, setMutatingIds] = useState<Set<string>>(new Set());
+  const [mutationErrors, setMutationErrors] = useState<Record<string, string>>({});
 
   useEffect(() => {
     let active = true;
@@ -568,24 +628,75 @@ function AdjustmentsPanel({ api }: { api: GuardianDashboardApi }) {
     };
   }, [api]);
 
+  const beginMutation = (adjustmentId: string): boolean => {
+    if (mutationInFlight.current.size > 0) return false;
+    mutationInFlight.current.add(adjustmentId);
+    setMutatingIds(new Set(mutationInFlight.current));
+    setMutationErrors((current) => ({ ...current, [adjustmentId]: "" }));
+    return true;
+  };
+
+  const finishMutation = (adjustmentId: string) => {
+    mutationInFlight.current.delete(adjustmentId);
+    setMutatingIds(new Set(mutationInFlight.current));
+  };
+
+  const reconcileAdjustments = async (): Promise<boolean> => {
+    try {
+      const { adjustments: loaded } = await api.getStarAdjustments();
+      setAdjustments(loaded);
+      return true;
+    } catch {
+      return false;
+    }
+  };
+
   const approve = async (adjustment: PendingStarAdjustment) => {
+    if (mutationInFlight.current.size > 0) return;
     if (!window.confirm("별 차감을 승인할까요?")) return;
-    const updated = await api.approveStarAdjustment(adjustment.id, {
-      approvedStars: approvedStars[adjustment.id] ?? Math.min(1, adjustment.requestedStars),
-      note: notes[adjustment.id] ?? ""
-    });
-    setAdjustments((current) => current?.map((item) =>
-      item.id === adjustment.id ? updated : item
-    ) ?? null);
+    if (!beginMutation(adjustment.id)) return;
+    try {
+      const updated = await api.approveStarAdjustment(adjustment.id, {
+        approvedStars: approvedStars[adjustment.id] ?? Math.min(1, adjustment.requestedStars),
+        note: notes[adjustment.id] ?? ""
+      });
+      setAdjustments((current) => current?.map((item) =>
+        item.id === adjustment.id ? updated : item
+      ) ?? null);
+    } catch {
+      const reconciled = await reconcileAdjustments();
+      setMutationErrors((current) => ({
+        ...current,
+        [adjustment.id]: reconciled
+          ? "차감 승인을 완료하지 못했어요. 최신 상태를 확인했어요."
+          : "차감 승인을 완료하지 못했고 최신 상태도 불러오지 못했어요. 다시 시도해 주세요."
+      }));
+    } finally {
+      finishMutation(adjustment.id);
+    }
   };
 
   const waive = async (adjustment: PendingStarAdjustment) => {
+    if (mutationInFlight.current.size > 0) return;
     const note = waiverNotes[adjustment.id]?.trim() ?? "";
     if (note.length === 0) return;
-    const updated = await api.waiveStarAdjustment(adjustment.id, { note });
-    setAdjustments((current) => current?.map((item) =>
-      item.id === adjustment.id ? updated : item
-    ) ?? null);
+    if (!beginMutation(adjustment.id)) return;
+    try {
+      const updated = await api.waiveStarAdjustment(adjustment.id, { note });
+      setAdjustments((current) => current?.map((item) =>
+        item.id === adjustment.id ? updated : item
+      ) ?? null);
+    } catch {
+      const reconciled = await reconcileAdjustments();
+      setMutationErrors((current) => ({
+        ...current,
+        [adjustment.id]: reconciled
+          ? "면제를 완료하지 못했어요. 최신 상태를 확인했어요."
+          : "면제를 완료하지 못했고 최신 상태도 불러오지 못했어요. 다시 시도해 주세요."
+      }));
+    } finally {
+      finishMutation(adjustment.id);
+    }
   };
 
   if (failed) return <p role="alert">차감 요청을 불러오지 못했어요.</p>;
@@ -608,11 +719,16 @@ function AdjustmentsPanel({ api }: { api: GuardianDashboardApi }) {
               <span>승인 {adjustment.approvedStars === null ? "—" : `${adjustment.approvedStars}개`}</span>
               <span>실제 적용 {adjustment.appliedStars === null ? "—" : `${adjustment.appliedStars}개`}</span>
             </div>
+            <p>처리 상태 {ADJUSTMENT_STATUS_LABELS[adjustment.status]}</p>
+            {adjustment.status !== "pending" ? (
+              <p>처리 메모 {adjustment.note?.trim() || "없음"}</p>
+            ) : null}
             {adjustment.status === "pending" ? (
               <>
                 <label>
                   승인할 별
                   <input
+                    disabled={mutatingIds.size > 0}
                     max={adjustment.requestedStars}
                     min="0"
                     onChange={(event) => {
@@ -629,6 +745,7 @@ function AdjustmentsPanel({ api }: { api: GuardianDashboardApi }) {
                 <label>
                   승인 메모 (선택)
                   <input
+                    disabled={mutatingIds.size > 0}
                     maxLength={200}
                     onChange={(event) => {
                       const value = event.currentTarget.value;
@@ -641,12 +758,17 @@ function AdjustmentsPanel({ api }: { api: GuardianDashboardApi }) {
                     value={notes[adjustment.id] ?? ""}
                   />
                 </label>
-                <button type="button" onClick={() => void approve(adjustment)}>
+                <button
+                  disabled={mutatingIds.size > 0}
+                  type="button"
+                  onClick={() => void approve(adjustment)}
+                >
                   차감 승인
                 </button>
                 <label>
                   면제 사유
                   <input
+                    disabled={mutatingIds.size > 0}
                     maxLength={200}
                     onChange={(event) => {
                       const value = event.currentTarget.value;
@@ -660,10 +782,17 @@ function AdjustmentsPanel({ api }: { api: GuardianDashboardApi }) {
                     value={waiverNotes[adjustment.id] ?? ""}
                   />
                 </label>
-                <button type="button" onClick={() => void waive(adjustment)}>
+                <button
+                  disabled={mutatingIds.size > 0}
+                  type="button"
+                  onClick={() => void waive(adjustment)}
+                >
                   아픈 날로 면제
                 </button>
               </>
+            ) : null}
+            {mutationErrors[adjustment.id] ? (
+              <p role="alert">{mutationErrors[adjustment.id]}</p>
             ) : null}
           </article>
         ))}
