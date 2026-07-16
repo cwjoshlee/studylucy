@@ -43,6 +43,7 @@ export type LearningSessionProps = {
   contentVersion?: number;
   reducedMotion?: boolean;
   onNext?: () => void;
+  onExit?: () => void;
   idFactory?: (prefix: "learning-session" | "attempt" | "idle-event") => string;
 };
 
@@ -79,6 +80,7 @@ function LearningSessionView({
   contentVersion,
   reducedMotion,
   onNext,
+  onExit,
   idFactory = createClientId
 }: Omit<LearningSessionProps, "item" | "studyDate" | "contentVersion"> & {
   item: LearningItemPayload;
@@ -303,6 +305,11 @@ function LearningSessionView({
       onPointerDown={() => recordActivity("touch")}
       onKeyDown={() => recordActivity("keyboard")}
     >
+      {onExit ? (
+        <button type="button" className="button-secondary" onClick={onExit}>
+          대시보드로 돌아가기
+        </button>
+      ) : null}
       <p className="subject-chip">{item.subject === "korean" ? "국어" : "수학"} · {item.unit}</p>
       <h2>{item.title}</h2>
       <p>{item.text}</p>

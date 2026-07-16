@@ -9,6 +9,9 @@
 | 실행 날짜와 KST 시각 | 미실행 |
 | 검증 담당자 | 미실행 |
 | Galaxy Tab 모델/Android/Chrome | 미실행 |
+| Galaxy Tab 가로 화면 viewport (CSS px) | 미실행 |
+| 터치 대상 실측 최솟값(>=48px) | 미실행 |
+| 키보드 탐색/포커스 표시 증거 | 미실행 |
 | 두 번째 기기/브라우저 | 미실행 |
 | 앱 커밋 SHA | 미실행 |
 | 호스트 | `[redacted].synology.me` |
@@ -41,11 +44,11 @@ Node 22 npm ci:
 npm run check:
 focused integration tests:
 bash -n scripts/smoke-container.sh:
-container smoke on Synology:
+isolated container smoke on Synology:
 git diff --check:
 ```
 
-컨테이너 smoke는 Docker가 있는 Synology에서 `bash scripts/smoke-container.sh`로 실행하고 `GET /api/health`의 `{"status":"ok"}` 확인까지 성공해야 `PASS`로 기록한다.
+컨테이너 smoke는 Docker가 있는 Synology에서 `bash scripts/smoke-container.sh`로 실행한다. 이 명령은 동적 `sua-learning-smoke-*` 프로젝트, `compose.smoke.yaml`, 임시 `/data`와 `127.0.0.1:18787`만 사용하며 성공과 실패 모두에서 smoke 리소스만 제거한다. 운영 Compose 프로젝트, `./data`와 8787 바인딩에는 접근하지 않는다. 격리된 `GET /api/health`의 `{"status":"ok"}` 확인까지 성공해야 `PASS`로 기록한다.
 
 ## 실패 기록
 

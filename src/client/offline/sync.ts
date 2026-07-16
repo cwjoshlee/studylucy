@@ -19,6 +19,18 @@ export type SyncApi = Pick<
 >;
 
 type FailureKind = "auth" | "device-revoked" | "retry" | "other";
+type SyncCompletedListener = () => void;
+
+const syncCompletedListeners = new Set<SyncCompletedListener>();
+
+export function subscribeSyncCompleted(listener: SyncCompletedListener): () => void {
+  syncCompletedListeners.add(listener);
+  return () => syncCompletedListeners.delete(listener);
+}
+
+function publishSyncCompleted(): void {
+  for (const listener of syncCompletedListeners) listener();
+}
 
 function failureKind(error: unknown): FailureKind {
   if (error === null || typeof error !== "object") return "retry";
@@ -122,6 +134,7 @@ export async function syncPending(api: SyncApi): Promise<{
       await refreshConfirmedStars(api);
     }
     const counts = await getQueueCounts();
+    if (attempts.sent > 0) publishSyncCompleted();
     return {
       attempts: { sent: attempts.sent, remaining: attempts.remaining },
       idleEvents: { sent: 0, remaining: counts.idleEvents }
@@ -133,6 +146,7 @@ export async function syncPending(api: SyncApi): Promise<{
   if (canRefresh && attempts.sent + idleEvents.sent > 0) {
     await refreshConfirmedStars(api);
   }
+  if (attempts.sent + idleEvents.sent > 0) publishSyncCompleted();
 
   return {
     attempts: { sent: attempts.sent, remaining: attempts.remaining },

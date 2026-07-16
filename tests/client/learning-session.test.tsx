@@ -177,12 +177,14 @@ describe("LearningSession", () => {
     ["expired session", new ApiError(401, "AUTH_REQUIRED")]
   ])("queues a passing reading submission after a recoverable %s failure", async (_label, failure) => {
     const api = createLearningApi();
+    const onExit = vi.fn();
     api.saveAttempt.mockRejectedValue(failure);
     render(<LearningSession
       item={readingItem}
       api={api}
       studyDate="2026-07-16"
       idFactory={offlineId}
+      onExit={onExit}
     />);
 
     await submitManualTranscript(readingItem.text);
@@ -200,6 +202,11 @@ describe("LearningSession", () => {
       })
     ]);
     expect(screen.getByRole("button", { name: "다음 문제" })).toBeDisabled();
+    const dashboardReturn = screen.getByRole("button", { name: "대시보드로 돌아가기" });
+    expect(dashboardReturn).toBeEnabled();
+    await userEvent.click(dashboardReturn);
+    expect(onExit).toHaveBeenCalledOnce();
+    await expect(listQueuedAttempts()).resolves.toHaveLength(1);
   });
 
   it("does not queue a rejected invalid attempt", async () => {

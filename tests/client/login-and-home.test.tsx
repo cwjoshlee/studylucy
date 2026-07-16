@@ -2,7 +2,7 @@
 import "fake-indexeddb/auto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { act, cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { deleteDB } from "idb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -11,10 +11,12 @@ import { ApiError } from "../../src/client/api/client";
 import { TodayStars } from "../../src/client/delight/today-stars";
 import {
   OFFLINE_DB_NAME,
+  listQueuedAttempts,
   queueAttempt,
   removeQueuedAttempt,
   storeConfirmedStars
 } from "../../src/client/offline/db";
+import { syncPending } from "../../src/client/offline/sync";
 import { createFakeApi } from "../helpers/client";
 
 afterEach(cleanup);
@@ -210,6 +212,74 @@ describe("가족 로그인과 학생 홈", () => {
     expect(within(completedCard!).getByText("★ 받은 별 1개")).toBeVisible();
     expect(api.getToday).toHaveBeenCalledTimes(2);
     expect(api.getStudentStars).toHaveBeenCalledTimes(2);
+  });
+
+  it("returns with an offline attempt queued then refetches authoritative home state after sync", async () => {
+    const user = userEvent.setup();
+    const api = createFakeApi();
+    const initialPlan = await api.getToday("2026-07-16");
+    const confirmedAfterSync = {
+      balance: 8,
+      earnedToday: 3,
+      deductedToday: 1,
+      lastReason: "필수 학습을 마쳤어요."
+    };
+    api.getToday.mockReset()
+      .mockResolvedValueOnce(initialPlan)
+      .mockResolvedValue({
+        ...initialPlan,
+        completedItemIds: ["ko-01"],
+        stars: confirmedAfterSync
+      });
+    api.getStudentStars.mockReset()
+      .mockResolvedValueOnce(initialPlan.stars)
+      .mockResolvedValue(confirmedAfterSync);
+    api.saveAttempt
+      .mockRejectedValueOnce(new TypeError("offline"))
+      .mockResolvedValue({
+        id: "attempt-server-after-sync",
+        duplicate: false,
+        readingPass: true,
+        mathPass: null,
+        completed: true,
+        starAward: {
+          awarded: true,
+          amount: 1,
+          balance: 8,
+          eventId: "star-after-sync"
+        }
+      });
+
+    render(<App api={api} />);
+    await user.click(await screen.findByRole("button", { name: "바람과 꽃 시작하기" }));
+    await user.type(screen.getByLabelText("읽은 내용 직접 입력"), "바람과 꽃");
+    await user.click(screen.getByRole("button", { name: "읽기 판정하기" }));
+
+    expect(await screen.findByText("학습 기록을 동기화 대기 중이에요. 연결되면 확인할게요.")).toBeVisible();
+    await expect(listQueuedAttempts()).resolves.toHaveLength(1);
+    expect(screen.getByRole("button", { name: "다음 문제" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "대시보드로 돌아가기" }));
+
+    expect(await screen.findByRole("heading", { name: "오늘의 학습" })).toBeVisible();
+    expect(screen.getByText("동기화 대기 별 1개")).toBeVisible();
+    expect(screen.getByText("모은 별 7개")).toBeVisible();
+    await expect(listQueuedAttempts()).resolves.toHaveLength(1);
+
+    await act(async () => {
+      await syncPending(api);
+    });
+
+    expect(await screen.findByText("동기화 대기 별 0개")).toBeVisible();
+    expect(await screen.findByText("모은 별 8개")).toBeVisible();
+    await waitFor(() => {
+      const completedCard = screen.getByRole("heading", { name: "바람과 꽃" }).closest("article");
+      expect(completedCard).not.toBeNull();
+      expect(within(completedCard!).getByText("완료했어요")).toBeVisible();
+      expect(within(completedCard!).getByText("★ 받은 별 1개")).toBeVisible();
+    });
+    await expect(listQueuedAttempts()).resolves.toHaveLength(0);
+    expect(api.getToday).toHaveBeenCalledTimes(2);
+    expect(api.getStudentStars).toHaveBeenCalledTimes(3);
   });
 
   it("keeps queued stars separate from the confirmed balance", () => {

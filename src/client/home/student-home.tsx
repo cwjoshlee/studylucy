@@ -5,6 +5,7 @@ import type { ClientApi } from "../api/client";
 import { StarBunny } from "../delight/star-bunny";
 import { TodayStars } from "../delight/today-stars";
 import { LearningSession } from "../learning/learning-session";
+import { subscribeSyncCompleted } from "../offline/sync";
 import {
   getQueueCounts,
   subscribeConfirmedStars,
@@ -30,6 +31,19 @@ export function StudentHome({ api }: { api: ClientApi }) {
 
   useEffect(() => {
     let active = true;
+    const loadAuthoritativeData = (showFailure: boolean) => {
+      void Promise.all([api.getToday(studyDate()), api.getStudentStars()]).then(
+        ([plan, stars]) => {
+          if (active) {
+            setData({ plan, stars });
+            setFailed(false);
+          }
+        },
+        () => {
+          if (active && showFailure) setFailed(true);
+        }
+      );
+    };
     const updateQueueCounts = (counts: { attempts: number }) => {
       if (active) setQueuedCount(counts.attempts);
     };
@@ -39,19 +53,16 @@ export function StudentHome({ api }: { api: ClientApi }) {
         setData((current) => current === null ? current : { ...current, stars });
       }
     });
+    const unsubscribeSyncCompleted = subscribeSyncCompleted(() => {
+      loadAuthoritativeData(false);
+    });
     void getQueueCounts().then(updateQueueCounts, () => undefined);
-    void Promise.all([api.getToday(studyDate()), api.getStudentStars()]).then(
-      ([plan, stars]) => {
-        if (active) setData({ plan, stars });
-      },
-      () => {
-        if (active) setFailed(true);
-      }
-    );
+    loadAuthoritativeData(true);
     return () => {
       active = false;
       unsubscribe();
       unsubscribeConfirmedStars();
+      unsubscribeSyncCompleted();
     };
   }, [api]);
 
@@ -79,6 +90,7 @@ export function StudentHome({ api }: { api: ClientApi }) {
           api={api}
           studyDate={data.plan.date}
           onNext={finishLearning}
+          onExit={() => setSelectedItem(null)}
         />
       </main>
     );
