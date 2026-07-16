@@ -39,11 +39,13 @@ type SessionItem = LearningItemPayload | PlanItem;
 export type LearningSessionProps = {
   item: SessionItem;
   api: LearningApi;
-  studyDate?: string;
+  planId: string;
+  studyDate: string;
   contentVersion?: number;
   reducedMotion?: boolean;
   onNext?: () => void;
   onExit?: () => void;
+  onActivityCursor?: (activityCursor: number) => void;
   idFactory?: (prefix: "learning-session" | "attempt" | "idle-event") => string;
 };
 
@@ -68,7 +70,7 @@ export function LearningSession(props: LearningSessionProps) {
       key={`${resolved.payload.id}:${resolved.version}`}
       item={resolved.payload}
       contentVersion={resolved.version}
-      studyDate={props.studyDate ?? kstStudyDate()}
+      studyDate={props.studyDate}
     />
   );
 }
@@ -76,13 +78,15 @@ export function LearningSession(props: LearningSessionProps) {
 function LearningSessionView({
   item,
   api,
+  planId,
   studyDate,
   contentVersion,
   reducedMotion,
   onNext,
   onExit,
+  onActivityCursor,
   idFactory = createClientId
-}: Omit<LearningSessionProps, "item" | "studyDate" | "contentVersion"> & {
+}: Omit<LearningSessionProps, "item" | "contentVersion"> & {
   item: LearningItemPayload;
   studyDate: string;
   contentVersion: number;
@@ -186,15 +190,17 @@ function LearningSessionView({
     answer: number | null
   ): AttemptInput => ({
     clientAttemptId: idFactory("attempt"),
+    planId,
     itemId: item.id,
     contentVersion,
     studyDate,
+    occurredAt: new Date().toISOString(),
     readingScore: result.score,
     missedTokens: result.missedTokens,
     mathAnswer: answer,
     durationMs: Math.min(3_600_000, Math.max(0, Date.now() - viewStartedAt)),
     difficultyFeedback
-  }), [contentVersion, difficultyFeedback, idFactory, item.id, studyDate, viewStartedAt]);
+  }), [contentVersion, difficultyFeedback, idFactory, item.id, planId, studyDate, viewStartedAt]);
 
   const saveReadingAttempt = useCallback(async (result: ReadingResult) => {
     controllerRef.current?.pause("server-wait");
@@ -203,6 +209,7 @@ function LearningSessionView({
     try {
       const receipt = await api.saveAttempt(input);
       setAttemptReceipt(receipt);
+      onActivityCursor?.(receipt.activityCursor);
       setNextUnlocked(receipt.completed);
       if (!receipt.readingPass) {
         setMathFeedback("서버 확인에서 읽기를 다시 해야 해요.");
@@ -217,7 +224,7 @@ function LearningSessionView({
       setWaiting(false);
       controllerRef.current?.resume("server-wait");
     }
-  }, [api, buildAttempt]);
+  }, [api, buildAttempt, onActivityCursor]);
 
   const judgeTranscript = useCallback((transcript: string) => {
     if (learningControlsPaused) return;
@@ -264,6 +271,7 @@ function LearningSessionView({
     try {
       const receipt = await api.saveAttempt(input);
       setAttemptReceipt(receipt);
+      onActivityCursor?.(receipt.activityCursor);
       const passed = receipt.readingPass && receipt.mathPass === true;
       setNextUnlocked(receipt.completed && passed);
       setMathFeedback(passed ? "정답이에요." : "답을 다시 생각해 봐요.");
@@ -433,13 +441,4 @@ function createClientId(prefix: string): string {
     ? globalThis.crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   return `${prefix}-${random}`;
-}
-
-function kstStudyDate(): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Seoul",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit"
-  }).format(new Date());
 }

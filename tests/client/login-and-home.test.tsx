@@ -241,7 +241,8 @@ describe("가족 로그인과 학생 홈", () => {
   });
 
   it("shows the A layout, required stars, and original friend", async () => {
-    render(<App api={createFakeApi()} />);
+    const api = createFakeApi();
+    render(<App api={api} />);
 
     expect(await screen.findByText("오늘의 학습")).toBeVisible();
     expect(screen.getByText("수아야, 오늘도 한 걸음!")).toBeVisible();
@@ -251,6 +252,7 @@ describe("가족 로그인과 학생 홈", () => {
     const optional = screen.getByRole("region", { name: "선택 학습" });
     expect(within(optional).getByText("구름 산책")).toBeVisible();
     expect(within(optional).queryByText(/\uBCC4 1\uAC1C/)).not.toBeInTheDocument();
+    expect(api.getToday).toHaveBeenCalledWith();
   });
 
   it.each([
@@ -269,7 +271,7 @@ describe("가족 로그인과 학생 홈", () => {
   it("returns after a gated completion with refreshed authoritative progress and stars", async () => {
     const user = userEvent.setup();
     const api = createFakeApi();
-    const initialPlan = await api.getToday("2026-07-16");
+    const initialPlan = await api.getToday();
     api.getToday.mockReset()
       .mockResolvedValueOnce(initialPlan)
       .mockResolvedValue({
@@ -301,6 +303,11 @@ describe("가족 로그인과 학생 홈", () => {
     await user.type(screen.getByLabelText("읽은 내용 직접 입력"), "바람과 꽃");
     await user.click(screen.getByRole("button", { name: "읽기 판정하기" }));
 
+    expect(api.saveAttempt).toHaveBeenCalledWith(expect.objectContaining({
+      planId: initialPlan.planId,
+      occurredAt: expect.any(String)
+    }));
+
     expect(await screen.findByText("별 1개를 모았어요")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "다음 문제" }));
 
@@ -317,7 +324,7 @@ describe("가족 로그인과 학생 홈", () => {
   it("returns with an offline attempt queued then refetches authoritative home state after sync", async () => {
     const user = userEvent.setup();
     const api = createFakeApi();
-    const initialPlan = await api.getToday("2026-07-16");
+    const initialPlan = await api.getToday();
     const confirmedAfterSync = {
       balance: 8,
       earnedToday: 3,
@@ -342,6 +349,7 @@ describe("가족 로그인과 학생 홈", () => {
         readingPass: true,
         mathPass: null,
         completed: true,
+        activityCursor: 1,
         starAward: {
           awarded: true,
           amount: 1,
@@ -408,9 +416,11 @@ describe("가족 로그인과 학생 홈", () => {
     });
     const queuedAttempt = {
       clientAttemptId: "home-queued-attempt-0001",
+      planId: "plan-daily-1",
       itemId: "ko-01",
       contentVersion: 1,
       studyDate: "2026-07-16",
+      occurredAt: "2026-07-16T01:00:00.000Z",
       readingScore: 100,
       missedTokens: [],
       mathAnswer: null,
@@ -459,7 +469,7 @@ describe("가족 로그인과 학생 홈", () => {
 
   it("uses completed reward copy that cannot promise another star", async () => {
     const api = createFakeApi();
-    const plan = await api.getToday("2026-07-16");
+    const plan = await api.getToday();
     api.getToday.mockResolvedValue({
       ...plan,
       completedItemIds: ["ko-01"]

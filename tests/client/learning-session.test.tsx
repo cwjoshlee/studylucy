@@ -54,6 +54,7 @@ function receipt(overrides: Partial<AttemptReceipt> = {}): AttemptReceipt {
     readingPass: true,
     mathPass: true,
     completed: true,
+    activityCursor: 1,
     starAward: {
       awarded: false,
       amount: 0,
@@ -118,7 +119,7 @@ afterEach(() => {
 
 describe("LearningSession", () => {
   it("keeps math locked until the full reading passes", async () => {
-    render(<LearningSession item={mathItem} api={createLearningApi()} studyDate="2026-07-16" />);
+    render(<LearningSession item={mathItem} api={createLearningApi()} planId="plan-daily-1" studyDate="2026-07-16" />);
 
     expect(screen.getByLabelText("답 쓰기")).toBeDisabled();
     await submitManualTranscript(`${mathItem.text} ${mathItem.question}`);
@@ -132,7 +133,7 @@ describe("LearningSession", () => {
       ? receipt()
       : receipt({ mathPass: false, completed: false }));
     const user = userEvent.setup();
-    render(<LearningSession item={mathItem} api={api} studyDate="2026-07-16" />);
+    render(<LearningSession item={mathItem} api={api} planId="plan-daily-1" studyDate="2026-07-16" />);
     await submitManualTranscript(`${mathItem.text} ${mathItem.question}`);
 
     await user.type(screen.getByLabelText("답 쓰기"), "4");
@@ -146,29 +147,50 @@ describe("LearningSession", () => {
     expect(await screen.findByText("정답이에요.")).toBeVisible();
     expect(screen.getByRole("button", { name: "다음 문제" })).toBeEnabled();
     expect(api.saveAttempt).toHaveBeenLastCalledWith(expect.objectContaining({
+      planId: "plan-daily-1",
       itemId: "math-01",
       contentVersion: 1,
       studyDate: "2026-07-16",
       readingScore: 100,
       missedTokens: [],
-      mathAnswer: 5
+      mathAnswer: 5,
+      occurredAt: expect.any(String)
     }));
   });
 
   it("saves a passing reading attempt without retaining the transcript", async () => {
     const api = createLearningApi();
-    render(<LearningSession item={readingItem} api={api} studyDate="2026-07-16" />);
+    render(<LearningSession item={readingItem} api={api} planId="plan-daily-1" studyDate="2026-07-16" />);
 
     await submitManualTranscript(readingItem.text);
     expect(api.saveAttempt).toHaveBeenCalledWith(expect.objectContaining({
+      planId: "plan-daily-1",
       itemId: "ko-01",
       readingScore: 100,
       missedTokens: [],
-      mathAnswer: null
+      mathAnswer: null,
+      occurredAt: expect.any(String)
     }));
     expect(api.saveAttempt.mock.calls[0]![0]).not.toHaveProperty("transcript");
     expect(screen.getByRole("button", { name: "다음 문제" })).toBeEnabled();
     await expect(getQueueCounts()).resolves.toEqual({ attempts: 0, idleEvents: 0 });
+  });
+
+  it("reports the authoritative online cursor after a saved attempt", async () => {
+    const api = createLearningApi();
+    api.saveAttempt.mockResolvedValue(receipt({ activityCursor: 7 }));
+    const onActivityCursor = vi.fn();
+    render(<LearningSession
+      item={readingItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      onActivityCursor={onActivityCursor}
+    />);
+
+    await submitManualTranscript(readingItem.text);
+
+    expect(onActivityCursor).toHaveBeenCalledWith(7);
   });
 
   it.each([
@@ -182,6 +204,7 @@ describe("LearningSession", () => {
     render(<LearningSession
       item={readingItem}
       api={api}
+      planId="plan-daily-1"
       studyDate="2026-07-16"
       idFactory={offlineId}
       onExit={onExit}
@@ -212,7 +235,7 @@ describe("LearningSession", () => {
   it("does not queue a rejected invalid attempt", async () => {
     const api = createLearningApi();
     api.saveAttempt.mockRejectedValue(new ApiError(400, "INVALID_ATTEMPT"));
-    render(<LearningSession item={readingItem} api={api} studyDate="2026-07-16" />);
+    render(<LearningSession item={readingItem} api={api} planId="plan-daily-1" studyDate="2026-07-16" />);
 
     await submitManualTranscript(readingItem.text);
 
@@ -227,6 +250,7 @@ describe("LearningSession", () => {
     render(<LearningSession
       item={mathItem}
       api={api}
+      planId="plan-daily-1"
       studyDate="2026-07-16"
       idFactory={offlineId}
     />);
@@ -257,6 +281,7 @@ describe("LearningSession", () => {
     render(<LearningSession
       item={readingItem}
       api={api}
+      planId="plan-daily-1"
       studyDate="2026-07-16"
       idFactory={offlineId}
     />);
@@ -283,7 +308,7 @@ describe("LearningSession", () => {
   it("leaves no idle queue row after a direct success", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-16T01:00:00.000Z"));
-    render(<LearningSession item={readingItem} api={createLearningApi()} studyDate="2026-07-16" />);
+    render(<LearningSession item={readingItem} api={createLearningApi()} planId="plan-daily-1" studyDate="2026-07-16" />);
 
     await act(async () => {
       vi.advanceTimersByTime(300_000);
@@ -303,7 +328,7 @@ describe("LearningSession", () => {
     vi.setSystemTime(new Date("2026-07-16T01:00:00.000Z"));
     const api = createLearningApi();
     api.sendIdleEvent.mockResolvedValue(idleResult(outcome));
-    render(<LearningSession item={readingItem} api={api} studyDate="2026-07-16" />);
+    render(<LearningSession item={readingItem} api={api} planId="plan-daily-1" studyDate="2026-07-16" />);
 
     await act(async () => {
       vi.advanceTimersByTime(300_000);
@@ -342,7 +367,7 @@ describe("LearningSession", () => {
     vi.setSystemTime(new Date("2026-07-16T01:00:00.000Z"));
     supportSpeechRecognition();
     const api = createLearningApi();
-    render(<LearningSession item={mathItem} api={api} studyDate="2026-07-16" />);
+    render(<LearningSession item={mathItem} api={api} planId="plan-daily-1" studyDate="2026-07-16" />);
 
     fireEvent.change(screen.getByLabelText("읽은 내용 직접 입력"), {
       target: { value: `${mathItem.text} ${mathItem.question}` }
@@ -389,7 +414,7 @@ describe("LearningSession", () => {
         eventId: "star-learning-session-completion-1"
       }
     }));
-    render(<LearningSession item={readingItem} api={api} studyDate="2026-07-16" />);
+    render(<LearningSession item={readingItem} api={api} planId="plan-daily-1" studyDate="2026-07-16" />);
 
     fireEvent.change(screen.getByLabelText("읽은 내용 직접 입력"), {
       target: { value: readingItem.text }

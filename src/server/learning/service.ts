@@ -1,21 +1,29 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
-import { getDailyItems } from "../../shared/daily-order";
 import type {
   AttemptInput,
   AttemptReceipt,
   GuardianProgress,
   TodayPlan
 } from "../../shared/learning";
-import { DailyPlanService } from "../stars/daily-plan";
+import { getStudentStarSummary } from "../stars/student-summary";
+import {
+  IssuedPlanError,
+  IssuedPlanRepository
+} from "./issued-plan-repository";
 import { LearningRepository } from "./repository";
 
 export class LearningError extends Error {
-  constructor(
-    readonly statusCode: 409,
-    readonly code: "CONTENT_VERSION_CONFLICT"
+  readonly statusCode: 400 | 409;
+
+  constructor(readonly code:
+    | "PLAN_NOT_ISSUED"
+    | "PLAN_SUBMISSION_EXPIRED"
+    | "CONTENT_VERSION_CONFLICT"
+    | "INVALID_REQUEST"
   ) {
     super(code);
+    this.statusCode = code === "INVALID_REQUEST" ? 400 : 409;
   }
 }
 
@@ -26,20 +34,34 @@ export type LearningServiceDeps = {
 
 export class LearningService {
   private repository: LearningRepository;
-  private dailyPlan: DailyPlanService;
+  private issuedPlans: IssuedPlanRepository;
 
   constructor(private deps: LearningServiceDeps) {
     this.repository = new LearningRepository(deps.db);
-    this.dailyPlan = new DailyPlanService(deps.db, deps.now);
+    this.issuedPlans = new IssuedPlanRepository(deps.db, deps.now);
   }
 
-  getTodayPlan(userId: string, date: string): TodayPlan {
-    const requiredPlan = this.dailyPlan.ensure(userId, date);
+  getTodayPlan(userId: string, trustedDeviceId: string): TodayPlan {
+    const issued = this.issuedPlans.issueToday(userId, trustedDeviceId);
     return {
-      date,
-      completedItemIds: this.repository.listCompletedItemIds(userId, date),
-      ...requiredPlan,
-      items: getDailyItems(this.repository.listActiveItems(), date)
+      planId: issued.id,
+      planKind: issued.planKind,
+      recoverySourcePlanId: issued.recoverySourcePlanId,
+      date: issued.studyDate,
+      submitUntil: issued.submitUntil,
+      offlineEpoch: issued.offlineEpoch,
+      activityCursor: issued.activityCursor,
+      studentDisplayName: issued.studentDisplayName,
+      completedItemIds: this.repository.listCompletedItemIds(userId, issued.id),
+      requiredItemIds: issued.items
+        .filter((item) => item.isRequired)
+        .map((item) => item.id),
+      stars: getStudentStarSummary(this.deps.db, userId, issued.studyDate),
+      items: issued.items.map(({ id, version, payload }) => ({
+        id,
+        version,
+        payload
+      }))
     };
   }
 
@@ -50,18 +72,39 @@ export class LearningService {
     return this.repository.findDuplicateAttempt(userId, clientAttemptId);
   }
 
-  saveAttempt(userId: string, input: AttemptInput): AttemptReceipt {
-    this.dailyPlan.ensure(userId, input.studyDate);
-    const receipt = this.repository.saveAttempt({
-      ...input,
-      id: randomUUID(),
-      userId,
-      createdAt: this.deps.now().toISOString()
-    });
-    if (receipt === null) {
-      throw new LearningError(409, "CONTENT_VERSION_CONFLICT");
+  saveAttempt(
+    userId: string,
+    trustedDeviceId: string,
+    input: AttemptInput
+  ): AttemptReceipt {
+    const receivedAt = this.deps.now();
+    try {
+      const duplicate = this.repository.findDuplicateAttemptForIssuedPlan(
+        userId,
+        trustedDeviceId,
+        input.planId,
+        input.clientAttemptId
+      );
+      if (duplicate !== null) return duplicate;
+      const snapshot = this.issuedPlans.validateAttempt(
+        userId,
+        trustedDeviceId,
+        input,
+        receivedAt
+      );
+      return this.repository.saveAttempt({
+        ...input,
+        id: randomUUID(),
+        userId,
+        createdAt: receivedAt.toISOString(),
+        snapshot
+      });
+    } catch (error) {
+      if (error instanceof IssuedPlanError) {
+        throw new LearningError(error.code);
+      }
+      throw error;
     }
-    return receipt;
   }
 
   getGuardianProgress(from: string, to: string): GuardianProgress {

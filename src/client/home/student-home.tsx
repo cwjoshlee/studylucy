@@ -9,19 +9,11 @@ import { subscribeSyncCompleted } from "../offline/sync";
 import {
   getQueueCounts,
   subscribeConfirmedStars,
-  subscribeQueueCounts
+  subscribeQueueCounts,
+  updateCachedPlanActivityCursor
 } from "../offline/db";
 
 type StudentData = { plan: TodayPlan; stars: StudentStarSummary };
-
-function studyDate(): string {
-  return new Intl.DateTimeFormat("en-CA", {
-    timeZone: "Asia/Seoul",
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit"
-  }).format(new Date());
-}
 
 export function StudentHome({
   api,
@@ -40,7 +32,7 @@ export function StudentHome({
   useEffect(() => {
     let active = true;
     const loadAuthoritativeData = (showFailure: boolean) => {
-      void Promise.all([api.getToday(studyDate()), api.getStudentStars()]).then(
+      void Promise.all([api.getToday(), api.getStudentStars()]).then(
         ([plan, stars]) => {
           if (active) {
             setData({ plan, stars });
@@ -80,7 +72,7 @@ export function StudentHome({
   async function finishLearning(): Promise<void> {
     try {
       const [plan, stars] = await Promise.all([
-        api.getToday(studyDate()),
+        api.getToday(),
         api.getStudentStars()
       ]);
       setData({ plan, stars });
@@ -96,7 +88,26 @@ export function StudentHome({
         <LearningSession
           item={selectedItem}
           api={api}
+          planId={data.plan.planId}
           studyDate={data.plan.date}
+          onActivityCursor={(activityCursor) => {
+            void updateCachedPlanActivityCursor(
+              data.plan.planId,
+              activityCursor
+            );
+            setData((current) => current === null
+              ? current
+              : {
+                  ...current,
+                  plan: {
+                    ...current.plan,
+                    activityCursor: Math.max(
+                      current.plan.activityCursor,
+                      activityCursor
+                    )
+                  }
+                });
+          }}
           onNext={finishLearning}
           onExit={() => setSelectedItem(null)}
         />

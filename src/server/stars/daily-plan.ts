@@ -31,72 +31,76 @@ export class DailyPlanService {
   ) {}
 
   ensure(studentId: string, studyDate: string): RequiredPlan {
-    return this.db.transaction(() => {
-      const createdAt = this.now().toISOString();
-      this.db.prepare(`
+    return this.db.transaction(() =>
+      this.ensureInTransaction(studentId, studyDate)
+    ).immediate();
+  }
+
+  ensureInTransaction(studentId: string, studyDate: string): RequiredPlan {
+    const createdAt = this.now().toISOString();
+    this.db.prepare(`
         INSERT INTO daily_plan_settings (
           student_id, study_date, korean_target, math_target,
           is_rest_day, updated_by, updated_at
         ) VALUES (?, ?, 2, 2, 0, NULL, ?)
         ON CONFLICT(student_id, study_date) DO NOTHING
-      `).run(studentId, studyDate, createdAt);
+    `).run(studentId, studyDate, createdAt);
 
-      const settings = this.db.prepare(`
+    const settings = this.db.prepare(`
         SELECT korean_target AS koreanTarget,
                math_target AS mathTarget,
                is_rest_day AS isRestDay
         FROM daily_plan_settings
         WHERE student_id = ? AND study_date = ?
-      `).get(studentId, studyDate) as DailyPlanSettingsRow;
+    `).get(studentId, studyDate) as DailyPlanSettingsRow;
 
-      const existing = this.listRequirementIds(studentId, studyDate);
-      if (existing.length === 0 && settings.isRestDay === 0) {
-        const rows = this.db.prepare(`
+    const existing = this.listRequirementIds(studentId, studyDate);
+    if (existing.length === 0 && settings.isRestDay === 0) {
+      const rows = this.db.prepare(`
           SELECT ci.id, cv.payload_json AS payloadJson
           FROM content_items AS ci
           JOIN content_versions AS cv
             ON cv.item_id = ci.id AND cv.version = ci.active_version
           WHERE ci.status = 'published'
           ORDER BY ci.id
-        `).all() as Array<{ id: string; payloadJson: string }>;
-        const items = rows.map((row) => ({
-          id: row.id,
-          subject: LearningItemPayloadSchema.parse(
-            JSON.parse(row.payloadJson)
-          ).subject
-        }));
-        const remaining = {
-          korean: settings.koreanTarget,
-          math: settings.mathTarget
-        };
-        let sortOrder = 0;
-        const insert = this.db.prepare(`
+      `).all() as Array<{ id: string; payloadJson: string }>;
+      const items = rows.map((row) => ({
+        id: row.id,
+        subject: LearningItemPayloadSchema.parse(
+          JSON.parse(row.payloadJson)
+        ).subject
+      }));
+      const remaining = {
+        korean: settings.koreanTarget,
+        math: settings.mathTarget
+      };
+      let sortOrder = 0;
+      const insert = this.db.prepare(`
           INSERT OR IGNORE INTO daily_requirements (
             student_id, study_date, item_id, subject, sort_order, created_at
           ) VALUES (?, ?, ?, ?, ?, ?)
-        `);
-        for (const item of getDailyItems(items, studyDate)) {
-          if (remaining[item.subject] <= 0) {
-            continue;
-          }
-          insert.run(
-            studentId,
-            studyDate,
-            item.id,
-            item.subject,
-            sortOrder,
-            createdAt
-          );
-          remaining[item.subject] -= 1;
-          sortOrder += 1;
+      `);
+      for (const item of getDailyItems(items, studyDate)) {
+        if (remaining[item.subject] <= 0) {
+          continue;
         }
+        insert.run(
+          studentId,
+          studyDate,
+          item.id,
+          item.subject,
+          sortOrder,
+          createdAt
+        );
+        remaining[item.subject] -= 1;
+        sortOrder += 1;
       }
+    }
 
-      return {
-        requiredItemIds: this.listRequirementIds(studentId, studyDate),
-        stars: getStudentStarSummary(this.db, studentId, studyDate)
-      };
-    }).immediate();
+    return {
+      requiredItemIds: this.listRequirementIds(studentId, studyDate),
+      stars: getStudentStarSummary(this.db, studentId, studyDate)
+    };
   }
 
   getGuardianPlan(studentId: string, studyDate: string): GuardianDailyPlan {

@@ -41,7 +41,14 @@ export function createFakeApi(overrides: Record<string, unknown> = {}) {
     logout: vi.fn().mockResolvedValue(undefined),
     studentLogin: vi.fn().mockResolvedValue(studentLoginResult),
     getToday: vi.fn().mockResolvedValue({
+      planId: "plan-daily-1",
+      planKind: "daily" as const,
+      recoverySourcePlanId: null,
       date: "2026-07-16",
+      submitUntil: "2026-07-17T14:59:59.999Z",
+      offlineEpoch: 1,
+      activityCursor: 0,
+      studentDisplayName: "수아",
       completedItemIds: [],
       requiredItemIds: ["ko-01", "ko-02", "math-01", "math-02"],
       stars: {
@@ -79,6 +86,7 @@ export function createFakeApi(overrides: Record<string, unknown> = {}) {
       readingPass: true,
       mathPass: null,
       completed: true,
+      activityCursor: 1,
       starAward: {
         awarded: true,
         amount: 1,

@@ -9,6 +9,7 @@ import {
 } from "../../src/server/db/seed";
 import { StarRepository } from "../../src/server/stars/repository";
 import { StarService } from "../../src/server/stars/service";
+import { DailyPlanService } from "../../src/server/stars/daily-plan";
 import {
   createTestHarness,
   type TestClient
@@ -22,6 +23,17 @@ const FAMILY = {
   studentName: "수아"
 };
 const CHILD_SAFE_GUARDIAN_REASON = "보호자가 별을 확인했어요.";
+
+function materializeMaintenancePlan(
+  harness: Harness,
+  studentId: string,
+  studyDate: string
+): void {
+  new DailyPlanService(
+    harness.db,
+    () => new Date("2026-07-15T03:00:00.000Z")
+  ).ensure(studentId, studyDate);
+}
 
 async function authenticateFamily(harness: Harness): Promise<{
   guardian: TestClient;
@@ -262,11 +274,8 @@ describe("idle deductions and missed-plan maintenance", () => {
   });
 
   it("creates two ordered missed-plan candidates only after the KST cutoff and is idempotent", async () => {
-    const { student, studentId } = await authenticateFamily(harness);
-    expect((await student.request(
-      "GET",
-      "/api/student/today?date=2026-07-14"
-    )).statusCode).toBe(200);
+    const { studentId } = await authenticateFamily(harness);
+    materializeMaintenancePlan(harness, studentId, "2026-07-14");
     const { generateMissedPlanCandidates } = await import(
       "../../src/server/stars/maintenance"
     );
@@ -438,8 +447,8 @@ describe("idle deductions and missed-plan maintenance", () => {
   });
 
   it("approves one candidate idempotently and waives another without a ledger event", async () => {
-    const { guardian, student, studentId } = await authenticateFamily(harness);
-    await student.request("GET", "/api/student/today?date=2026-07-14");
+    const { guardian, studentId } = await authenticateFamily(harness);
+    materializeMaintenancePlan(harness, studentId, "2026-07-14");
     const { generateMissedPlanCandidates } = await import(
       "../../src/server/stars/maintenance"
     );
@@ -916,7 +925,7 @@ describe("idle deductions and missed-plan maintenance", () => {
       const stars = await student.request("GET", "/api/student/stars");
       const today = await student.request(
         "GET",
-        "/api/student/today?date=2026-07-15"
+        "/api/student/today"
       );
       expect(stars.statusCode).toBe(200);
       expect(today.statusCode).toBe(200);
@@ -970,8 +979,8 @@ describe("idle deductions and missed-plan maintenance", () => {
   });
 
   it("writes a zero-balance approval audit and rolls back approval when processing fails", async () => {
-    const { guardian, student } = await authenticateFamily(harness);
-    await student.request("GET", "/api/student/today?date=2026-07-14");
+    const { guardian, studentId } = await authenticateFamily(harness);
+    materializeMaintenancePlan(harness, studentId, "2026-07-14");
     const { generateMissedPlanCandidates } = await import(
       "../../src/server/stars/maintenance"
     );

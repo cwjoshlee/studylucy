@@ -64,7 +64,14 @@ async function withDatabase<T>(
 
 function sanitizeTodayPlan(plan: TodayPlan): TodayPlan {
   return {
+    planId: plan.planId,
+    planKind: plan.planKind,
+    recoverySourcePlanId: plan.recoverySourcePlanId,
     date: plan.date,
+    submitUntil: plan.submitUntil,
+    offlineEpoch: plan.offlineEpoch,
+    activityCursor: plan.activityCursor,
+    studentDisplayName: plan.studentDisplayName,
     completedItemIds: [...plan.completedItemIds],
     requiredItemIds: [...plan.requiredItemIds],
     stars: {
@@ -90,6 +97,24 @@ export function cacheTodayPlan(plan: TodayPlan): Promise<void> {
 
 export function loadCachedTodayPlan(date: string): Promise<TodayPlan | undefined> {
   return withDatabase((database) => database.get("todayPlans", date));
+}
+
+export function updateCachedPlanActivityCursor(
+  planId: string,
+  activityCursor: number
+): Promise<void> {
+  return withDatabase(async (database) => {
+    const transaction = database.transaction("todayPlans", "readwrite");
+    const plans = await transaction.store.getAll();
+    const plan = plans.find((candidate) => candidate.planId === planId);
+    if (plan !== undefined) {
+      await transaction.store.put({
+        ...plan,
+        activityCursor: Math.max(plan.activityCursor, activityCursor)
+      });
+    }
+    await transaction.done;
+  });
 }
 
 async function publishQueueCounts(): Promise<void> {

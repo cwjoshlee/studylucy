@@ -14,15 +14,18 @@ import {
   listQueuedIdleEvents,
   loadCachedTodayPlan,
   queueAttempt,
-  queueIdleEvent
+  queueIdleEvent,
+  updateCachedPlanActivityCursor
 } from "../../src/client/offline/db";
 import { syncPending, type SyncApi } from "../../src/client/offline/sync";
 
 const attempt: AttemptInput = {
   clientAttemptId: "client-attempt-0001",
+  planId: "plan-daily-1",
   itemId: "korean-1",
   contentVersion: 1,
   studyDate: "2026-07-16",
+  occurredAt: "2026-07-16T01:10:00.000Z",
   readingScore: 100,
   missedTokens: [],
   mathAnswer: null,
@@ -45,6 +48,7 @@ const attemptReceipt: AttemptReceipt = {
   readingPass: true,
   mathPass: null,
   completed: true,
+  activityCursor: 4,
   starAward: {
     awarded: false,
     amount: 0,
@@ -68,7 +72,14 @@ const confirmedStars: StudentStarSummary = {
 };
 
 const todayPlan: TodayPlan = {
+  planId: "plan-daily-1",
+  planKind: "daily",
+  recoverySourcePlanId: null,
   date: "2026-07-16",
+  submitUntil: "2026-07-17T14:59:59.999Z",
+  offlineEpoch: 3,
+  activityCursor: 2,
+  studentDisplayName: "수아",
   completedItemIds: [],
   requiredItemIds: ["korean-1"],
   stars: confirmedStars,
@@ -150,6 +161,8 @@ describe("offline learning synchronization", () => {
     await queueAttempt(unsafeAttempt);
     await queueIdleEvent(unsafeIdle);
 
+    await expect(loadCachedTodayPlan(todayPlan.date)).resolves.toEqual(todayPlan);
+
     const stored = JSON.stringify({
       plan: await loadCachedTodayPlan(todayPlan.date),
       attempts: await listQueuedAttempts(),
@@ -167,6 +180,19 @@ describe("offline learning synchronization", () => {
       expect(stored).not.toContain(secret);
     }
     expect(stored).toContain("별빛이");
+  });
+
+  it("updates only the matching cached plan with an online receipt cursor", async () => {
+    await cacheTodayPlan(todayPlan);
+
+    await updateCachedPlanActivityCursor(todayPlan.planId, 9);
+    expect(await loadCachedTodayPlan(todayPlan.date)).toEqual({
+      ...todayPlan,
+      activityCursor: 9
+    });
+
+    await updateCachedPlanActivityCursor("different-plan", 12);
+    expect((await loadCachedTodayPlan(todayPlan.date))?.activityCursor).toBe(9);
   });
 
   it("sends attempts before idle events, removes duplicate acknowledgements, and refreshes confirmed stars", async () => {

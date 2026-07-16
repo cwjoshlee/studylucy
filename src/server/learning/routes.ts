@@ -1,20 +1,15 @@
 import type { FastifyInstance, FastifyReply } from "fastify";
 import { z } from "zod";
 import { requireRole } from "../auth/routes";
-import {
-  AttemptInputSchema
-} from "../../shared/learning";
+import { AttemptInputSchema } from "../../shared/learning";
+import { StudyDateSchema } from "../../shared/study-date";
 import {
   LearningError,
   LearningService,
   type LearningServiceDeps
 } from "./service";
 
-const StudyDateSchema = z.string().regex(/^\d{4}-\d{2}-\d{2}$/);
-const ClientAttemptIdSchema = AttemptInputSchema.pick({
-  clientAttemptId: true
-});
-const TodayQuerySchema = z.object({ date: StudyDateSchema });
+const TodayQuerySchema = z.object({}).strict();
 const ProgressQuerySchema = z.object({
   from: StudyDateSchema,
   to: StudyDateSchema
@@ -50,8 +45,15 @@ export function registerLearningRoutes(
         sendInvalidRequest(reply);
         return;
       }
+      if (request.currentTrustedDeviceId === null) {
+        await reply.code(403).send({ code: "DEVICE_NOT_TRUSTED" });
+        return;
+      }
       await reply.send(
-        service.getTodayPlan(request.currentUser!.id, query.data.date)
+        service.getTodayPlan(
+          request.currentUser!.id,
+          request.currentTrustedDeviceId
+        )
       );
     }
   );
@@ -60,26 +62,19 @@ export function registerLearningRoutes(
     "/api/student/attempts",
     { preHandler: requireRole("student") },
     async (request, reply) => {
-      const id = ClientAttemptIdSchema.safeParse(request.body);
-      if (id.success) {
-        const duplicate = service.findDuplicateAttempt(
-          request.currentUser!.id,
-          id.data.clientAttemptId
-        );
-        if (duplicate !== null) {
-          await reply.code(200).send(duplicate);
-          return;
-        }
-      }
-
       const body = AttemptInputSchema.safeParse(request.body);
       if (!body.success) {
         sendInvalidRequest(reply);
         return;
       }
+      if (request.currentTrustedDeviceId === null) {
+        await reply.code(403).send({ code: "DEVICE_NOT_TRUSTED" });
+        return;
+      }
       try {
         const receipt = service.saveAttempt(
           request.currentUser!.id,
+          request.currentTrustedDeviceId,
           body.data
         );
         await reply.code(receipt.duplicate ? 200 : 201).send(receipt);

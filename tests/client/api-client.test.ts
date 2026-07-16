@@ -59,6 +59,7 @@ describe("ApiClient", () => {
       readingPass: true,
       mathPass: null,
       completed: true,
+      activityCursor: 8,
       starAward: { awarded: false, amount: 0, balance: 7, eventId: "star-1" }
     };
     const fetcher = vi.fn().mockResolvedValue(new Response(
@@ -68,6 +69,21 @@ describe("ApiClient", () => {
     const api = new ApiClient(fetcher);
 
     await expect(api.saveAttempt({} as never)).resolves.toEqual(receipt);
+  });
+
+  it("requests the server-current daily plan without a client date query", async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(
+      JSON.stringify({ planId: "plan-daily-1" }),
+      { status: 200, headers: { "content-type": "application/json" } }
+    ));
+    const api = new ApiClient(fetcher);
+
+    await api.getToday();
+
+    expect(fetcher).toHaveBeenCalledWith(
+      "/api/student/today",
+      expect.objectContaining({ method: "GET" })
+    );
   });
 
   it("sends guardian ledger filters with the hard 100-row page limit", async () => {
@@ -229,7 +245,7 @@ describe("ApiClient", () => {
       { onAuthorityFailure }
     );
 
-    await expect(api.getToday("2026-07-16")).rejects.toMatchObject({
+    await expect(api.getToday()).rejects.toMatchObject({
       status: 403,
       code: "DEVICE_REVOKED"
     });

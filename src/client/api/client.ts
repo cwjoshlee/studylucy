@@ -156,8 +156,8 @@ export class ApiClient {
     return this.request("POST", "/api/auth/logout");
   }
 
-  getToday(date: string): Promise<TodayPlan> {
-    return this.request("GET", `/api/student/today?date=${encodeURIComponent(date)}`);
+  getToday(): Promise<TodayPlan> {
+    return this.request("GET", "/api/student/today");
   }
 
   saveAttempt(input: AttemptInput): Promise<AttemptReceipt> {

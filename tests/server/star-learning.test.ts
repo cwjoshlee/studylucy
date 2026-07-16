@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { getDailyItems } from "../../src/shared/daily-order";
+import type { TodayPlan } from "../../src/shared/learning";
 import { INITIAL_ITEMS } from "../../src/server/db/seed";
 import { StarRepository } from "../../src/server/stars/repository";
 import {
@@ -19,87 +20,37 @@ async function authenticateStudent(
   harness: Harness,
   student: TestClient
 ): Promise<void> {
-  expect(
-    (
-      await student.request("POST", "/api/auth/setup", {
-        ...FAMILY,
-        setupSecret: harness.config.setupSecret
-      })
-    ).statusCode
-  ).toBe(201);
-  expect(
-    (
-      await student.request("POST", "/api/auth/guardian/login", {
-        password: FAMILY.password
-      })
-    ).statusCode
-  ).toBe(204);
-  expect(
-    (
-      await student.request("POST", "/api/guardian/devices/current", {
-        name: "수아 갤럭시 탭"
-      })
-    ).statusCode
-  ).toBe(201);
-  expect(
-    (
-      await student.request("PUT", "/api/auth/student-pin", {
-        pin: "2580"
-      })
-    ).statusCode
-  ).toBe(204);
-  expect(
-    (await student.request("POST", "/api/auth/logout")).statusCode
-  ).toBe(204);
-  const studentLogin = await student.request(
-    "POST",
-    "/api/auth/student/login",
-    { pin: "2580" }
-  );
-  expect(studentLogin.statusCode).toBe(200);
-  expect(studentLogin.json()).toEqual({
-    offlineAccessUntil: "2026-07-15T14:59:59.999Z"
-  });
+  expect((await student.request("POST", "/api/auth/setup", {
+    ...FAMILY,
+    setupSecret: harness.config.setupSecret
+  })).statusCode).toBe(201);
+  expect((await student.request("POST", "/api/auth/guardian/login", {
+    password: FAMILY.password
+  })).statusCode).toBe(204);
+  expect((await student.request("POST", "/api/guardian/devices/current", {
+    name: "수아 갤럭시 탭"
+  })).statusCode).toBe(201);
+  expect((await student.request("PUT", "/api/auth/student-pin", {
+    pin: "2580"
+  })).statusCode).toBe(204);
+  expect((await student.request("POST", "/api/auth/logout")).statusCode)
+    .toBe(204);
+  expect((await student.request("POST", "/api/auth/student/login", {
+    pin: "2580"
+  })).statusCode).toBe(200);
 }
 
-async function loginStudentOnNewDevice(
-  harness: Harness,
-  student: TestClient,
-  name: string
-): Promise<void> {
-  expect(
-    (
-      await student.request("POST", "/api/auth/guardian/login", {
-        password: FAMILY.password
-      })
-    ).statusCode
-  ).toBe(204);
-  expect(
-    (
-      await student.request("POST", "/api/guardian/devices/current", { name })
-    ).statusCode
-  ).toBe(201);
-  expect(
-    (await student.request("POST", "/api/auth/logout")).statusCode
-  ).toBe(204);
-  const studentLogin = await student.request(
-    "POST",
-    "/api/auth/student/login",
-    { pin: "2580" }
-  );
-  expect(studentLogin.statusCode).toBe(200);
-  expect(studentLogin.json()).toEqual({
-    offlineAccessUntil: "2026-07-15T14:59:59.999Z"
-  });
+async function getToday(student: TestClient): Promise<TodayPlan> {
+  const response = await student.request("GET", "/api/student/today");
+  expect(response.statusCode).toBe(200);
+  return response.json() as TodayPlan;
 }
 
 function expectedRequiredIds(studyDate: string): string[] {
   const counts = { korean: 0, math: 0 };
   return getDailyItems(INITIAL_ITEMS, studyDate)
     .filter((item) => {
-      if (counts[item.subject] >= 2) {
-        return false;
-      }
+      if (counts[item.subject] >= 2) return false;
       counts[item.subject] += 1;
       return true;
     })
@@ -107,30 +58,30 @@ function expectedRequiredIds(studyDate: string): string[] {
 }
 
 function passingAttempt(
-  item: {
-    id: string;
-    version: number;
-    payload: { kind: string; answer?: number };
-  },
+  plan: TodayPlan,
+  item: TodayPlan["items"][number],
   clientAttemptId: string,
-  studyDate: string
+  overrides: Record<string, unknown> = {}
 ) {
   return {
     clientAttemptId,
+    planId: plan.planId,
     itemId: item.id,
     contentVersion: item.version,
-    studyDate,
+    studyDate: plan.date,
+    occurredAt: "2026-07-15T03:05:00.000Z",
     readingScore: 100,
     missedTokens: [],
     mathAnswer: item.payload.kind === "math-story"
       ? item.payload.answer
       : null,
     durationMs: 12_000,
-    difficultyFeedback: null
+    difficultyFeedback: null,
+    ...overrides
   };
 }
 
-describe("required learning star awards", () => {
+describe("issued-plan required learning star awards", () => {
   let harness: Harness;
 
   beforeEach(async () => {
@@ -141,37 +92,16 @@ describe("required learning star awards", () => {
     await harness.close();
   });
 
-  it("materializes a stable default plan with two Korean and two math items", async () => {
+  it("snapshots a stable default requirement set into the issued plan", async () => {
     const student = harness.client();
     await authenticateStudent(harness, student);
 
-    const first = await student.request(
-      "GET",
-      "/api/student/today?date=2026-07-16"
-    );
-    const second = await student.request(
-      "GET",
-      "/api/student/today?date=2026-07-16"
-    );
-
-    expect(first.statusCode).toBe(200);
-    expect(second.statusCode).toBe(200);
-    expect(first.json().requiredItemIds).toEqual(
-      expectedRequiredIds("2026-07-16")
-    );
-    expect(second.json().requiredItemIds).toEqual(
-      first.json().requiredItemIds
-    );
-    const requiredSubjects = first.json().requiredItemIds.map(
-      (itemId: string) => first.json().items.find(
-        (item: { id: string }) => item.id === itemId
-      ).payload.subject
-    );
-    expect(requiredSubjects.filter((subject: string) => subject === "korean"))
-      .toHaveLength(2);
-    expect(requiredSubjects.filter((subject: string) => subject === "math"))
-      .toHaveLength(2);
-    expect(first.json().stars).toEqual({
+    const first = await getToday(student);
+    const second = await getToday(student);
+    expect(first.requiredItemIds).toEqual(expectedRequiredIds("2026-07-15"));
+    expect(second.requiredItemIds).toEqual(first.requiredItemIds);
+    expect(second.items).toEqual(first.items);
+    expect(first.stars).toEqual({
       balance: 0,
       earnedToday: 0,
       deductedToday: 0,
@@ -183,106 +113,86 @@ describe("required learning star awards", () => {
              is_rest_day AS isRestDay
       FROM daily_plan_settings
     `).get()).toEqual({ koreanTarget: 2, mathTarget: 2, isRestDay: 0 });
+    expect(harness.db.prepare(`
+      SELECT item_id AS itemId, is_required AS isRequired
+      FROM issued_plan_items
+      WHERE plan_id = ?
+      ORDER BY sort_order
+    `).all(first.planId).filter((row) => (
+      row as { isRequired: number }
+    ).isRequired === 1)).toEqual(
+      first.requiredItemIds.map((itemId) => ({ itemId, isRequired: 1 }))
+    );
   });
 
-  it("awards a required item once and persists stable receipts for retries", async () => {
+  it("awards one required-item source and keeps retry receipts idempotent", async () => {
     const student = harness.client();
     await authenticateStudent(harness, student);
-    const plan = await student.request(
-      "GET",
-      "/api/student/today?date=2026-07-16"
-    );
-    const item = plan.json().items.find(
-      (candidate: { id: string }) =>
-        candidate.id === plan.json().requiredItemIds[0]
-    );
-    const input = passingAttempt(
-      item,
-      "client-required-attempt-01",
-      "2026-07-16"
-    );
+    const plan = await getToday(student);
+    const item = plan.items.find(
+      (candidate) => candidate.id === plan.requiredItemIds[0]
+    )!;
+    const input = passingAttempt(plan, item, "attempt-required-0001");
 
-    const first = await student.request(
+    const first = await student.request("POST", "/api/student/attempts", input);
+    expect(first.statusCode).toBe(201);
+    expect(first.json()).toMatchObject({
+      duplicate: false,
+      activityCursor: 1,
+      starAward: {
+        awarded: true,
+        amount: 1,
+        balance: 1,
+        eventId: expect.any(String)
+      }
+    });
+    const duplicate = await student.request(
       "POST",
       "/api/student/attempts",
       input
     );
-    expect(first.statusCode).toBe(201);
-    expect(first.json().starAward).toMatchObject({
-      awarded: true,
-      amount: 1,
-      balance: 1,
-      eventId: expect.any(String)
-    });
-
-    const studentId = (harness.db.prepare(`
-      SELECT id FROM users WHERE role = 'student'
-    `).get() as { id: string }).id;
-    new StarRepository(harness.db).apply({
-      studentId,
-      delta: 5,
-      reason: "GUARDIAN_BONUS",
-      reasonText: "나중에 받은 보호자 보너스",
-      studyDate: "2026-07-16",
-      actorType: "guardian",
-      sourceKey: "guardian:receipt-stability",
-      createdAt: "2026-07-16T04:00:00.000Z"
-    });
-
-    const invalidDuplicate = await student.request(
-      "POST",
-      "/api/student/attempts",
-      {
-        ...input,
-        itemId: "missing-item",
-        contentVersion: 999,
-        readingScore: 101,
-        missedTokens: ["재전송 값은 무시"]
-      }
-    );
-    expect(invalidDuplicate.statusCode).toBe(200);
-    expect(invalidDuplicate.json()).toEqual({
+    expect(duplicate.statusCode).toBe(200);
+    expect(duplicate.json()).toEqual({
       ...first.json(),
       duplicate: true
     });
 
-    const fresh = await student.request(
+    const secondAttempt = await student.request(
       "POST",
       "/api/student/attempts",
-      {
-        ...input,
-        clientAttemptId: "client-required-attempt-02"
-      }
+      passingAttempt(plan, item, "attempt-required-0002")
     );
-    expect(fresh.statusCode).toBe(201);
-    expect(fresh.json().starAward).toEqual({
+    expect(secondAttempt.statusCode).toBe(201);
+    expect(secondAttempt.json().starAward).toEqual({
       awarded: false,
       amount: 0,
-      balance: 6,
+      balance: 1,
       eventId: first.json().starAward.eventId
     });
     expect(harness.db.prepare(`
-      SELECT COUNT(*) AS count
-      FROM star_events
+      SELECT source_key AS sourceKey FROM star_events
       WHERE reason_code = 'REQUIRED_ITEM_COMPLETED'
-    `).get()).toEqual({ count: 1 });
+    `).all()).toEqual([{
+      sourceKey: `required:${studentId(harness)}:${plan.date}:${item.id}`
+    }]);
   });
 
-  it("materializes requirements before a direct attempt and shares balance across devices", async () => {
-    const firstDevice = harness.client();
-    await authenticateStudent(harness, firstDevice);
-    const studyDate = "2026-07-17";
-    const requiredItemId = expectedRequiredIds(studyDate)[0]!;
-    const payload = INITIAL_ITEMS.find((item) => item.id === requiredItemId)!;
+  it("uses required=true from issuance even after the mutable requirement is deleted", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    const plan = await getToday(student);
+    const item = plan.items.find(
+      (candidate) => candidate.id === plan.requiredItemIds[0]
+    )!;
+    harness.db.prepare(`
+      DELETE FROM daily_requirements
+      WHERE student_id = ? AND study_date = ? AND item_id = ?
+    `).run(studentId(harness), plan.date, item.id);
 
-    const response = await firstDevice.request(
+    const response = await student.request(
       "POST",
       "/api/student/attempts",
-      passingAttempt(
-        { id: payload.id, version: 1, payload },
-        "client-direct-required-01",
-        studyDate
-      )
+      passingAttempt(plan, item, "attempt-required-snapshot-0001")
     );
     expect(response.statusCode).toBe(201);
     expect(response.json().starAward).toMatchObject({
@@ -292,54 +202,64 @@ describe("required learning star awards", () => {
       eventId: expect.any(String)
     });
     expect(harness.db.prepare(`
-      SELECT COUNT(*) AS count FROM daily_requirements WHERE study_date = ?
-    `).get(studyDate)).toEqual({ count: 4 });
-
-    const secondDevice = harness.client();
-    await loginStudentOnNewDevice(harness, secondDevice, "수아 두 번째 태블릿");
-    const secondPlan = await secondDevice.request(
-      "GET",
-      `/api/student/today?date=${studyDate}`
-    );
-    expect(secondPlan.statusCode).toBe(200);
-    expect(secondPlan.json().requiredItemIds).toEqual(
-      expectedRequiredIds(studyDate)
-    );
-    expect(secondPlan.json().stars).toEqual({
-      balance: 1,
-      earnedToday: 1,
-      deductedToday: 0,
-      lastReason: "필수 학습을 완료했어요"
-    });
+      SELECT COUNT(*) AS count FROM star_events
+      WHERE reason_code = 'REQUIRED_ITEM_COMPLETED'
+    `).get()).toEqual({ count: 1 });
   });
 
-  it("awards zero for failed required and passing optional attempts", async () => {
+  it("uses required=false from issuance even after a mutable requirement is added", async () => {
     const student = harness.client();
     await authenticateStudent(harness, student);
-    const studyDate = "2026-07-18";
-    const plan = await student.request(
-      "GET",
-      `/api/student/today?date=${studyDate}`
-    );
-    const requiredItem = plan.json().items.find(
-      (item: { id: string }) => item.id === plan.json().requiredItemIds[0]
-    );
-    const optionalItem = plan.json().items.find(
-      (item: { id: string }) => !plan.json().requiredItemIds.includes(item.id)
+    const plan = await getToday(student);
+    const item = plan.items.find(
+      (candidate) => !plan.requiredItemIds.includes(candidate.id)
+    )!;
+    harness.db.prepare(`
+      INSERT INTO daily_requirements (
+        student_id, study_date, item_id, subject, sort_order, created_at
+      ) VALUES (?, ?, ?, ?, 99, ?)
+    `).run(
+      studentId(harness),
+      plan.date,
+      item.id,
+      item.payload.subject,
+      "2026-07-15T03:03:00.000Z"
     );
 
-    const failed = await student.request(
+    const response = await student.request(
       "POST",
       "/api/student/attempts",
-      {
-        ...passingAttempt(
-          requiredItem,
-          "client-failed-required-01",
-          studyDate
-        ),
-        readingScore: 0
-      }
+      passingAttempt(plan, item, "attempt-optional-snapshot-0001")
     );
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      completed: true,
+      starAward: {
+        awarded: false,
+        amount: 0,
+        balance: 0,
+        eventId: null
+      }
+    });
+    expect(harness.db.prepare("SELECT COUNT(*) AS count FROM star_events").get())
+      .toEqual({ count: 0 });
+  });
+
+  it("awards zero for failed required and passing optional snapshot items", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    const plan = await getToday(student);
+    const required = plan.items.find(
+      (candidate) => candidate.id === plan.requiredItemIds[0]
+    )!;
+    const optional = plan.items.find(
+      (candidate) => !plan.requiredItemIds.includes(candidate.id)
+    )!;
+
+    const failed = await student.request("POST", "/api/student/attempts", {
+      ...passingAttempt(plan, required, "attempt-failed-required-0001"),
+      readingScore: 0
+    });
     expect(failed.statusCode).toBe(201);
     expect(failed.json().starAward).toEqual({
       awarded: false,
@@ -348,72 +268,51 @@ describe("required learning star awards", () => {
       eventId: null
     });
 
-    const optional = await student.request(
+    const optionalResult = await student.request(
       "POST",
       "/api/student/attempts",
-      passingAttempt(optionalItem, "client-optional-01", studyDate)
+      passingAttempt(plan, optional, "attempt-optional-0001")
     );
-    expect(optional.statusCode).toBe(201);
-    expect(optional.json().completed).toBe(true);
-    expect(optional.json().starAward).toEqual({
+    expect(optionalResult.statusCode).toBe(201);
+    expect(optionalResult.json().starAward).toEqual({
       awarded: false,
       amount: 0,
       balance: 0,
       eventId: null
     });
 
-    const laterPassingRequired = await student.request(
+    const laterPass = await student.request(
       "POST",
       "/api/student/attempts",
-      passingAttempt(
-        requiredItem,
-        "client-passing-required-after-fail-01",
-        studyDate
-      )
+      passingAttempt(plan, required, "attempt-required-after-fail-0001")
     );
-    expect(laterPassingRequired.json().starAward).toMatchObject({
+    expect(laterPass.json().starAward).toMatchObject({
       awarded: true,
       amount: 1,
       balance: 1,
       eventId: expect.any(String)
     });
-    expect(harness.db.prepare(`
-      SELECT COUNT(*) AS count FROM star_events
-    `).get()).toEqual({ count: 1 });
   });
 
-  it("materializes no required items on a rest day", async () => {
+  it("snapshots no required items on a server-current rest day", async () => {
     const student = harness.client();
     await authenticateStudent(harness, student);
-    const studyDate = "2026-07-19";
-    const studentId = (harness.db.prepare(`
-      SELECT id FROM users WHERE role = 'student'
-    `).get() as { id: string }).id;
     harness.db.prepare(`
       INSERT INTO daily_plan_settings (
         student_id, study_date, korean_target, math_target,
         is_rest_day, updated_at
-      ) VALUES (?, ?, 2, 2, 1, ?)
-    `).run(studentId, studyDate, "2026-07-18T21:00:00.000Z");
+      ) VALUES (?, '2026-07-15', 2, 2, 1, ?)
+    `).run(studentId(harness), "2026-07-14T21:00:00.000Z");
 
-    const plan = await student.request(
-      "GET",
-      `/api/student/today?date=${studyDate}`
-    );
-    expect(plan.statusCode).toBe(200);
-    expect(plan.json().requiredItemIds).toEqual([]);
+    const plan = await getToday(student);
+    expect(plan.requiredItemIds).toEqual([]);
     expect(harness.db.prepare(`
-      SELECT COUNT(*) AS count FROM daily_requirements WHERE study_date = ?
-    `).get(studyDate)).toEqual({ count: 0 });
-
+      SELECT COUNT(*) AS count FROM issued_plan_items WHERE is_required = 1
+    `).get()).toEqual({ count: 0 });
     const attempt = await student.request(
       "POST",
       "/api/student/attempts",
-      passingAttempt(
-        plan.json().items[0],
-        "client-rest-day-optional-01",
-        studyDate
-      )
+      passingAttempt(plan, plan.items[0]!, "attempt-rest-day-0001")
     );
     expect(attempt.json().starAward).toEqual({
       awarded: false,
@@ -423,22 +322,14 @@ describe("required learning star awards", () => {
     });
   });
 
-  it("rolls back both the attempt and first award when receipt persistence fails", async () => {
+  it("rolls back attempt, star, receipt, and cursor when receipt persistence fails", async () => {
     const student = harness.client();
     await authenticateStudent(harness, student);
-    const studyDate = "2026-07-20";
-    const plan = await student.request(
-      "GET",
-      `/api/student/today?date=${studyDate}`
-    );
-    const requiredItem = plan.json().items.find(
-      (item: { id: string }) => item.id === plan.json().requiredItemIds[0]
-    );
-    const input = passingAttempt(
-      requiredItem,
-      "client-atomic-required-01",
-      studyDate
-    );
+    const plan = await getToday(student);
+    const required = plan.items.find(
+      (candidate) => candidate.id === plan.requiredItemIds[0]
+    )!;
+    const input = passingAttempt(plan, required, "attempt-atomic-0001");
     harness.db.exec(`
       CREATE TRIGGER fail_attempt_star_receipt
       BEFORE INSERT ON attempt_star_receipts
@@ -447,34 +338,68 @@ describe("required learning star awards", () => {
       END;
     `);
 
-    const failed = await student.request(
-      "POST",
-      "/api/student/attempts",
-      input
-    );
+    const failed = await student.request("POST", "/api/student/attempts", input);
     expect(failed.statusCode).toBe(500);
+    expect(harness.db.prepare("SELECT COUNT(*) AS count FROM attempts").get())
+      .toEqual({ count: 0 });
+    expect(harness.db.prepare("SELECT COUNT(*) AS count FROM star_events").get())
+      .toEqual({ count: 0 });
     expect(harness.db.prepare(`
-      SELECT COUNT(*) AS count FROM attempts
-    `).get()).toEqual({ count: 0 });
-    expect(harness.db.prepare(`
-      SELECT COUNT(*) AS count FROM star_events
-    `).get()).toEqual({ count: 0 });
-    expect(harness.db.prepare(`
-      SELECT COUNT(*) AS count FROM student_star_balances
-    `).get()).toEqual({ count: 0 });
+      SELECT current_cursor AS currentCursor FROM student_activity_cursors
+    `).get()).toEqual({ currentCursor: 0 });
 
     harness.db.exec("DROP TRIGGER fail_attempt_star_receipt");
-    const retry = await student.request(
+    const retry = await student.request("POST", "/api/student/attempts", input);
+    expect(retry.statusCode).toBe(201);
+    expect(retry.json()).toMatchObject({
+      activityCursor: 1,
+      starAward: {
+        awarded: true,
+        amount: 1,
+        balance: 1,
+        eventId: expect.any(String)
+      }
+    });
+  });
+
+  it("reports a later authoritative balance in a new required attempt receipt", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    const plan = await getToday(student);
+    const required = plan.items.find(
+      (candidate) => candidate.id === plan.requiredItemIds[0]
+    )!;
+    const first = await student.request(
       "POST",
       "/api/student/attempts",
-      input
+      passingAttempt(plan, required, "attempt-balance-first-0001")
     );
-    expect(retry.statusCode).toBe(201);
-    expect(retry.json().starAward).toMatchObject({
-      awarded: true,
-      amount: 1,
-      balance: 1,
-      eventId: expect.any(String)
+    new StarRepository(harness.db).apply({
+      studentId: studentId(harness),
+      delta: 5,
+      reason: "GUARDIAN_BONUS",
+      reasonText: "나중에 받은 보호자 보너스",
+      studyDate: plan.date,
+      actorType: "guardian",
+      sourceKey: "guardian:receipt-stability",
+      createdAt: "2026-07-15T04:00:00.000Z"
+    });
+    const second = await student.request(
+      "POST",
+      "/api/student/attempts",
+      passingAttempt(plan, required, "attempt-balance-second-0001")
+    );
+    expect(second.json().starAward).toEqual({
+      awarded: false,
+      amount: 0,
+      balance: 6,
+      eventId: first.json().starAward.eventId
     });
   });
 });
+
+function studentId(harness: Harness): string {
+  return (harness.db.prepare(`
+    SELECT id FROM users WHERE role = 'student'
+  `).get() as { id: string }).id;
+}

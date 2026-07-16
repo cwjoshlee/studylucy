@@ -1,5 +1,6 @@
 import { z } from "zod";
 import type { StudentStarSummary } from "./stars";
+import { StudyDateSchema } from "./study-date";
 
 const BaseItem = z.object({
   id: z.string().min(1),
@@ -28,9 +29,11 @@ export type LearningItemPayload = z.infer<typeof LearningItemPayloadSchema>;
 
 export const AttemptInputSchema = z.object({
   clientAttemptId: z.string().min(12).max(80),
+  planId: z.string().min(1),
   itemId: z.string().min(1),
   contentVersion: z.number().int().positive(),
-  studyDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/),
+  studyDate: StudyDateSchema,
+  occurredAt: z.string().datetime({ offset: true }),
   readingScore: z.number().int().min(0).max(100),
   missedTokens: z.array(z.string().min(1)).max(20),
   mathAnswer: z.number().int().nullable(),
@@ -41,7 +44,14 @@ export const AttemptInputSchema = z.object({
 export type AttemptInput = z.infer<typeof AttemptInputSchema>;
 
 export type TodayPlan = {
+  planId: string;
+  planKind: "daily" | "recovery";
+  recoverySourcePlanId: string | null;
   date: string;
+  submitUntil: string;
+  offlineEpoch: number;
+  activityCursor: number;
+  studentDisplayName: string;
   completedItemIds: string[];
   requiredItemIds: string[];
   stars: StudentStarSummary;
@@ -74,6 +84,7 @@ export type AttemptReceipt = {
   mathPass: boolean | null;
   completed: boolean;
   starAward: StarAwardReceipt;
+  activityCursor: number;
 };
 
 export type SyncResult = { sent: number; remaining: number };

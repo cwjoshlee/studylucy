@@ -1248,7 +1248,9 @@ describe("GuardianDashboard", () => {
       requiredItemIds: ["ko-private", "math-private"]
     };
     const api = createGuardianApi({
-      getGuardianDailyPlan: vi.fn().mockResolvedValue(plan),
+      getGuardianDailyPlan: vi.fn().mockImplementation(
+        (studyDate: string) => Promise.resolve({ ...plan, studyDate })
+      ),
       updateGuardianDailyPlan: vi.fn().mockRejectedValue(
         new ApiError(409, "PLAN_LOCKED")
       )
