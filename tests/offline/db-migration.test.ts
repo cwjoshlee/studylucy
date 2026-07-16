@@ -12,6 +12,7 @@ import {
   getDeviceState,
   getQueueCounts,
   listActivities,
+  listGuardianOfflineRejections,
   listLegacyActivities,
   listRejectedActivities,
   loadCachedTodayPlan,
@@ -268,6 +269,62 @@ describe("IndexedDB v2 authority journal migration", () => {
 
     await markStudentAuthenticated();
     await expect(listActivities()).resolves.toHaveLength(1);
+  });
+
+  it("projects blocked guardian rejections without reading cached plan titles or raw legacy payloads", async () => {
+    const privatePlan = {
+      ...plan,
+      items: [{
+        ...plan.items[0]!,
+        payload: {
+          ...plan.items[0]!.payload,
+          title: "DISTINCTIVE_PRIVATE_CACHED_PLAN_TITLE"
+        }
+      }]
+    };
+    await markStudentAuthenticated();
+    await cacheIssuedPlan(privatePlan, stars);
+    const raw = await openDB(OFFLINE_DB_NAME, OFFLINE_DB_VERSION);
+    await raw.put("rejectedActivities", {
+      clientId: "local-redacted-rejection-0001",
+      kind: "attempt",
+      code: "LEGACY_AUTHORITY_UNAVAILABLE",
+      studyDate: plan.date,
+      itemId: plan.items[0]!.id,
+      occurredAt: null,
+      localLegacyRecord: {
+        clientId: "local-redacted-rejection-0001",
+        kind: "attempt",
+        payload: {
+          clientAttemptId: "local-redacted-rejection-0001",
+          itemId: plan.items[0]!.id,
+          contentVersion: plan.items[0]!.version,
+          studyDate: plan.date,
+          readingScore: 10,
+          missedTokens: ["RAW_LEGACY_SECRET_TOKEN"],
+          mathAnswer: null,
+          durationMs: 1,
+          difficultyFeedback: null
+        }
+      }
+    });
+    await raw.put("meta", { key: "device-state", value: "auth-required" });
+    raw.close();
+
+    await expect(listActivities()).rejects.toMatchObject({ code: "AUTH_REQUIRED" });
+    const projection = await listGuardianOfflineRejections();
+    expect(projection).toEqual([{
+      id: "local-redacted-rejection-0001",
+      studyDate: plan.date,
+      itemId: plan.items[0]!.id,
+      itemTitle: "학습 항목",
+      kind: "attempt",
+      code: "LEGACY_AUTHORITY_UNAVAILABLE",
+      createdAt: `${plan.date}T00:00:00+09:00`
+    }]);
+    expect(JSON.stringify(projection)).not.toMatch(
+      /DISTINCTIVE_PRIVATE|RAW_LEGACY|missedTokens|localLegacyRecord/
+    );
   });
 
   it("loads an offline student only for an unexpired lease, ready state, and same current KST issued daily plan", async () => {

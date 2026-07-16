@@ -654,24 +654,14 @@ export function listGuardianOfflineRejections(): Promise<
   GuardianOfflineRejection[]
 > {
   return withDatabase(async (database) => {
-    const transaction = database.transaction([
-      "rejectedActivities",
-      "todayPlans"
-    ]);
-    const rows = await transaction.objectStore("rejectedActivities").getAll();
-    const plans = await transaction.objectStore("todayPlans").getAll();
+    const transaction = database.transaction("rejectedActivities");
+    const rows = await transaction.store.getAll();
     await transaction.done;
-    const titles = new Map(
-      plans.flatMap((plan) => plan.items.map((item) => [
-        item.id,
-        item.payload.title
-      ] as const))
-    );
     return rows.map((row) => ({
       id: row.clientId,
       studyDate: row.studyDate,
       itemId: row.itemId,
-      itemTitle: titles.get(row.itemId) ?? "학습 항목",
+      itemTitle: "학습 항목",
       kind: row.kind,
       code: row.code,
       createdAt: row.occurredAt ?? `${row.studyDate}T00:00:00+09:00`

@@ -87,5 +87,35 @@ describe("isolated container smoke configuration", () => {
     expect(guide).toContain("컨테이너를 반드시 멈춘 상태");
     expect(guide).not.toContain("fail_candidate()");
     expect(guide.indexOf("cp -- \"$BACKUP\" \"$CANDIDATE\"")).toBe(-1);
+
+    const shellBlocks = [...guide.matchAll(/```sh\n([\s\S]*?)```/g)]
+      .map((match) => match[1] ?? "");
+    const replacement = shellBlocks.find((block) =>
+      block.includes("restore-approved-${STAMP}.sqlite")
+    ) ?? "";
+    const rollback = shellBlocks.find((block) =>
+      block.includes("rollback-candidate-${RESTORE_STAMP}.sqlite")
+    ) ?? "";
+    const stoppedAssertion = 'test -z "$(docker compose ps --status running --services app)"';
+
+    expect(replacement).toContain("set -euo pipefail");
+    expect(replacement).toContain(stoppedAssertion);
+    expect(replacement.indexOf("docker compose stop app"))
+      .toBeLessThan(replacement.indexOf(stoppedAssertion));
+    expect(replacement.indexOf(stoppedAssertion))
+      .toBeLessThan(replacement.indexOf("rm -f -- ./data/sua-learning.db-wal"));
+    expect(replacement.indexOf('test -f "$BACKUP"'))
+      .toBeLessThan(replacement.indexOf("rm -f -- ./data/sua-learning.db-wal"));
+    expect(replacement.indexOf('cp -p -- "$BACKUP" "$CANDIDATE"'))
+      .toBeLessThan(replacement.indexOf("rm -f -- ./data/sua-learning.db-wal"));
+
+    expect(rollback).toContain("set -euo pipefail");
+    expect(rollback).toContain(stoppedAssertion);
+    expect(rollback.indexOf('test -f "$ROLLBACK"'))
+      .toBeLessThan(rollback.indexOf("rm -f -- ./data/sua-learning.db-wal"));
+    expect(rollback.indexOf('cp -p -- "$ROLLBACK" "$ROLLBACK_CANDIDATE"'))
+      .toBeLessThan(rollback.indexOf("rm -f -- ./data/sua-learning.db-wal"));
+    expect(`${replacement}\n${rollback}`).not.toMatch(/2>\/dev\/null|\|\| true/);
+    expect(guide.match(/cp -p -- "\$BACKUP" "\$CANDIDATE"/g)).toHaveLength(1);
   });
 });

@@ -4,7 +4,7 @@
 
 ## 1. 복구 후보 격리 검증
 
-패키지 디렉터리에서 검증할 백업의 경로만 인자로 전달한다.
+패키지 디렉터리에서 검증할 백업 경로만 인자로 전달한다.
 
 ```sh
 cd /volume1/docker/sua-learning
@@ -13,7 +13,7 @@ npm run smoke:restore -- ./data/backups/daily/sua-learning-YYYY-MM-DDTHH-mm-ss-s
 
 `scripts/restore-smoke.sh`는 정리 trap을 가장 먼저 설치한 다음 임시 후보를 만들고, 백업을 그 후보로 복사한 뒤에만 SQLite를 연다. 무결성, 외래 키, 별 원장/잔액 일치, append-only 트리거, 음수 잔액 금지를 검사하고 여섯 가지 비식별 행 수를 출력한다. 성공과 실패 모두에서 후보와 WAL/SHM만 삭제하며 원본 백업과 운영 DB에는 접근하지 않는다.
 
-성공 출력의 마지막 줄은 `BACKUP_RESTORE_SMOKE_OK`여야 한다. 다음 표의 결과를 `docs/phase1-acceptance.md`에 기록한다.
+성공 출력의 마지막 줄은 `BACKUP_RESTORE_SMOKE_OK`여야 한다. 다음 행 수를 `docs/phase1-acceptance.md`에 기록한다.
 
 - `attempts`
 - `star_events`
@@ -22,69 +22,106 @@ npm run smoke:restore -- ./data/backups/daily/sua-learning-YYYY-MM-DDTHH-mm-ss-s
 - `daily_plan_settings`
 - `daily_requirements`
 
-검증 하나라도 실패하면 운영 교체를 진행하지 않는다. 앱 컨테이너를 실행한 상태에서도 이 격리 검증은 가능하지만, 아래 수동 교체 절차와 섞지 않는다.
+검증 하나라도 실패하면 운영 교체를 진행하지 않는다. 앱 컨테이너 실행 중 가능한 이 격리 검증과 아래 수동 교체를 한 명령으로 합치지 않는다.
 
-## 2. 수동 운영 DB 교체
+## 2. 수동 운영 DB 교체와 재시작
 
-이 단계는 자동 smoke가 아니다. 운영자가 검증 결과를 확인하고 교체를 승인한 뒤 수행한다. 운영 DB 파일과 WAL/SHM을 다루는 모든 명령은 앱 컨테이너를 반드시 멈춘 상태에서만 실행한다.
+이 단계는 자동 smoke가 아니다. 운영자가 검증 결과와 백업 경로를 확인하고 교체를 승인한 뒤 아래 블록 전체를 한 셸에서 실행한다. 운영 파일을 바꾸는 구간은 컨테이너를 반드시 멈춘 상태여야 한다. `set -euo pipefail` 상태, 변수와 정지 확인을 다른 코드 블록으로 나누지 않는다.
 
 ```sh
+set -euo pipefail
 cd /volume1/docker/sua-learning
+
 BACKUP=./data/backups/daily/sua-learning-YYYY-MM-DDTHH-mm-ss-sssZ.sqlite
 STAMP=$(date +%Y%m%dT%H%M%S)
 CANDIDATE=./data/restore-approved-${STAMP}.sqlite
 ROLLBACK=./data/pre-restore-${STAMP}.sqlite
 
-docker compose stop app
-docker compose ps app
-```
-
-`docker compose ps app`에서 `app`이 실행 중이 아님을 확인한 다음에만 승인된 백업을 새 후보로 복사하고 운영 DB를 교체한다.
-
-```sh
 test -f "$BACKUP"
+test -f ./data/sua-learning.db
 test ! -e "$CANDIDATE"
+test ! -e "$ROLLBACK"
+test ! -e "${ROLLBACK}-wal"
+test ! -e "${ROLLBACK}-shm"
+
+docker compose stop app
+test -z "$(docker compose ps --status running --services app)"
+
 cp -p -- "$BACKUP" "$CANDIDATE"
 cp -p -- ./data/sua-learning.db "$ROLLBACK"
-test ! -f ./data/sua-learning.db-wal || cp -p -- ./data/sua-learning.db-wal "${ROLLBACK}-wal"
-test ! -f ./data/sua-learning.db-shm || cp -p -- ./data/sua-learning.db-shm "${ROLLBACK}-shm"
+if [[ -f ./data/sua-learning.db-wal ]]; then
+  cp -p -- ./data/sua-learning.db-wal "${ROLLBACK}-wal"
+fi
+if [[ -f ./data/sua-learning.db-shm ]]; then
+  cp -p -- ./data/sua-learning.db-shm "${ROLLBACK}-shm"
+fi
 
-rm -f -- ./data/sua-learning.db-wal ./data/sua-learning.db-shm
 chown 1000:1000 "$CANDIDATE"
 chmod 600 "$CANDIDATE"
+rm -f -- ./data/sua-learning.db-wal ./data/sua-learning.db-shm
 mv -- "$CANDIDATE" ./data/sua-learning.db
-```
 
-컨테이너가 실행 중이면 위 `rm`, `cp`, `mv`를 실행하지 않는다.
-
-## 3. 재시작과 검증
-
-```sh
 docker compose start app
 curl --fail --silent http://127.0.0.1:8787/api/health
 ```
 
-응답이 `{"status":"ok"}`인지 확인한다. 보호자 화면에서 백업 상태와 별 잔액을 확인하고 1단계에서 출력한 여섯 건수를 다시 비교한다.
+정지 assertion, 모든 입력/출력 사전조건, 후보와 롤백 복사가 성공한 뒤에만 운영 WAL/SHM을 제거한다. 응답이 `{"status":"ok"}`인지 확인하고 보호자 화면에서 백업 상태와 별 잔액, 1단계의 여섯 행 수를 다시 비교한다.
 
-## 4. 수동 롤백
+## 3. 수동 롤백
 
-문제가 있으면 앱 컨테이너를 다시 멈추고 상태를 확인한 뒤, 보존한 원본의 복사본으로 되돌린다.
+문제가 있으면 교체 때 기록한 `STAMP` 값을 `RESTORE_STAMP`에 넣고 아래 블록 전체를 한 셸에서 실행한다. 보존한 원본은 직접 이동하지 않고 새 후보로 복사한다. 선택적인 WAL/SHM은 존재할 때만 복사·권한 설정·이동한다.
 
 ```sh
+set -euo pipefail
+cd /volume1/docker/sua-learning
+
+RESTORE_STAMP=YYYYMMDDTHHMMSS
+test "$RESTORE_STAMP" != "YYYYMMDDTHHMMSS"
+ROLLBACK=./data/pre-restore-${RESTORE_STAMP}.sqlite
+ROLLBACK_CANDIDATE=./data/rollback-candidate-${RESTORE_STAMP}.sqlite
+
+test -f "$ROLLBACK"
+test -f ./data/sua-learning.db
+test ! -e "$ROLLBACK_CANDIDATE"
+test ! -e "${ROLLBACK_CANDIDATE}-wal"
+test ! -e "${ROLLBACK_CANDIDATE}-shm"
+
 docker compose stop app
-docker compose ps app
+test -z "$(docker compose ps --status running --services app)"
+
+cp -p -- "$ROLLBACK" "$ROLLBACK_CANDIDATE"
+if [[ -f "${ROLLBACK}-wal" ]]; then
+  cp -p -- "${ROLLBACK}-wal" "${ROLLBACK_CANDIDATE}-wal"
+fi
+if [[ -f "${ROLLBACK}-shm" ]]; then
+  cp -p -- "${ROLLBACK}-shm" "${ROLLBACK_CANDIDATE}-shm"
+fi
+
+chown 1000:1000 "$ROLLBACK_CANDIDATE"
+chmod 600 "$ROLLBACK_CANDIDATE"
+if [[ -f "${ROLLBACK_CANDIDATE}-wal" ]]; then
+  chown 1000:1000 "${ROLLBACK_CANDIDATE}-wal"
+  chmod 600 "${ROLLBACK_CANDIDATE}-wal"
+fi
+if [[ -f "${ROLLBACK_CANDIDATE}-shm" ]]; then
+  chown 1000:1000 "${ROLLBACK_CANDIDATE}-shm"
+  chmod 600 "${ROLLBACK_CANDIDATE}-shm"
+fi
 
 rm -f -- ./data/sua-learning.db-wal ./data/sua-learning.db-shm
-cp -p -- "$ROLLBACK" ./data/rollback-candidate-${STAMP}.sqlite
-mv -- ./data/rollback-candidate-${STAMP}.sqlite ./data/sua-learning.db
-test ! -f "${ROLLBACK}-wal" || cp -p -- "${ROLLBACK}-wal" ./data/sua-learning.db-wal
-test ! -f "${ROLLBACK}-shm" || cp -p -- "${ROLLBACK}-shm" ./data/sua-learning.db-shm
-chown 1000:1000 ./data/sua-learning.db ./data/sua-learning.db-wal ./data/sua-learning.db-shm 2>/dev/null || true
-chmod 600 ./data/sua-learning.db ./data/sua-learning.db-wal ./data/sua-learning.db-shm 2>/dev/null || true
+mv -- "$ROLLBACK_CANDIDATE" ./data/sua-learning.db
+if [[ -f "${ROLLBACK_CANDIDATE}-wal" ]]; then
+  mv -- "${ROLLBACK_CANDIDATE}-wal" ./data/sua-learning.db-wal
+fi
+if [[ -f "${ROLLBACK_CANDIDATE}-shm" ]]; then
+  mv -- "${ROLLBACK_CANDIDATE}-shm" ./data/sua-learning.db-shm
+fi
+
 docker compose start app
+curl --fail --silent http://127.0.0.1:8787/api/health
 ```
 
-롤백에서도 보존 원본을 직접 이동하지 않는다. 컨테이너를 반드시 멈춘 상태에서 새 롤백 후보를 만든다.
+어느 명령이든 실패하면 셸이 즉시 중단된다. 실패한 소유권·권한 변경을 숨기지 않으며, 앱을 임의로 재시작하지 말고 현재 파일과 컨테이너 상태를 먼저 확인한다.
 
 ## DSM 예약 작업은 분리 유지
 

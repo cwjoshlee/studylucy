@@ -73,8 +73,8 @@ git diff --check
 | 항목 | 상태 | 종료 코드/요약 |
 |---|---|---|
 | Node 22 `npm ci` | NOT RUN | - |
-| Node 22 `npm run check` | PASS | 종료 0, 30파일 340/340, typecheck/build 성공 |
-| focused integration | PASS | 종료 0, 13파일 235/235 |
+| Node 22 `npm run check` | PASS | 종료 0, 30파일 341/341, typecheck/build 성공 |
+| focused integration | PASS | 종료 0, 13파일 236/236 |
 | `bash -n scripts/*.sh` | PASS | 종료 0 |
 | `git diff --check` | PASS | 종료 0 |
 | 로컬 생성 SQLite `smoke:restore` | PASS | 종료 0, 비식별 6개 행 수 출력, `BACKUP_RESTORE_SMOKE_OK` |

@@ -104,7 +104,27 @@ describe("predeployment authority integration", () => {
     expect(planA.planId).not.toBe(planB.planId);
     expect(planA.offlineEpoch).not.toBe(planB.offlineEpoch);
 
-    const aItem = planA.items[0]!;
+    const requiredA = planA.requiredItemIds.map((id) =>
+      planA.items.find((item) => item.id === id)!
+    );
+    const requiredB = planB.requiredItemIds.map((id) =>
+      planB.items.find((item) => item.id === id)!
+    );
+    expect(requiredA).toHaveLength(4);
+    expect(requiredB.map((item) => item.id)).toEqual(
+      requiredA.map((item) => item.id)
+    );
+
+    const aItem = requiredA[0]!;
+    const bFirstItem = requiredB[1]!;
+    const preservedSourceItem = requiredA[2]!;
+    const bContinuationItem = requiredB[3]!;
+    const preservedSourceAttempt = passingAttempt(
+      planA,
+      preservedSourceItem,
+      "attempt-device-a-preserved-0001",
+      "2026-07-15T03:05:00.000Z"
+    );
     const learningSession = await a.request(
       "POST",
       "/api/student/learning-sessions",
@@ -116,10 +136,27 @@ describe("predeployment authority integration", () => {
     const bAttempt = await b.request(
       "POST",
       "/api/student/attempts",
-      passingAttempt(planB, planB.items[1]!, "attempt-device-b-first-0001")
+      passingAttempt(planB, bFirstItem, "attempt-device-b-first-0001")
     );
     expect(bAttempt.statusCode).toBe(201);
+    expect(bAttempt.json()).toMatchObject({
+      completed: true,
+      activityCursor: 1,
+      starAward: { awarded: true, amount: 1, balance: 1 }
+    });
     const bAfterFirst = await today(b);
+    expect(bAfterFirst).toMatchObject({
+      planId: planB.planId,
+      offlineEpoch: planB.offlineEpoch,
+      activityCursor: 1,
+      completedItemIds: [bFirstItem.id],
+      stars: {
+        balance: 1,
+        earnedToday: 1,
+        deductedToday: 0,
+        lastReason: "필수 학습을 완료했어요"
+      }
+    });
 
     harness.advanceTime(5 * 60 * 1_000);
     const staleBatch = {
@@ -195,17 +232,18 @@ describe("predeployment authority integration", () => {
     await studentLogin(a);
     const currentA = await today(a);
 
+    const directOldInput = {
+      clientBatchId: "batch-device-a-direct-old-0001",
+      planId: planA.planId,
+      offlineEpoch: planA.offlineEpoch,
+      startCursor: planA.activityCursor,
+      events: [attemptEvent(preservedSourceAttempt, 3)]
+    };
+    expect(directOldInput.events[0]!.payload).toEqual(preservedSourceAttempt);
     const directOld = await a.request(
       "POST",
       "/api/student/offline-batches",
-      {
-        ...staleBatch,
-        clientBatchId: "batch-device-a-direct-old-0001",
-        events: [attemptEvent(
-          passingAttempt(planA, planA.items[2]!, "attempt-device-a-direct-old-0001"),
-          3
-        )]
-      }
+      directOldInput
     );
     expect(directOld.statusCode).toBe(409);
     expect(directOld.json()).toEqual({ code: "PLAN_NOT_ISSUED" });
@@ -224,7 +262,17 @@ describe("predeployment authority integration", () => {
     );
     expect(repeatedRecovery.json()).toEqual(recovery);
 
-    const recoveredItem = recovery.items[2]!;
+    const recoveredItem = recovery.items.find((item) =>
+      item.id === preservedSourceItem.id
+    )!;
+    const reboundPreservedAttempt = {
+      ...preservedSourceAttempt,
+      planId: recovery.planId
+    };
+    expect({
+      ...reboundPreservedAttempt,
+      planId: preservedSourceAttempt.planId
+    }).toEqual(preservedSourceAttempt);
     const recoveryBatch = {
       clientBatchId: "batch-device-a-recovery-0001",
       planId: recovery.planId,
@@ -241,11 +289,12 @@ describe("predeployment authority integration", () => {
           idleStartedAt: "2026-07-15T03:00:00.000Z",
           occurredAt: "2026-07-15T03:05:00.000Z"
         }
-      }, attemptEvent(
-        passingAttempt(recovery, recoveredItem, "attempt-device-a-recovery-0001"),
-        5
-      )]
+      }, attemptEvent(reboundPreservedAttempt, 5)]
     };
+    expect(recoveryBatch.events[1]!.payload).toEqual({
+      ...preservedSourceAttempt,
+      planId: recovery.planId
+    });
     const recovered = await a.request(
       "POST",
       "/api/student/offline-batches",
@@ -253,12 +302,54 @@ describe("predeployment authority integration", () => {
     );
     expect(recovered.statusCode).toBe(200);
     expect(recovered.json()).toMatchObject({
+      activityCursor: 5,
+      stars: {
+        balance: 3,
+        earnedToday: 3,
+        deductedToday: 0,
+        lastReason: "필수 학습을 완료했어요"
+      },
       processedPlan: { planId: recovery.planId, planKind: "recovery" },
       currentDailyPlan: { planId: currentA.planId },
       receipts: [
-        { status: "ORDER_CONFLICT_WAIVED" },
-        { status: "APPLIED" }
+        {
+          status: "ORDER_CONFLICT_WAIVED",
+          idle: { outcome: "order-conflict-waived" }
+        },
+        {
+          clientId: preservedSourceAttempt.clientAttemptId,
+          status: "APPLIED",
+          attempt: { completed: true, starAward: { amount: 1, balance: 3 } }
+        }
       ]
+    });
+    expect(harness.db.prepare(`
+      SELECT client_attempt_id AS clientAttemptId,
+             item_id AS itemId,
+             content_version AS contentVersion,
+             study_date AS studyDate,
+             occurred_at AS occurredAt,
+             reading_score AS readingScore,
+             missed_tokens_json AS missedTokensJson,
+             math_answer_json AS mathAnswerJson,
+             duration_ms AS durationMs,
+             difficulty_feedback AS difficultyFeedback,
+             issued_plan_id AS issuedPlanId
+      FROM attempts WHERE client_attempt_id = ?
+    `).get(preservedSourceAttempt.clientAttemptId)).toEqual({
+      clientAttemptId: preservedSourceAttempt.clientAttemptId,
+      itemId: preservedSourceAttempt.itemId,
+      contentVersion: preservedSourceAttempt.contentVersion,
+      studyDate: preservedSourceAttempt.studyDate,
+      occurredAt: preservedSourceAttempt.occurredAt,
+      readingScore: preservedSourceAttempt.readingScore,
+      missedTokensJson: JSON.stringify(preservedSourceAttempt.missedTokens),
+      mathAnswerJson: preservedSourceAttempt.mathAnswer === null
+        ? null
+        : JSON.stringify(preservedSourceAttempt.mathAnswer),
+      durationMs: preservedSourceAttempt.durationMs,
+      difficultyFeedback: preservedSourceAttempt.difficultyFeedback,
+      issuedPlanId: recovery.planId
     });
     const repeatedBatch = await a.request(
       "POST",
@@ -270,11 +361,62 @@ describe("predeployment authority integration", () => {
     expect(repeatedBatch.json().receipts).toEqual(recovered.json().receipts);
 
     const bStillCurrent = await today(b);
-    expect(bStillCurrent.planId).toBe(bAfterFirst.planId);
-    expect(bStillCurrent.completedItemIds).toEqual(
-      expect.arrayContaining(bAfterFirst.completedItemIds)
+    const completedBeforeContinuation = planB.items
+      .filter((item) => new Set([
+        bFirstItem.id,
+        aItem.id,
+        preservedSourceItem.id
+      ]).has(item.id))
+      .map((item) => item.id);
+    expect(bStillCurrent).toMatchObject({
+      planId: planB.planId,
+      offlineEpoch: planB.offlineEpoch,
+      activityCursor: 5,
+      completedItemIds: completedBeforeContinuation,
+      stars: {
+        balance: 3,
+        earnedToday: 3,
+        deductedToday: 0,
+        lastReason: "필수 학습을 완료했어요"
+      }
+    });
+    expect(bStillCurrent.activityCursor).toBe(recovered.json().activityCursor);
+    expect(bStillCurrent.stars).toEqual(recovered.json().stars);
+    expect(harness.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM star_events
+      WHERE reason_code = 'IDLE_TIMEOUT' OR delta < 0
+    `).get()).toEqual({ count: 0 });
+
+    const continuation = await b.request(
+      "POST",
+      "/api/student/attempts",
+      passingAttempt(
+        planB,
+        bContinuationItem,
+        "attempt-device-b-continuation-0001",
+        "2026-07-15T03:05:00.000Z"
+      )
     );
-    expect(bStillCurrent.stars.balance).toBeGreaterThanOrEqual(bAfterFirst.stars.balance);
+    expect(continuation.statusCode).toBe(201);
+    expect(continuation.json()).toMatchObject({
+      completed: true,
+      activityCursor: 6,
+      starAward: { awarded: true, amount: 1, balance: 4 }
+    });
+    const bAfterContinuation = await today(b);
+    expect(bAfterContinuation).toMatchObject({
+      planId: planB.planId,
+      offlineEpoch: planB.offlineEpoch,
+      activityCursor: 6,
+      completedItemIds: planB.requiredItemIds,
+      stars: {
+        balance: 4,
+        earnedToday: 4,
+        deductedToday: 0,
+        lastReason: "필수 학습을 완료했어요"
+      }
+    });
   });
 
   it("projects only stable redacted rejection summaries for guardians", async () => {
