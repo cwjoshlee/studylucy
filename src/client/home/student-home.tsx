@@ -23,7 +23,15 @@ function studyDate(): string {
   }).format(new Date());
 }
 
-export function StudentHome({ api }: { api: ClientApi }) {
+export function StudentHome({
+  api,
+  onEnterGuardianMode,
+  onLogout
+}: {
+  api: ClientApi;
+  onEnterGuardianMode?: () => Promise<void>;
+  onLogout?: () => Promise<void>;
+}) {
   const [data, setData] = useState<StudentData | null>(null);
   const [failed, setFailed] = useState(false);
   const [queuedCount, setQueuedCount] = useState(0);
@@ -122,6 +130,18 @@ export function StudentHome({ api }: { api: ClientApi }) {
     <div className="student-shell">
       <header className="student-header">
         <p>수아야, 오늘도 한 걸음!</p>
+        <div className="student-account-actions">
+          <button
+            className="button-secondary"
+            onClick={() => void onEnterGuardianMode?.()}
+            type="button"
+          >
+            보호자 모드
+          </button>
+          <button onClick={() => void onLogout?.()} type="button">
+            로그아웃
+          </button>
+        </div>
       </header>
       <aside className="student-shell__left" aria-label="마법 친구">
         <StarBunny />

@@ -1,4 +1,8 @@
-import type { CurrentUser } from "../../shared/auth";
+import type {
+  CurrentUser,
+  StudentLoginResult,
+  TrustedDeviceView
+} from "../../shared/auth";
 import type {
   AttemptInput,
   AttemptReceipt,
@@ -48,6 +52,12 @@ export type BackupStatus = {
   filename?: string;
 };
 
+export type AuthorityPolicyCallbacks = {
+  onSessionEnded?(): void | Promise<void>;
+  onDeviceRevoked?(publicId: string): void | Promise<void>;
+  onAuthorityFailure?(code: string): void | Promise<void>;
+};
+
 export type GuardianLedgerFilters = {
   from?: string;
   to?: string;
@@ -57,7 +67,10 @@ export type GuardianLedgerFilters = {
 };
 
 export class ApiClient {
-  constructor(private fetcher: Fetcher = fetch) {}
+  constructor(
+    private fetcher: Fetcher = fetch,
+    private callbacks: AuthorityPolicyCallbacks = {}
+  ) {}
 
   private async request<T>(
     method: string,
@@ -80,6 +93,13 @@ export class ApiClient {
         "code" in payload && typeof payload.code === "string"
         ? payload.code
         : `HTTP_${response.status}`;
+      if (
+        response.status === 401 ||
+        code.startsWith("DEVICE_") ||
+        code.startsWith("PLAN_")
+      ) {
+        await this.callbacks.onAuthorityFailure?.(code);
+      }
       throw new ApiError(response.status, code);
     }
     if (response.status === 204) return undefined as T;
@@ -98,16 +118,38 @@ export class ApiClient {
     return this.request("POST", "/api/auth/guardian/login", { password });
   }
 
-  registerDevice(name: string): Promise<{ status: "created" }> {
-    return this.request("POST", "/api/auth/devices", { name });
+  registerDevice(name: string): Promise<TrustedDeviceView> {
+    return this.request("POST", "/api/guardian/devices/current", { name });
+  }
+
+  async listTrustedDevices(): Promise<TrustedDeviceView[]> {
+    const result = await this.request<{ devices: TrustedDeviceView[] }>(
+      "GET",
+      "/api/guardian/devices"
+    );
+    return result.devices;
+  }
+
+  async revokeTrustedDevice(publicId: string): Promise<TrustedDeviceView> {
+    const device = await this.request<TrustedDeviceView>(
+      "POST",
+      `/api/guardian/devices/${encodeURIComponent(publicId)}/revoke`
+    );
+    await this.callbacks.onDeviceRevoked?.(publicId);
+    return device;
   }
 
   setStudentPin(pin: string): Promise<void> {
     return this.request("PUT", "/api/auth/student-pin", { pin });
   }
 
-  studentLogin(pin: string): Promise<void> {
+  studentLogin(pin: string): Promise<StudentLoginResult> {
     return this.request("POST", "/api/auth/student/login", { pin });
+  }
+
+  async endSession(): Promise<void> {
+    await this.request("POST", "/api/auth/session/end");
+    await this.callbacks.onSessionEnded?.();
   }
 
   logout(): Promise<void> {
@@ -211,8 +253,11 @@ export type ClientApi = Pick<ApiClient,
   | "setup"
   | "guardianLogin"
   | "registerDevice"
+  | "listTrustedDevices"
+  | "revokeTrustedDevice"
   | "setStudentPin"
   | "studentLogin"
+  | "endSession"
   | "logout"
   | "getToday"
   | "saveAttempt"

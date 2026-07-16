@@ -158,4 +158,77 @@ describe("ApiClient", () => {
       }
     ]);
   });
+
+  it("uses guardian-only device lifecycle routes and exposes injected policy callbacks", async () => {
+    const device = {
+      publicId: "public-device-1",
+      name: "수아 태블릿",
+      createdAt: "2026-07-15T03:00:00.000Z",
+      lastUsedAt: null,
+      status: "active" as const,
+      current: true
+    };
+    const fetcher = vi.fn().mockImplementation((path: string) => {
+      if (path === "/api/guardian/devices") {
+        return Promise.resolve(new Response(JSON.stringify({ devices: [device] }), {
+          status: 200,
+          headers: { "content-type": "application/json" }
+        }));
+      }
+      if (path === "/api/auth/session/end") {
+        return Promise.resolve(new Response(null, { status: 204 }));
+      }
+      return Promise.resolve(new Response(JSON.stringify(device), {
+        status: path.endsWith("/current") ? 201 : 200,
+        headers: { "content-type": "application/json" }
+      }));
+    });
+    const onSessionEnded = vi.fn();
+    const onDeviceRevoked = vi.fn();
+    const api = new ApiClient(fetcher, { onSessionEnded, onDeviceRevoked });
+
+    await expect(api.registerDevice("수아 태블릿")).resolves.toEqual(device);
+    await expect(api.listTrustedDevices()).resolves.toEqual([device]);
+    await expect(api.revokeTrustedDevice("public-device-1")).resolves.toEqual(device);
+    await api.endSession();
+
+    expect(fetcher.mock.calls.map(([path, init]) => ({
+      path,
+      method: init?.method,
+      body: init?.body
+    }))).toEqual([
+      {
+        path: "/api/guardian/devices/current",
+        method: "POST",
+        body: JSON.stringify({ name: "수아 태블릿" })
+      },
+      { path: "/api/guardian/devices", method: "GET", body: undefined },
+      {
+        path: "/api/guardian/devices/public-device-1/revoke",
+        method: "POST",
+        body: undefined
+      },
+      { path: "/api/auth/session/end", method: "POST", body: undefined }
+    ]);
+    expect(onDeviceRevoked).toHaveBeenCalledWith("public-device-1");
+    expect(onSessionEnded).toHaveBeenCalledOnce();
+    expect(JSON.stringify(fetcher.mock.calls)).not.toContain("/api/auth/devices");
+  });
+
+  it("reports authority failures through the injected no-op policy boundary", async () => {
+    const onAuthorityFailure = vi.fn();
+    const api = new ApiClient(
+      vi.fn().mockResolvedValue(new Response(
+        JSON.stringify({ code: "DEVICE_REVOKED" }),
+        { status: 403, headers: { "content-type": "application/json" } }
+      )),
+      { onAuthorityFailure }
+    );
+
+    await expect(api.getToday("2026-07-16")).rejects.toMatchObject({
+      status: 403,
+      code: "DEVICE_REVOKED"
+    });
+    expect(onAuthorityFailure).toHaveBeenCalledWith("DEVICE_REVOKED");
+  });
 });

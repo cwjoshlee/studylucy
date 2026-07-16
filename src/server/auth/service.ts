@@ -1,15 +1,25 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
-import type { CurrentUser } from "../../shared/auth";
+import type {
+  StudentLoginResult,
+  TrustedDeviceView
+} from "../../shared/auth";
+import { kstDayBounds, kstStudyDate } from "../../shared/study-date";
 import type { AppConfig } from "../config";
 import { hashPassword, verifyPassword } from "./password";
-import { AuthRepository, type TrustedDevice } from "./repository";
+import {
+  AuthRepository,
+  type RequestAuthContext,
+  type TrustedDeviceRecord
+} from "./repository";
 import { hashOpaqueToken, matchesSetupSecret } from "./token";
 
 type AuthErrorCode =
   | "AUTH_INVALID"
   | "AUTH_LOCKED"
   | "DEVICE_NOT_TRUSTED"
+  | "DEVICE_REVOKED"
+  | "DEVICE_NOT_FOUND"
   | "SETUP_ALREADY_COMPLETED"
   | "SETUP_SECRET_INVALID";
 
@@ -85,18 +95,53 @@ export class AuthService {
     }
 
     this.repository.clearFailures(failureKey);
-    return this.createSession(guardian.id, null, now);
+    return this.createSession(guardian.id, null, now).token;
   }
 
-  registerDevice(name: string): string {
+  registerDevice(
+    name: string,
+    rawDeviceToken: string | undefined
+  ): {
+    device: TrustedDeviceView;
+    rawToken: string | null;
+    created: boolean;
+  } {
+    const current = this.resolveDevice(rawDeviceToken);
+    if (current?.status === "active") {
+      const device = this.repository.findTrustedDeviceView(current.id, current.id);
+      if (device === null) throw new AuthError(404, "DEVICE_NOT_FOUND");
+      return { device, rawToken: null, created: false };
+    }
+
     const rawToken = this.deps.randomToken();
+    const id = randomUUID();
     this.repository.createTrustedDevice({
-      id: randomUUID(),
+      id,
+      publicId: randomUUID(),
       name,
       tokenHash: hashOpaqueToken(rawToken, this.deps.config.sessionPepper),
       createdAt: this.deps.now().toISOString()
     });
-    return rawToken;
+    const device = this.repository.findTrustedDeviceView(id, id);
+    if (device === null) throw new AuthError(404, "DEVICE_NOT_FOUND");
+    return { device, rawToken, created: true };
+  }
+
+  listDevices(currentTrustedDeviceId: string | null): TrustedDeviceView[] {
+    return this.repository.listTrustedDevices(currentTrustedDeviceId);
+  }
+
+  revokeDevice(
+    publicId: string,
+    currentTrustedDeviceId: string | null
+  ): TrustedDeviceView {
+    const device = this.repository.revokeTrustedDevice(
+      publicId,
+      currentTrustedDeviceId,
+      this.deps.now().toISOString()
+    );
+    if (device === null) throw new AuthError(404, "DEVICE_NOT_FOUND");
+    return device;
   }
 
   async setStudentPin(pin: string): Promise<void> {
@@ -110,7 +155,7 @@ export class AuthService {
   async loginStudent(
     pin: string,
     rawDeviceToken: string | undefined
-  ): Promise<string> {
+  ): Promise<{ token: string; result: StudentLoginResult }> {
     const device = this.findDevice(rawDeviceToken);
     const failureKey = `student:${device.id}`;
     const now = this.deps.now();
@@ -132,10 +177,20 @@ export class AuthService {
     }
 
     this.repository.clearFailures(failureKey);
-    return this.createSession(student.id, device.id, now);
+    const session = this.createSession(student.id, device.id, now);
+    const dayEnd = Date.parse(kstDayBounds(kstStudyDate(now)).end) - 1;
+    return {
+      token: session.token,
+      result: {
+        offlineAccessUntil: new Date(Math.min(
+          dayEnd,
+          Date.parse(session.expiresAt)
+        )).toISOString()
+      }
+    };
   }
 
-  logout(rawSessionToken: string | undefined): void {
+  endSession(rawSessionToken: string | undefined): void {
     if (rawSessionToken === undefined) {
       return;
     }
@@ -144,31 +199,47 @@ export class AuthService {
     );
   }
 
-  getCurrentUser(
+  getRequestAuthContext(
     rawSessionToken: string | undefined,
     rawDeviceToken: string | undefined
-  ): CurrentUser | null {
-    if (rawSessionToken === undefined) {
-      return null;
-    }
-    return this.repository.findCurrentUser(
-      hashOpaqueToken(rawSessionToken, this.deps.config.sessionPepper),
+  ): RequestAuthContext {
+    const now = this.deps.now();
+    const context = this.repository.findRequestAuthContext(
+      rawSessionToken === undefined
+        ? null
+        : hashOpaqueToken(rawSessionToken, this.deps.config.sessionPepper),
       rawDeviceToken === undefined
         ? null
         : hashOpaqueToken(rawDeviceToken, this.deps.config.sessionPepper),
-      this.deps.now().toISOString()
+      now.toISOString()
     );
+    if (
+      context.user !== null &&
+      context.trustedDeviceId !== null &&
+      context.deviceStatus === "active"
+    ) {
+      this.repository.touchTrustedDevice(context.trustedDeviceId, now);
+    }
+    return context;
   }
 
-  private findDevice(rawDeviceToken: string | undefined): TrustedDevice {
-    const device =
-      rawDeviceToken === undefined
-        ? null
-        : this.repository.findTrustedDevice(
-            hashOpaqueToken(rawDeviceToken, this.deps.config.sessionPepper)
-          );
+  private resolveDevice(
+    rawDeviceToken: string | undefined
+  ): TrustedDeviceRecord | null {
+    return rawDeviceToken === undefined
+      ? null
+      : this.repository.findTrustedDevice(
+          hashOpaqueToken(rawDeviceToken, this.deps.config.sessionPepper)
+        );
+  }
+
+  private findDevice(rawDeviceToken: string | undefined): TrustedDeviceRecord {
+    const device = this.resolveDevice(rawDeviceToken);
     if (device === null) {
       throw new AuthError(403, "DEVICE_NOT_TRUSTED");
+    }
+    if (device.status === "revoked") {
+      throw new AuthError(403, "DEVICE_REVOKED");
     }
     return device;
   }
@@ -177,18 +248,19 @@ export class AuthService {
     userId: string,
     trustedDeviceId: string | null,
     now: Date
-  ): string {
+  ): { token: string; expiresAt: string } {
     const rawToken = this.deps.randomToken();
+    const expiresAt = new Date(
+      now.getTime() + this.deps.config.sessionDays * 86_400 * 1_000
+    ).toISOString();
     this.repository.createSession({
       id: randomUUID(),
       tokenHash: hashOpaqueToken(rawToken, this.deps.config.sessionPepper),
       userId,
       trustedDeviceId,
-      expiresAt: new Date(
-        now.getTime() + this.deps.config.sessionDays * 86_400 * 1_000
-      ).toISOString(),
+      expiresAt,
       createdAt: now.toISOString()
     });
-    return rawToken;
+    return { token: rawToken, expiresAt };
   }
 }

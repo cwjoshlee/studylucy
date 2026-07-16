@@ -1,4 +1,5 @@
 import { useEffect, useRef, useState } from "react";
+import type { TrustedDeviceView } from "../../shared/auth";
 import type { GuardianProgress } from "../../shared/learning";
 import type {
   GuardianStarLedger,
@@ -24,6 +25,8 @@ type GuardianDashboardApi = Pick<ApiClient,
   | "getGuardianDailyPlan"
   | "updateGuardianDailyPlan"
   | "getBackupStatus"
+  | "listTrustedDevices"
+  | "revokeTrustedDevice"
 >;
 
 type DashboardData = {
@@ -56,10 +59,20 @@ function progressRange(): { from: string; to: string } {
   return { from: studyDate(from), to: studyDate(now) };
 }
 
-export function GuardianDashboard({ api }: { api: GuardianDashboardApi }) {
+export function GuardianDashboard({
+  api,
+  onEnterStudentMode,
+  onLogout
+}: {
+  api: GuardianDashboardApi;
+  onEnterStudentMode?: () => Promise<void>;
+  onLogout?: () => Promise<void>;
+}) {
   const [data, setData] = useState<DashboardData | null>(null);
   const [failed, setFailed] = useState(false);
   const [activeTab, setActiveTab] = useState<GuardianTab>("진도");
+  const [accountMenuOpen, setAccountMenuOpen] = useState(false);
+  const [deviceManagementOpen, setDeviceManagementOpen] = useState(false);
 
   useEffect(() => {
     let active = true;
@@ -83,9 +96,53 @@ export function GuardianDashboard({ api }: { api: GuardianDashboardApi }) {
   return (
     <div className="guardian-shell">
       <header className="guardian-header">
-        <p className="eyebrow">보호자 로그인으로 보호되어 있어요</p>
-        <h1>보호자 공간</h1>
+        <div className="guardian-header__row">
+          <div>
+            <p className="eyebrow">보호자 로그인으로 보호되어 있어요</p>
+            <h1>보호자 공간</h1>
+          </div>
+          <div>
+            <button
+              aria-expanded={accountMenuOpen}
+              onClick={() => setAccountMenuOpen((open) => !open)}
+              type="button"
+            >
+              계정 메뉴
+            </button>
+            {accountMenuOpen ? (
+              <div className="account-menu">
+                <button
+                  onClick={() => {
+                    setDeviceManagementOpen(true);
+                    setAccountMenuOpen(false);
+                  }}
+                  type="button"
+                >
+                  기기 관리
+                </button>
+                <button
+                  onClick={() => void onEnterStudentMode?.()}
+                  type="button"
+                >
+                  수아 모드
+                </button>
+                <button
+                  onClick={() => void onLogout?.()}
+                  type="button"
+                >
+                  로그아웃
+                </button>
+              </div>
+            ) : null}
+          </div>
+        </div>
       </header>
+      {deviceManagementOpen ? (
+        <DeviceManagement
+          api={api}
+          onClose={() => setDeviceManagementOpen(false)}
+        />
+      ) : null}
       <nav className="guardian-tabs" aria-label="보호자 메뉴" role="tablist">
         {TABS.map((tab) => (
           <button
@@ -109,6 +166,88 @@ export function GuardianDashboard({ api }: { api: GuardianDashboardApi }) {
         {activeTab === "백업" ? <BackupPanel api={api} /> : null}
       </main>
     </div>
+  );
+}
+
+function DeviceManagement({
+  api,
+  onClose
+}: {
+  api: GuardianDashboardApi;
+  onClose: () => void;
+}) {
+  const [devices, setDevices] = useState<TrustedDeviceView[] | null>(null);
+  const [failed, setFailed] = useState(false);
+  const [revoking, setRevoking] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+    void api.listTrustedDevices().then(
+      (loaded) => {
+        if (active) setDevices(loaded);
+      },
+      () => {
+        if (active) setFailed(true);
+      }
+    );
+    return () => {
+      active = false;
+    };
+  }, [api]);
+
+  const revoke = async (device: TrustedDeviceView) => {
+    const confirmed = window.confirm(device.current
+      ? "현재 기기를 해제하면 수아 모드에서 다시 등록해야 해요. 해제할까요?"
+      : `${device.name} 기기를 해제할까요?`);
+    if (!confirmed) return;
+    setRevoking(device.publicId);
+    try {
+      const revoked = await api.revokeTrustedDevice(device.publicId);
+      setDevices((current) => current?.map((item) =>
+        item.publicId === revoked.publicId ? revoked : item
+      ) ?? null);
+    } catch {
+      setFailed(true);
+    } finally {
+      setRevoking(null);
+    }
+  };
+
+  return (
+    <section className="device-management" aria-labelledby="device-management-title">
+      <div className="device-management__heading">
+        <h2 id="device-management-title">기기 관리</h2>
+        <button className="button-secondary" onClick={onClose} type="button">
+          닫기
+        </button>
+      </div>
+      {devices === null && !failed ? <p aria-busy="true">기기를 불러오고 있어요.</p> : null}
+      {failed ? <p role="alert">기기 정보를 불러오지 못했어요.</p> : null}
+      {devices?.length === 0 ? <p>등록된 기기가 없어요.</p> : null}
+      {devices !== null && devices.length > 0 ? (
+        <ul className="device-management__list">
+          {devices.map((device) => (
+            <li key={device.publicId}>
+              <div>
+                <strong>{device.name}</strong>
+                <span>{device.current ? "현재 기기" : "다른 기기"}</span>
+                <span>{device.status === "active" ? "사용 가능" : "해제됨"}</span>
+              </div>
+              {device.status === "active" ? (
+                <button
+                  aria-label={`${device.name} 기기 해제`}
+                  disabled={revoking !== null}
+                  onClick={() => void revoke(device)}
+                  type="button"
+                >
+                  기기 해제
+                </button>
+              ) : null}
+            </li>
+          ))}
+        </ul>
+      ) : null}
+    </section>
   );
 }
 

@@ -1,8 +1,9 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from "fastify";
-import type { z } from "zod";
+import { z } from "zod";
 import {
   GuardianLoginRequest,
   RegisterDeviceRequest,
+  RevokeDeviceRequest,
   SetupRequest,
   StudentPinRequest,
   type CurrentUser
@@ -12,12 +13,18 @@ import { AuthError, AuthService, type AuthServiceDeps } from "./service";
 declare module "fastify" {
   interface FastifyRequest {
     currentUser: CurrentUser | null;
+    currentTrustedDeviceId: string | null;
+    currentDeviceStatus: "missing" | "unknown" | "active" | "revoked";
   }
 }
 
 export function requireRole(role: CurrentUser["role"]) {
   return async (request: FastifyRequest, reply: FastifyReply): Promise<void> => {
     if (request.currentUser === null) {
+      if (request.currentDeviceStatus === "revoked") {
+        await reply.code(403).send({ code: "DEVICE_REVOKED" });
+        return;
+      }
       await reply.code(401).send({ code: "AUTH_REQUIRED" });
       return;
     }
@@ -65,11 +72,16 @@ export function registerAuthRoutes(
   };
 
   app.decorateRequest("currentUser", null);
+  app.decorateRequest("currentTrustedDeviceId", null);
+  app.decorateRequest("currentDeviceStatus", "missing");
   app.addHook("preHandler", async (request) => {
-    request.currentUser = service.getCurrentUser(
+    const context = service.getRequestAuthContext(
       request.cookies.sua_session,
       request.cookies.sua_device
     );
+    request.currentUser = context.user;
+    request.currentTrustedDeviceId = context.trustedDeviceId;
+    request.currentDeviceStatus = context.deviceStatus;
   });
 
   app.post("/api/auth/setup", async (request, reply) => {
@@ -100,19 +112,53 @@ export function registerAuthRoutes(
   });
 
   app.post(
-    "/api/auth/devices",
+    "/api/guardian/devices/current",
     { preHandler: requireRole("guardian") },
     async (request, reply) => {
       const body = parseBody(RegisterDeviceRequest, request.body, reply);
       if (body === null) {
         return;
       }
-      const token = service.registerDevice(body.name);
-      reply.setCookie("sua_device", token, {
-        ...sessionCookie,
-        maxAge: 365 * 86_400
+      const registration = service.registerDevice(
+        body.name,
+        request.cookies.sua_device
+      );
+      if (registration.rawToken !== null) {
+        reply.setCookie("sua_device", registration.rawToken, {
+          ...sessionCookie,
+          maxAge: 365 * 86_400
+        });
+      }
+      await reply
+        .code(registration.created ? 201 : 200)
+        .send(registration.device);
+    }
+  );
+
+  app.get(
+    "/api/guardian/devices",
+    { preHandler: requireRole("guardian") },
+    async (request, reply) => {
+      await reply.send({
+        devices: service.listDevices(request.currentTrustedDeviceId)
       });
-      await reply.code(201).send({ status: "created" });
+    }
+  );
+
+  app.post(
+    "/api/guardian/devices/:publicId/revoke",
+    { preHandler: requireRole("guardian") },
+    async (request, reply) => {
+      const params = parseBody(RevokeDeviceRequest, request.params, reply);
+      if (params === null) return;
+      try {
+        await reply.send(service.revokeDevice(
+          params.publicId,
+          request.currentTrustedDeviceId
+        ));
+      } catch (error) {
+        await handleAuthError(error, reply);
+      }
     }
   );
 
@@ -139,19 +185,31 @@ export function registerAuthRoutes(
       return;
     }
     try {
-      const token = await service.loginStudent(
+      const login = await service.loginStudent(
         body.pin,
         request.cookies.sua_device
       );
-      reply.setCookie("sua_session", token, sessionCookie);
-      await reply.code(204).send();
+      reply.setCookie("sua_session", login.token, sessionCookie);
+      await reply.send(login.result);
     } catch (error) {
       await handleAuthError(error, reply);
     }
   });
 
   app.post("/api/auth/logout", async (request, reply) => {
-    service.logout(request.cookies.sua_session);
+    service.endSession(request.cookies.sua_session);
+    reply.clearCookie("sua_session", sessionCookie);
+    await reply.code(204).send();
+  });
+
+  app.post("/api/auth/session/end", async (request, reply) => {
+    const body = parseBody(
+      z.union([z.undefined(), z.object({}).strict()]),
+      request.body,
+      reply
+    );
+    if (body === null) return;
+    service.endSession(request.cookies.sua_session);
     reply.clearCookie("sua_session", sessionCookie);
     await reply.code(204).send();
   });

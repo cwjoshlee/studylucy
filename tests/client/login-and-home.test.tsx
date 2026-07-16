@@ -24,9 +24,22 @@ beforeEach(async () => {
   await deleteDB(OFFLINE_DB_NAME);
 });
 
+function createAppApi(overrides: Record<string, unknown> = {}) {
+  const lifecycle = {
+    endSession: vi.fn().mockResolvedValue(undefined),
+    listTrustedDevices: vi.fn().mockResolvedValue([]),
+    revokeTrustedDevice: vi.fn()
+  };
+  return {
+    ...createFakeApi({ ...lifecycle, ...overrides }),
+    ...lifecycle,
+    ...overrides
+  } as ReturnType<typeof createFakeApi> & typeof lifecycle;
+}
+
 describe("가족 로그인과 학생 홈", () => {
   it("shows setup only for SETUP_REQUIRED", async () => {
-    const api = createFakeApi({
+    const api = createAppApi({
       me: vi.fn().mockRejectedValue(new ApiError(409, "SETUP_REQUIRED"))
     });
 
@@ -38,7 +51,7 @@ describe("가족 로그인과 학생 홈", () => {
   });
 
   it("does not open setup for an unrelated 409 code", async () => {
-    const api = createFakeApi({
+    const api = createAppApi({
       me: vi.fn().mockRejectedValue(new ApiError(409, "PLAN_LOCKED"))
     });
 
@@ -52,7 +65,9 @@ describe("가족 로그인과 학생 홈", () => {
 
   it("reveals setup, guardian, device, PIN, and student login one step at a time", async () => {
     const user = userEvent.setup();
-    const api = createFakeApi({
+    const endSession = vi.fn().mockResolvedValue(undefined);
+    const api = createAppApi({
+      endSession,
       me: vi.fn()
         .mockRejectedValueOnce(new ApiError(409, "SETUP_REQUIRED"))
         .mockResolvedValue({ id: "student-1", role: "student", displayName: "수아" })
@@ -88,7 +103,8 @@ describe("가족 로그인과 학생 홈", () => {
     await user.click(screen.getByRole("button", { name: "PIN 저장하기" }));
     expect(api.setStudentPin).toHaveBeenCalledWith("2580");
     expect(await screen.findByRole("heading", { name: "수아 PIN으로 들어가기" })).toBeVisible();
-    expect(api.logout).toHaveBeenCalledOnce();
+    expect(endSession).toHaveBeenCalledOnce();
+    expect(api.logout).not.toHaveBeenCalled();
 
     await user.type(screen.getByLabelText("수아의 4자리 PIN"), "2580");
     await user.click(screen.getByRole("button", { name: "공부 시작하기" }));
@@ -97,7 +113,7 @@ describe("가족 로그인과 학생 홈", () => {
   });
 
   it("gives an authenticated guardian a clear protected entry", async () => {
-    const api = createFakeApi({
+    const api = createAppApi({
       me: vi.fn().mockResolvedValue({
         id: "guardian-1",
         role: "guardian",
@@ -116,7 +132,7 @@ describe("가족 로그인과 학생 홈", () => {
 
   it("returns an existing guardian to the protected guardian space", async () => {
     const user = userEvent.setup();
-    const api = createFakeApi({
+    const api = createAppApi({
       me: vi.fn()
         .mockRejectedValueOnce(new ApiError(401, "AUTH_REQUIRED"))
         .mockResolvedValue({
@@ -140,8 +156,103 @@ describe("가족 로그인과 학생 홈", () => {
     expect(api.logout).not.toHaveBeenCalled();
   });
 
+  it("ends the guardian session before requiring a fresh student PIN", async () => {
+    const user = userEvent.setup();
+    const endSession = vi.fn().mockResolvedValue(undefined);
+    const studentLogin = vi.fn().mockResolvedValue(undefined);
+    const api = createAppApi({
+      endSession,
+      studentLogin,
+      me: vi.fn()
+        .mockResolvedValueOnce({
+          id: "guardian-1",
+          role: "guardian",
+          displayName: "보호자"
+        })
+        .mockResolvedValueOnce({
+          id: "student-1",
+          role: "student",
+          displayName: "수아"
+        })
+    });
+    render(<App api={api} />);
+
+    await screen.findByRole("heading", { name: "보호자 공간" });
+    await user.click(screen.getByRole("button", { name: "계정 메뉴" }));
+    await user.click(screen.getByRole("button", { name: "수아 모드" }));
+
+    expect(endSession).toHaveBeenCalledOnce();
+    expect(api.me).toHaveBeenCalledOnce();
+    expect(studentLogin).not.toHaveBeenCalled();
+    expect(await screen.findByRole("heading", {
+      name: "수아 PIN으로 들어가기"
+    })).toBeVisible();
+
+    await user.type(screen.getByLabelText("수아의 4자리 PIN"), "2580");
+    await user.click(screen.getByRole("button", { name: "공부 시작하기" }));
+    expect(await screen.findByText("수아야, 오늘도 한 걸음!")).toBeVisible();
+    expect(studentLogin).toHaveBeenCalledWith("2580");
+    expect(endSession.mock.invocationCallOrder[0])
+      .toBeLessThan(studentLogin.mock.invocationCallOrder[0]!);
+  });
+
+  it("ends the student session before requiring a fresh guardian password", async () => {
+    const user = userEvent.setup();
+    const endSession = vi.fn().mockResolvedValue(undefined);
+    const guardianLogin = vi.fn().mockResolvedValue(undefined);
+    const api = createAppApi({
+      endSession,
+      guardianLogin,
+      me: vi.fn()
+        .mockResolvedValueOnce({
+          id: "student-1",
+          role: "student",
+          displayName: "수아"
+        })
+        .mockResolvedValueOnce({
+          id: "guardian-1",
+          role: "guardian",
+          displayName: "보호자"
+        })
+    });
+    render(<App api={api} />);
+
+    await screen.findByText("수아야, 오늘도 한 걸음!");
+    await user.click(screen.getByRole("button", { name: "보호자 모드" }));
+
+    expect(endSession).toHaveBeenCalledOnce();
+    expect(api.me).toHaveBeenCalledOnce();
+    expect(guardianLogin).not.toHaveBeenCalled();
+    expect(await screen.findByRole("heading", { name: "보호자 로그인" })).toBeVisible();
+
+    await user.type(
+      screen.getByLabelText("보호자 비밀번호"),
+      "correct horse battery staple"
+    );
+    await user.click(screen.getByRole("button", { name: "로그인" }));
+    expect(await screen.findByRole("heading", { name: "보호자 공간" })).toBeVisible();
+    expect(guardianLogin).toHaveBeenCalledWith("correct horse battery staple");
+    expect(endSession.mock.invocationCallOrder[0])
+      .toBeLessThan(guardianLogin.mock.invocationCallOrder[0]!);
+  });
+
+  it("uses session end for logout and returns to the normal student login", async () => {
+    const user = userEvent.setup();
+    const endSession = vi.fn().mockResolvedValue(undefined);
+    const api = createAppApi({ endSession });
+    render(<App api={api} />);
+
+    await screen.findByText("수아야, 오늘도 한 걸음!");
+    await user.click(screen.getByRole("button", { name: "로그아웃" }));
+
+    expect(endSession).toHaveBeenCalledOnce();
+    expect(await screen.findByRole("heading", {
+      name: "수아 PIN으로 들어가기"
+    })).toBeVisible();
+  });
+
   it("shows the A layout, required stars, and original friend", async () => {
-    render(<App api={createFakeApi()} />);
+    render(<App api={createAppApi()} />);
 
     expect(await screen.findByText("오늘의 학습")).toBeVisible();
     expect(screen.getByText("수아야, 오늘도 한 걸음!")).toBeVisible();
@@ -158,7 +269,7 @@ describe("가족 로그인과 학생 홈", () => {
     ["선택", "구름 산책"]
   ])("launches a selected %s item from the dashboard", async (_kind, title) => {
     const user = userEvent.setup();
-    render(<App api={createFakeApi()} />);
+    render(<App api={createAppApi()} />);
 
     await user.click(await screen.findByRole("button", { name: `${title} 시작하기` }));
 
@@ -168,7 +279,7 @@ describe("가족 로그인과 학생 홈", () => {
 
   it("returns after a gated completion with refreshed authoritative progress and stars", async () => {
     const user = userEvent.setup();
-    const api = createFakeApi();
+    const api = createAppApi();
     const initialPlan = await api.getToday("2026-07-16");
     api.getToday.mockReset()
       .mockResolvedValueOnce(initialPlan)
@@ -216,7 +327,7 @@ describe("가족 로그인과 학생 홈", () => {
 
   it("returns with an offline attempt queued then refetches authoritative home state after sync", async () => {
     const user = userEvent.setup();
-    const api = createFakeApi();
+    const api = createAppApi();
     const initialPlan = await api.getToday("2026-07-16");
     const confirmedAfterSync = {
       balance: 8,
@@ -298,7 +409,7 @@ describe("가족 로그인과 학생 홈", () => {
   });
 
   it("shows the authoritative balance with a separate live queued-attempt count", async () => {
-    const api = createFakeApi({
+    const api = createAppApi({
       getStudentStars: vi.fn().mockResolvedValue({
         balance: 5,
         earnedToday: 1,
@@ -358,7 +469,7 @@ describe("가족 로그인과 학생 홈", () => {
   });
 
   it("uses completed reward copy that cannot promise another star", async () => {
-    const api = createFakeApi();
+    const api = createAppApi();
     const plan = await api.getToday("2026-07-16");
     api.getToday.mockResolvedValue({
       ...plan,
@@ -394,5 +505,8 @@ describe("가족 로그인과 학생 홈", () => {
     expect(responsive).toContain('"right"');
     expect(responsive).not.toMatch(/\.student-shell__right\s*\{[^}]*display:\s*none/s);
     expect(responsive).toMatch(/@media\s*\(prefers-reduced-motion:\s*reduce\)/);
+    expect(components).toMatch(
+      /\.account-menu button,\s*\.device-management button\s*\{[^}]*min-height:\s*48px/s
+    );
   });
 });

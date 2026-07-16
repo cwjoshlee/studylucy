@@ -32,6 +32,9 @@ type AuthContextValue = AuthState & {
   setStudentPin(pin: string): Promise<void>;
   studentLogin(pin: string): Promise<void>;
   showGuardianLogin(): void;
+  enterGuardianMode(): Promise<void>;
+  enterStudentMode(): Promise<void>;
+  logout(): Promise<void>;
 };
 
 const AuthContext = createContext<AuthContextValue | null>(null);
@@ -44,6 +47,10 @@ export function AuthProvider({
   children: ReactNode;
 }) {
   const [state, setState] = useState<AuthState>({ phase: "loading", user: null });
+
+  const endSession = async () => {
+    await api.endSession();
+  };
 
   useEffect(() => {
     let active = true;
@@ -92,7 +99,7 @@ export function AuthProvider({
     },
     setStudentPin: async (pin) => {
       await api.setStudentPin(pin);
-      await api.logout();
+      await endSession();
       setState({ phase: "student-login", user: null });
     },
     studentLogin: async (pin) => {
@@ -102,6 +109,18 @@ export function AuthProvider({
     },
     showGuardianLogin: () => {
       setState({ phase: "guardian-login", user: null });
+    },
+    enterGuardianMode: async () => {
+      await endSession();
+      setState({ phase: "guardian-login", user: null });
+    },
+    enterStudentMode: async () => {
+      await endSession();
+      setState({ phase: "student-login", user: null });
+    },
+    logout: async () => {
+      await endSession();
+      setState({ phase: "student-login", user: null });
     }
   }), [api, state]);
   return <AuthContext.Provider value={value}>{children}</AuthContext.Provider>;

@@ -1,13 +1,21 @@
 import type Database from "better-sqlite3";
-import type { CurrentUser } from "../../shared/auth";
+import type { CurrentUser, TrustedDeviceView } from "../../shared/auth";
 
 type UserRecord = CurrentUser & {
   credentialHash: string | null;
 };
 
-export type TrustedDevice = {
+export type TrustedDeviceRecord = {
   id: string;
   name: string;
+  publicId: string;
+  status: "active" | "revoked";
+};
+
+export type RequestAuthContext = {
+  user: CurrentUser | null;
+  trustedDeviceId: string | null;
+  deviceStatus: "missing" | "unknown" | "active" | "revoked";
 };
 
 type AuthFailureRecord = {
@@ -89,23 +97,107 @@ export class AuthRepository {
 
   createTrustedDevice(input: {
     id: string;
+    publicId?: string;
     name: string;
     tokenHash: string;
     createdAt: string;
   }): void {
     this.db.prepare(`
-      INSERT INTO trusted_devices (id, name, token_hash, created_at)
-      VALUES (?, ?, ?, ?)
-    `).run(input.id, input.name, input.tokenHash, input.createdAt);
+      INSERT INTO trusted_devices (
+        id, public_id, name, token_hash, created_at
+      ) VALUES (?, ?, ?, ?, ?)
+    `).run(
+      input.id,
+      input.publicId ?? null,
+      input.name,
+      input.tokenHash,
+      input.createdAt
+    );
   }
 
-  findTrustedDevice(tokenHash: string): TrustedDevice | null {
+  findTrustedDevice(tokenHash: string): TrustedDeviceRecord | null {
     const row = this.db.prepare(`
-      SELECT id, name
+      SELECT id, name, public_id AS publicId,
+             CASE WHEN revoked_at IS NULL THEN 'active' ELSE 'revoked' END AS status
       FROM trusted_devices
-      WHERE token_hash = ? AND revoked_at IS NULL
-    `).get(tokenHash) as TrustedDevice | undefined;
+      WHERE token_hash = ?
+    `).get(tokenHash) as TrustedDeviceRecord | undefined;
     return row ?? null;
+  }
+
+  listTrustedDevices(currentTrustedDeviceId: string | null): TrustedDeviceView[] {
+    const rows = this.db.prepare(`
+      SELECT public_id AS publicId, name, created_at AS createdAt,
+             last_used_at AS lastUsedAt,
+             CASE WHEN revoked_at IS NULL THEN 'active' ELSE 'revoked' END AS status,
+             id
+      FROM trusted_devices
+      ORDER BY created_at, public_id
+    `).all() as Array<Omit<TrustedDeviceView, "current"> & { id: string }>;
+    return rows.map(({ id, ...device }) => ({
+      ...device,
+      current: id === currentTrustedDeviceId
+    }));
+  }
+
+  findTrustedDeviceView(
+    id: string,
+    currentTrustedDeviceId: string | null
+  ): TrustedDeviceView | null {
+    const row = this.db.prepare(`
+      SELECT public_id AS publicId, name, created_at AS createdAt,
+             last_used_at AS lastUsedAt,
+             CASE WHEN revoked_at IS NULL THEN 'active' ELSE 'revoked' END AS status
+      FROM trusted_devices
+      WHERE id = ?
+    `).get(id) as Omit<TrustedDeviceView, "current"> | undefined;
+    return row === undefined
+      ? null
+      : { ...row, current: id === currentTrustedDeviceId };
+  }
+
+  touchTrustedDevice(id: string, now: Date): void {
+    const cutoff = new Date(now.getTime() - 5 * 60 * 1_000).toISOString();
+    this.db.prepare(`
+      UPDATE trusted_devices
+      SET last_used_at = ?
+      WHERE id = ?
+        AND revoked_at IS NULL
+        AND (last_used_at IS NULL OR last_used_at <= ?)
+    `).run(now.toISOString(), id, cutoff);
+  }
+
+  revokeTrustedDevice(
+    publicId: string,
+    currentTrustedDeviceId: string | null,
+    revokedAt: string
+  ): TrustedDeviceView | null {
+    const revoke = this.db.transaction(() => {
+      const device = this.db.prepare(`
+        SELECT id FROM trusted_devices WHERE public_id = ?
+      `).get(publicId) as { id: string } | undefined;
+      if (device === undefined) return null;
+
+      this.db.prepare(`
+        UPDATE trusted_devices
+        SET revoked_at = COALESCE(revoked_at, ?)
+        WHERE id = ?
+      `).run(revokedAt, device.id);
+      this.db.prepare(`
+        DELETE FROM sessions
+        WHERE trusted_device_id = ?
+          AND user_id IN (SELECT id FROM users WHERE role = 'student')
+      `).run(device.id);
+      if (this.tableExists("issued_learning_sessions")) {
+        this.db.prepare(`
+          UPDATE issued_learning_sessions
+          SET revoked_at = COALESCE(revoked_at, ?)
+          WHERE trusted_device_id = ?
+        `).run(revokedAt, device.id);
+      }
+      return this.findTrustedDeviceView(device.id, currentTrustedDeviceId);
+    });
+    return revoke.immediate();
   }
 
   createSession(input: {
@@ -134,33 +226,42 @@ export class AuthRepository {
     this.db.prepare("DELETE FROM sessions WHERE token_hash = ?").run(tokenHash);
   }
 
-  findCurrentUser(
-    sessionTokenHash: string,
+  findRequestAuthContext(
+    sessionTokenHash: string | null,
     deviceTokenHash: string | null,
     now: string
-  ): CurrentUser | null {
+  ): RequestAuthContext {
+    const device = deviceTokenHash === null
+      ? null
+      : this.findTrustedDevice(deviceTokenHash);
+    const trustedDeviceId = device?.id ?? null;
+    const deviceStatus = deviceTokenHash === null
+      ? "missing"
+      : device?.status ?? "unknown";
+    if (sessionTokenHash === null) {
+      return { user: null, trustedDeviceId, deviceStatus };
+    }
+
     const row = this.db.prepare(`
-      SELECT u.id, u.role, u.display_name AS displayName
+      SELECT u.id, u.role, u.display_name AS displayName,
+             s.trusted_device_id AS sessionTrustedDeviceId
       FROM sessions AS s
       JOIN users AS u ON u.id = s.user_id
-      LEFT JOIN trusted_devices AS d ON d.id = s.trusted_device_id
       WHERE s.token_hash = ?
         AND s.expires_at > ?
-        AND (
-          u.role = 'guardian'
-          OR (
-            u.role = 'student'
-            AND d.revoked_at IS NULL
-            AND d.token_hash = ?
-          )
-        )
       LIMIT 1
-    `).get(
-      sessionTokenHash,
-      now,
-      deviceTokenHash ?? ""
-    ) as CurrentUser | undefined;
-    return row ?? null;
+    `).get(sessionTokenHash, now) as (
+      CurrentUser & { sessionTrustedDeviceId: string | null }
+    ) | undefined;
+    const user = row !== undefined && (
+      row.role === "guardian" || (
+        deviceStatus === "active" &&
+        row.sessionTrustedDeviceId === trustedDeviceId
+      )
+    )
+      ? { id: row.id, role: row.role, displayName: row.displayName }
+      : null;
+    return { user, trustedDeviceId, deviceStatus };
   }
 
   isLocked(key: string, now: Date): boolean {
@@ -217,5 +318,11 @@ export class AuthRepository {
       WHERE key = ?
     `).get(key) as AuthFailureRecord | undefined;
     return row ?? null;
+  }
+
+  private tableExists(name: string): boolean {
+    return this.db.prepare(`
+      SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?
+    `).get(name) !== undefined;
   }
 }

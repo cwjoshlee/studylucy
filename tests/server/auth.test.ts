@@ -178,11 +178,15 @@ describe("family authentication", () => {
     expect(guardianLogin.headers["set-cookie"]).toContain("SameSite=Strict");
     expect(guardianLogin.headers["set-cookie"]).toContain("Path=/");
 
-    const register = await studentClient.request("POST", "/api/auth/devices", {
+    const register = await studentClient.request("POST", "/api/guardian/devices/current", {
       name: "수아 갤럭시 탭"
     });
     expect(register.statusCode).toBe(201);
-    expect(register.json()).toEqual({ status: "created" });
+    expect(register.json()).toMatchObject({
+      name: "수아 갤럭시 탭",
+      status: "active",
+      current: true
+    });
     expect(register.headers["set-cookie"]).toContain("sua_device=");
     expect(register.headers["set-cookie"]).toContain("Max-Age=31536000");
 
@@ -199,7 +203,10 @@ describe("family authentication", () => {
       "/api/auth/student/login",
       { pin: "2580" }
     );
-    expect(studentLogin.statusCode).toBe(204);
+    expect(studentLogin.statusCode).toBe(200);
+    expect(studentLogin.json()).toEqual({
+      offlineAccessUntil: "2026-07-15T14:59:59.999Z"
+    });
 
     const me = await studentClient.request("GET", "/api/auth/me");
     expect(me.statusCode).toBe(200);
@@ -347,10 +354,11 @@ describe("family authentication", () => {
     await bootstrapFamily(harness, guardian);
     await loginGuardian(guardian);
 
-    await guardian.request("POST", "/api/auth/devices", { name: "태블릿 A" });
+    await guardian.request("POST", "/api/guardian/devices/current", { name: "태블릿 A" });
     const deviceA = guardian.cookie("sua_device");
     expect(deviceA).toBeDefined();
-    await guardian.request("POST", "/api/auth/devices", { name: "태블릿 B" });
+    guardian.setCookie("sua_device", "different-device-cookie");
+    await guardian.request("POST", "/api/guardian/devices/current", { name: "태블릿 B" });
     const deviceB = guardian.cookie("sua_device");
     expect(deviceB).toBeDefined();
     await guardian.request("PUT", "/api/auth/student-pin", { pin: "2580" });
@@ -363,7 +371,7 @@ describe("family authentication", () => {
           pin: "2580"
         })
       ).statusCode
-    ).toBe(204);
+    ).toBe(200);
 
     student.setCookie("sua_device", deviceB!);
     expect((await student.request("GET", "/api/auth/me")).statusCode).toBe(401);
@@ -382,7 +390,7 @@ describe("family authentication", () => {
       { pin: "2580" }
     );
     expect(revokedLogin.statusCode).toBe(403);
-    expect(revokedLogin.json()).toEqual({ code: "DEVICE_NOT_TRUSTED" });
+    expect(revokedLogin.json()).toEqual({ code: "DEVICE_REVOKED" });
   });
 
   it("persists only peppered hashes of opaque session and device tokens", async () => {
@@ -403,7 +411,7 @@ describe("family authentication", () => {
         .digest("hex")
     );
 
-    await client.request("POST", "/api/auth/devices", { name: "해시 검증" });
+    await client.request("POST", "/api/guardian/devices/current", { name: "해시 검증" });
     const rawDevice = client.cookie("sua_device");
     const deviceRow = harness.db.prepare(`
       SELECT token_hash AS tokenHash FROM trusted_devices
@@ -426,10 +434,237 @@ describe("family authentication", () => {
     const login = await loginGuardian(client);
     expect(login.headers["set-cookie"]).toContain("Secure");
 
-    const device = await client.request("POST", "/api/auth/devices", {
+    const device = await client.request("POST", "/api/guardian/devices/current", {
       name: "운영 태블릿"
     });
     expect(device.statusCode).toBe(201);
     expect(device.headers["set-cookie"]).toContain("Secure");
+  });
+
+  it("manages the guardian device lifecycle with safe public views and bounded student authority", async () => {
+    const guardian = harness.client();
+    await bootstrapFamily(harness, guardian);
+    await loginGuardian(guardian);
+
+    const empty = await guardian.request("GET", "/api/guardian/devices");
+    expect(empty.statusCode).toBe(200);
+    expect(empty.json()).toEqual({ devices: [] });
+
+    const registered = await guardian.request(
+      "POST",
+      "/api/guardian/devices/current",
+      { name: "수아 태블릿" }
+    );
+    expect(registered.statusCode).toBe(201);
+    expect(registered.headers["set-cookie"]).toContain("sua_device=");
+    const registeredView = registered.json() as TrustedDeviceView;
+    expect(registeredView).toEqual({
+      publicId: expect.any(String),
+      name: "수아 태블릿",
+      createdAt: "2026-07-15T03:00:00.000Z",
+      lastUsedAt: null,
+      status: "active",
+      current: true
+    });
+    expect(JSON.stringify(registeredView)).not.toMatch(/token|hash|\"id\"/i);
+
+    const deviceRow = harness.db.prepare(`
+      SELECT id, token_hash AS tokenHash, public_id AS publicId,
+             last_used_at AS lastUsedAt
+      FROM trusted_devices
+    `).get() as {
+      id: string;
+      tokenHash: string;
+      publicId: string;
+      lastUsedAt: string | null;
+    };
+    expect(registeredView.publicId).toBe(deviceRow.publicId);
+    expect(registeredView.publicId).not.toBe(deviceRow.id);
+    expect(registeredView.publicId).not.toBe(deviceRow.tokenHash);
+
+    const repeatedRegister = await guardian.request(
+      "POST",
+      "/api/guardian/devices/current",
+      { name: "무시되는 새 이름" }
+    );
+    expect(repeatedRegister.statusCode).toBe(200);
+    expect(repeatedRegister.json()).toMatchObject({
+      publicId: registeredView.publicId,
+      name: "수아 태블릿",
+      status: "active",
+      current: true
+    });
+    expect((harness.db.prepare(`
+      SELECT COUNT(*) AS count FROM trusted_devices
+    `).get() as { count: number }).count).toBe(1);
+
+    const firstUse = (harness.db.prepare(`
+      SELECT last_used_at AS lastUsedAt FROM trusted_devices WHERE id = ?
+    `).get(deviceRow.id) as { lastUsedAt: string | null }).lastUsedAt;
+    expect(firstUse).toBe("2026-07-15T03:00:00.000Z");
+    harness.advanceTime(5 * 60 * 1_000 - 1);
+    await guardian.request("GET", "/api/guardian/devices");
+    expect((harness.db.prepare(`
+      SELECT last_used_at AS lastUsedAt FROM trusted_devices WHERE id = ?
+    `).get(deviceRow.id) as { lastUsedAt: string | null }).lastUsedAt).toBe(firstUse);
+    harness.advanceTime(1);
+    await guardian.request("GET", "/api/guardian/devices");
+    expect((harness.db.prepare(`
+      SELECT last_used_at AS lastUsedAt FROM trusted_devices WHERE id = ?
+    `).get(deviceRow.id) as { lastUsedAt: string | null }).lastUsedAt)
+      .toBe("2026-07-15T03:05:00.000Z");
+
+    await guardian.request("PUT", "/api/auth/student-pin", { pin: "2580" });
+    const student = harness.client();
+    student.setCookie("sua_device", guardian.cookie("sua_device")!);
+    const studentLogin = await student.request(
+      "POST",
+      "/api/auth/student/login",
+      { pin: "2580" }
+    );
+    expect(studentLogin.statusCode).toBe(200);
+    const loginResult = studentLogin.json() as StudentLoginResult;
+    const studentSession = harness.db.prepare(`
+      SELECT expires_at AS expiresAt
+      FROM sessions AS s
+      JOIN users AS u ON u.id = s.user_id
+      WHERE u.role = 'student'
+    `).get() as { expiresAt: string };
+    expect(loginResult).toEqual({
+      offlineAccessUntil: new Date(Math.min(
+        Date.parse("2026-07-15T14:59:59.999Z"),
+        Date.parse(studentSession.expiresAt)
+      )).toISOString()
+    });
+
+    const studentId = (harness.db.prepare(`
+      SELECT id FROM users WHERE role = 'student'
+    `).get() as { id: string }).id;
+    const content = harness.db.prepare(`
+      SELECT id, active_version AS version FROM content_items LIMIT 1
+    `).get() as { id: string; version: number };
+    harness.db.prepare(`
+      INSERT INTO issued_daily_plans (
+        id, student_id, trusted_device_id, plan_kind, recovery_source_plan_id,
+        study_date, issued_at, submit_until, offline_epoch, start_cursor
+      ) VALUES (?, ?, ?, 'daily', NULL, ?, ?, ?, 1, 0)
+    `).run(
+      "plan-for-revocation",
+      studentId,
+      deviceRow.id,
+      "2026-07-15",
+      "2026-07-15T03:00:00.000Z",
+      "2026-07-16T03:00:00.000Z"
+    );
+    harness.db.prepare(`
+      INSERT INTO issued_plan_items (
+        plan_id, item_id, content_version, is_required, sort_order
+      ) VALUES (?, ?, ?, 1, 0)
+    `).run("plan-for-revocation", content.id, content.version);
+    harness.db.prepare(`
+      INSERT INTO issued_learning_sessions (
+        id, plan_id, student_id, trusted_device_id, item_id, content_version,
+        study_date, issued_at, active_until, submit_until, revoked_at
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+    `).run(
+      "learning-session-for-revocation",
+      "plan-for-revocation",
+      studentId,
+      deviceRow.id,
+      content.id,
+      content.version,
+      "2026-07-15",
+      "2026-07-15T03:00:00.000Z",
+      "2026-07-15T04:00:00.000Z",
+      "2026-07-16T03:00:00.000Z"
+    );
+
+    const revoked = await guardian.request(
+      "POST",
+      `/api/guardian/devices/${registeredView.publicId}/revoke`
+    );
+    expect(revoked.statusCode).toBe(200);
+    expect(revoked.json()).toMatchObject({
+      publicId: registeredView.publicId,
+      status: "revoked",
+      current: true
+    });
+    expect((harness.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM sessions AS s JOIN users AS u ON u.id = s.user_id
+      WHERE u.role = 'student'
+    `).get() as { count: number }).count).toBe(0);
+    expect((harness.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM sessions AS s JOIN users AS u ON u.id = s.user_id
+      WHERE u.role = 'guardian'
+    `).get() as { count: number }).count).toBe(1);
+    expect((harness.db.prepare(`
+      SELECT revoked_at AS revokedAt
+      FROM issued_learning_sessions
+      WHERE id = 'learning-session-for-revocation'
+    `).get() as { revokedAt: string | null }).revokedAt)
+      .toBe("2026-07-15T03:05:00.000Z");
+
+    const repeatedRevoke = await guardian.request(
+      "POST",
+      `/api/guardian/devices/${registeredView.publicId}/revoke`
+    );
+    expect(repeatedRevoke.statusCode).toBe(200);
+    expect(repeatedRevoke.json()).toEqual(revoked.json());
+    expect(JSON.stringify(repeatedRevoke.json())).not.toMatch(/token|hash|\"id\"/i);
+
+    const oldCookieLogin = await student.request(
+      "POST",
+      "/api/auth/student/login",
+      { pin: "2580" }
+    );
+    expect(oldCookieLogin.statusCode).toBe(403);
+    expect(oldCookieLogin.json()).toEqual({ code: "DEVICE_REVOKED" });
+
+    const randomCookie = harness.client();
+    randomCookie.setCookie("sua_device", "random-unknown-cookie");
+    const unknownLogin = await randomCookie.request(
+      "POST",
+      "/api/auth/student/login",
+      { pin: "2580" }
+    );
+    expect(unknownLogin.statusCode).toBe(403);
+    expect(unknownLogin.json()).toEqual({ code: "DEVICE_NOT_TRUSTED" });
+
+    const devices = await guardian.request("GET", "/api/guardian/devices");
+    expect(devices.json()).toEqual({ devices: [repeatedRevoke.json()] });
+    expect(JSON.stringify(devices.json())).not.toMatch(/token|hash|\"id\"/i);
+  });
+
+  it("ends only the cookie-selected session and rejects role or user targeting", async () => {
+    const first = harness.client();
+    const second = harness.client();
+    await bootstrapFamily(harness, first);
+    await loginGuardian(first);
+    await loginGuardian(second);
+
+    for (const target of [{ role: "student" }, { userId: "student-1" }]) {
+      const rejected = await first.request(
+        "POST",
+        "/api/auth/session/end",
+        target
+      );
+      expect(rejected.statusCode).toBe(400);
+      expect(rejected.json()).toEqual({ code: "INVALID_REQUEST" });
+      expect(first.cookie("sua_session")).toBeDefined();
+    }
+    expect((harness.db.prepare(`
+      SELECT COUNT(*) AS count FROM sessions
+    `).get() as { count: number }).count).toBe(2);
+
+    const ended = await first.request("POST", "/api/auth/session/end");
+    expect(ended.statusCode).toBe(204);
+    expect(first.cookie("sua_session")).toBeUndefined();
+    expect((harness.db.prepare(`
+      SELECT COUNT(*) AS count FROM sessions
+    `).get() as { count: number }).count).toBe(1);
+    expect((await first.request("GET", "/api/auth/me")).statusCode).toBe(401);
+    expect((await second.request("GET", "/api/auth/me")).statusCode).toBe(200);
   });
 });

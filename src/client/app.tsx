@@ -19,9 +19,21 @@ function AppContent() {
   }
   if (auth.phase === "error") return <main>잠시 후 다시 시도해 주세요.</main>;
   if (auth.user.role === "guardian") {
-    return <GuardianDashboard api={auth.api} />;
+    return (
+      <GuardianDashboard
+        api={auth.api}
+        onEnterStudentMode={auth.enterStudentMode}
+        onLogout={auth.logout}
+      />
+    );
   }
-  return <StudentHome api={auth.api} />;
+  return (
+    <StudentHome
+      api={auth.api}
+      onEnterGuardianMode={auth.enterGuardianMode}
+      onLogout={auth.logout}
+    />
+  );
 }
 
 export function App({ api }: { api: ClientApi }) {

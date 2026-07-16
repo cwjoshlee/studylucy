@@ -59,6 +59,8 @@ function createGuardianApi(overrides: Record<string, unknown> = {}) {
     }),
     updateGuardianDailyPlan: vi.fn(),
     getBackupStatus: vi.fn().mockResolvedValue({ status: "never-run" as const }),
+    listTrustedDevices: vi.fn().mockResolvedValue([]),
+    revokeTrustedDevice: vi.fn(),
     ...overrides
   };
 }
@@ -91,6 +93,54 @@ describe("GuardianDashboard", () => {
     expect(document.body.textContent).not.toMatch(
       /event-private|item-private|password|PIN|cookie|audio|transcript|삭제/i
     );
+    expect(screen.queryByRole("tab", { name: "기기 관리" })).not.toBeInTheDocument();
+  });
+
+  it("lists only safe device views and confirms current and other device revocation", async () => {
+    const user = userEvent.setup();
+    const current = {
+      publicId: "public-current",
+      name: "현재 태블릿",
+      createdAt: "2026-07-15T03:00:00.000Z",
+      lastUsedAt: "2026-07-16T03:00:00.000Z",
+      status: "active" as const,
+      current: true
+    };
+    const other = {
+      publicId: "public-other",
+      name: "거실 태블릿",
+      createdAt: "2026-07-14T03:00:00.000Z",
+      lastUsedAt: null,
+      status: "active" as const,
+      current: false
+    };
+    const listTrustedDevices = vi.fn().mockResolvedValue([current, other]);
+    const revokeTrustedDevice = vi.fn().mockImplementation((publicId: string) =>
+      Promise.resolve({
+        ...(publicId === current.publicId ? current : other),
+        status: "revoked" as const
+      }));
+    const api = createGuardianApi({ listTrustedDevices, revokeTrustedDevice });
+    const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
+    render(<GuardianDashboard api={api} />);
+
+    await user.click(screen.getByRole("button", { name: "계정 메뉴" }));
+    await user.click(screen.getByRole("button", { name: "기기 관리" }));
+    expect(await screen.findByText("현재 태블릿")).toBeVisible();
+    expect(screen.getByText("거실 태블릿")).toBeVisible();
+    expect(document.body.textContent).not.toMatch(/public-current|public-other|token|hash/i);
+
+    await user.click(screen.getByRole("button", { name: "거실 태블릿 기기 해제" }));
+    expect(confirm).toHaveBeenLastCalledWith("거실 태블릿 기기를 해제할까요?");
+    await waitFor(() => expect(revokeTrustedDevice).toHaveBeenCalledWith("public-other"));
+
+    await user.click(screen.getByRole("button", { name: "현재 태블릿 기기 해제" }));
+    expect(confirm).toHaveBeenLastCalledWith(
+      "현재 기기를 해제하면 수아 모드에서 다시 등록해야 해요. 해제할까요?"
+    );
+    await waitFor(() => expect(revokeTrustedDevice).toHaveBeenCalledWith("public-current"));
+    expect(screen.getAllByText("해제됨")).toHaveLength(2);
+    confirm.mockRestore();
   });
 
   it("confirms a deduction approval and shows requested, approved, and applied stars", async () => {
