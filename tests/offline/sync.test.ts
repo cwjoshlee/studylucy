@@ -1,5 +1,5 @@
 import "fake-indexeddb/auto";
-import { deleteDB } from "idb";
+import { deleteDB, openDB } from "idb";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ApiError } from "../../src/client/api/client";
 import type {
@@ -14,7 +14,9 @@ import {
   applyBatchReceipt,
   cacheIssuedPlan,
   getAcknowledgedCursor,
+  getConfirmedStars,
   getDeviceState,
+  getProvisionalItemIds,
   getQueueCounts,
   handleDeviceActionRequired,
   listActivities,
@@ -24,7 +26,10 @@ import {
   markStudentAuthenticated,
   queueAttempt,
   queueIdleEvent,
+  rejectRecoveryGroup,
   rebindRecoveryGroup,
+  reserveNextBatch,
+  setRecoveryBlocked,
   updateCachedPlanActivityCursor
 } from "../../src/client/offline/db";
 import { syncPending, type SyncApi } from "../../src/client/offline/sync";
@@ -35,6 +40,14 @@ const stars = {
   deductedToday: 1,
   lastReason: "서버 확정"
 };
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
 
 function plan(overrides: Partial<TodayPlan> = {}): TodayPlan {
   return {
@@ -86,6 +99,45 @@ function attempt(
     mathAnswer: null,
     durationMs: 45_000,
     difficultyFeedback: null
+  };
+}
+
+function mathPlan(): TodayPlan {
+  const current = plan();
+  return {
+    ...current,
+    requiredItemIds: ["ko-01", "math-01"],
+    items: [
+      ...current.items,
+      {
+        id: "math-01",
+        version: 1,
+        payload: {
+          id: "math-01",
+          subject: "math",
+          unit: "더하기",
+          title: "별을 더해요",
+          level: "1",
+          readLabel: "문제를 읽어 보세요",
+          text: "별 세 개와 두 개를 모아요.",
+          hint: "천천히 더해요.",
+          tokens: ["별", "세 개", "두 개"],
+          kind: "math-story",
+          question: "별은 모두 몇 개일까요?",
+          answer: 5,
+          unitLabel: "개",
+          checkHint: "3과 2를 더해요."
+        }
+      }
+    ]
+  };
+}
+
+function mathAttempt(clientAttemptId: string, mathAnswer: number) {
+  return {
+    ...attempt(clientAttemptId),
+    itemId: "math-01",
+    mathAnswer
   };
 }
 
@@ -325,6 +377,148 @@ describe("unified persistent offline synchronization", () => {
     expect(await loadCachedTodayPlan("2026-07-15")).toBeUndefined();
     expect(await loadCachedTodayPlan("2026-07-16"))
       .toEqual(receipt.currentDailyPlan);
+  });
+
+  it("refetches after a receipt-generation race so a delayed startup plan cannot replace the receipt authority", async () => {
+    const stalePlan = plan({ activityCursor: 2, completedItemIds: [], stars });
+    const receiptStars = {
+      balance: 9,
+      earnedToday: 5,
+      deductedToday: 1,
+      lastReason: "영수증 확정"
+    };
+    const receiptPlan = plan({
+      activityCursor: 12,
+      completedItemIds: ["ko-01"],
+      stars: receiptStars
+    });
+    await readyWithPlan(stalePlan);
+    await queueAttempt(attempt("attempt-concurrent-plan-race-0001"));
+    const delayedFirstToday = deferred<TodayPlan>();
+    const firstTodayStarted = deferred<void>();
+    let todayCall = 0;
+    const client = api({
+      getToday: vi.fn().mockImplementation(() => {
+        todayCall += 1;
+        if (todayCall === 1) {
+          firstTodayStarted.resolve();
+          return delayedFirstToday.promise;
+        }
+        return Promise.resolve(todayCall === 2 ? stalePlan : receiptPlan);
+      }),
+      applyOfflineBatch: vi.fn().mockImplementation(async (input) =>
+        receiptFor(input, { currentDailyPlan: receiptPlan, stars: receiptStars })
+      )
+    });
+
+    const delayedStartupSync = syncPending(client);
+    await firstTodayStarted.promise;
+    expect(client.getToday).toHaveBeenCalledTimes(1);
+    const receiptSync = syncPending(client);
+    await expect(receiptSync).resolves.toMatchObject({ sent: 1, remaining: 0 });
+
+    delayedFirstToday.resolve(stalePlan);
+    await expect(delayedStartupSync).resolves.toMatchObject({
+      sent: 0,
+      remaining: 0,
+      stopped: null
+    });
+
+    expect(client.getToday).toHaveBeenCalledTimes(3);
+    await expect(loadCachedTodayPlan(stalePlan.date)).resolves.toMatchObject({
+      activityCursor: receiptPlan.activityCursor,
+      completedItemIds: receiptPlan.completedItemIds,
+      stars: receiptStars
+    });
+    await expect(getConfirmedStars()).resolves.toEqual(receiptStars);
+  });
+
+  it("persists only trusted correct reading and math completion verdicts without exposing answers in projections", async () => {
+    const current = mathPlan();
+    await readyWithPlan(current);
+    await queueAttempt(attempt("attempt-reading-correct-0001"));
+    await queueAttempt({
+      ...attempt("attempt-reading-incorrect-0001", "2026-07-16T01:11:00.000Z"),
+      missedTokens: ["반짝여요"]
+    });
+    await queueAttempt(mathAttempt("attempt-math-correct-0001", 5));
+    await queueAttempt({
+      ...mathAttempt("attempt-math-incorrect-0001", 4),
+      occurredAt: "2026-07-16T01:12:00.000Z"
+    });
+    await queueIdleEvent(idle("idle-never-provisional-0001"));
+
+    const rows = await listActivities();
+    expect(rows.map((row) => [row.clientId, row.provisionalCompleted]))
+      .toEqual(expect.arrayContaining([
+        ["attempt-reading-correct-0001", true],
+        ["attempt-reading-incorrect-0001", false],
+        ["attempt-math-correct-0001", true],
+        ["attempt-math-incorrect-0001", false],
+        ["idle-never-provisional-0001", false]
+      ]));
+    const ids = await getProvisionalItemIds();
+    const counts = await getQueueCounts();
+    expect(ids.sort()).toEqual(["ko-01", "math-01"]);
+    expect(counts.provisionalAttempts).toBe(2);
+    expect(JSON.stringify({ ids, counts })).not.toContain("learning-session");
+    expect(JSON.stringify({ ids, counts })).not.toContain('"mathAnswer"');
+  });
+
+  it("safely derives a missing v2 provisional verdict only from an available exact plan snapshot", async () => {
+    await readyWithPlan();
+    await queueAttempt(attempt("attempt-v2-optional-verdict-0001"));
+    const database = await openDB(OFFLINE_DB_NAME, 2);
+    const row = await database.get("activityQueue", "attempt-v2-optional-verdict-0001");
+    delete row.provisionalCompleted;
+    await database.put("activityQueue", row);
+    database.close();
+
+    await expect(getProvisionalItemIds()).resolves.toEqual(["ko-01"]);
+    await expect(getQueueCounts()).resolves.toMatchObject({ provisionalAttempts: 1 });
+  });
+
+  it("keeps a persisted provisional completion through revoke, hold, and rebind until a successful receipt removes it", async () => {
+    await readyWithPlan();
+    await queueAttempt(attempt("attempt-provisional-recovery-success-0001"));
+
+    await handleDeviceActionRequired("DEVICE_REVOKED");
+    await markStudentAuthenticated();
+    await expect(getProvisionalItemIds()).resolves.toEqual(["ko-01"]);
+
+    await setRecoveryBlocked("plan-daily-1");
+    await expect(getProvisionalItemIds()).resolves.toEqual(["ko-01"]);
+
+    const recovery = plan({
+      planId: "plan-recovery-provisional-success",
+      planKind: "recovery",
+      recoverySourcePlanId: "plan-daily-1",
+      offlineEpoch: 11,
+      activityCursor: 30
+    });
+    await rebindRecoveryGroup("plan-daily-1", recovery);
+    await expect(getProvisionalItemIds()).resolves.toEqual(["ko-01"]);
+    await expect(getQueueCounts()).resolves.toMatchObject({ provisionalAttempts: 1 });
+
+    const batch = await reserveNextBatch();
+    expect(batch).toBeDefined();
+    await applyBatchReceipt(receiptFor(batch!));
+
+    await expect(getProvisionalItemIds()).resolves.toEqual([]);
+    await expect(getQueueCounts()).resolves.toMatchObject({ provisionalAttempts: 0 });
+  });
+
+  it("removes a persisted provisional completion when its recovery group is terminally rejected", async () => {
+    await readyWithPlan();
+    await queueAttempt(attempt("attempt-provisional-recovery-terminal-0001"));
+    await handleDeviceActionRequired("DEVICE_NOT_TRUSTED");
+    await markStudentAuthenticated();
+    await expect(getProvisionalItemIds()).resolves.toEqual(["ko-01"]);
+
+    await rejectRecoveryGroup("plan-daily-1", "PLAN_NOT_ISSUED");
+
+    await expect(getProvisionalItemIds()).resolves.toEqual([]);
+    await expect(getQueueCounts()).resolves.toMatchObject({ provisionalAttempts: 0 });
   });
 
   it("atomically rejects a receipt whose canonical event kind does not match the reserved journal row", async () => {

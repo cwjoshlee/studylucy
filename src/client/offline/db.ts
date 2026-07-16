@@ -49,6 +49,7 @@ export type PersistedActivity = {
   baseCursor: number;
   requiresRecovery: boolean;
   recoveryBlockedCode: "SOURCE_DEVICE_STILL_ACTIVE" | null;
+  provisionalCompleted?: boolean;
   event: WithoutDeviceSequence<ActivityEvent>;
 };
 
@@ -394,6 +395,30 @@ async function findPlan(
   return plan;
 }
 
+type ProvisionalAttempt = Pick<
+  AttemptInput,
+  "itemId" | "contentVersion" | "readingScore" | "missedTokens" | "mathAnswer"
+>;
+
+function isLocallyCompleted(
+  attempt: ProvisionalAttempt,
+  plan: TodayPlan
+): boolean {
+  const item = plan.items.find((candidate) =>
+    candidate.id === attempt.itemId &&
+    candidate.version === attempt.contentVersion
+  );
+  if (
+    item === undefined ||
+    attempt.readingScore < READING_PASS_SCORE ||
+    attempt.missedTokens.length > 0
+  ) {
+    return false;
+  }
+  return item.payload.kind !== "math-story" ||
+    attempt.mathAnswer === item.payload.answer;
+}
+
 async function nextSequence(
   transaction: OfflineTransaction
 ): Promise<number> {
@@ -538,6 +563,7 @@ export async function queueAttempt(input: AttemptInput): Promise<void> {
       baseCursor: cursors[plan.planId] ?? plan.activityCursor,
       requiresRecovery: false,
       recoveryBlockedCode: null,
+      provisionalCompleted: isLocallyCompleted(safe, plan),
       event: { kind: "attempt", legacy: false, payload: safe }
     });
     await transaction.done;
@@ -585,6 +611,7 @@ export async function queueIdleEvent(input: IdleEventInput): Promise<void> {
       baseCursor: cursors[plan.planId] ?? plan.activityCursor,
       requiresRecovery: false,
       recoveryBlockedCode: null,
+      provisionalCompleted: false,
       event: { kind: "idle", legacy: true, payload: waiver.payload }
     });
     await transaction.done;
@@ -665,27 +692,15 @@ function locallyCompletedItemId(
 ): string | null {
   if (row.event.kind !== "attempt") return null;
   const attempt = row.event.payload;
+  if (row.provisionalCompleted !== undefined) {
+    return row.provisionalCompleted ? attempt.itemId : null;
+  }
   const plan = plans.find((candidate) =>
     candidate.planId === row.planId || candidate.planId === row.sourcePlanId
   );
-  const item = plan?.items.find((candidate) =>
-    candidate.id === attempt.itemId &&
-    candidate.version === attempt.contentVersion
-  );
-  if (
-    item === undefined ||
-    attempt.readingScore < READING_PASS_SCORE ||
-    attempt.missedTokens.length > 0
-  ) {
-    return null;
-  }
-  if (
-    item.payload.kind === "math-story" &&
-    attempt.mathAnswer !== item.payload.answer
-  ) {
-    return null;
-  }
-  return attempt.itemId;
+  return plan !== undefined && isLocallyCompleted(attempt, plan)
+    ? attempt.itemId
+    : null;
 }
 
 export function getQueueCounts(): Promise<QueueCounts> {
@@ -1231,63 +1246,77 @@ export async function rejectRecoveryGroup(
 
 export async function reconcileLegacyActivities(
   input: TodayPlan,
-  receivedAt = new Date().toISOString()
-): Promise<void> {
+  receivedAt = new Date().toISOString(),
+  options: { expectedReceiptGeneration?: number } = {}
+): Promise<boolean> {
   const plan = sanitizePlan(input);
-  if (plan.planKind !== "daily") return;
-  await withDatabase(async (database) => {
-    const transaction = database.transaction(
-      ["legacyActivities", "activityQueue", "rejectedActivities", "meta"],
-      "readwrite"
-    );
-    await requireReady(transaction);
-    const legacy = await transaction.objectStore("legacyActivities").getAll();
-    const cursors = await acknowledgedCursors(transaction);
-    let sequenceRecord = await transaction.objectStore("meta").get("next-device-sequence");
-    let sequence = sequenceRecord?.key === "next-device-sequence"
-      ? sequenceRecord.value
-      : 0;
-    for (const record of legacy) {
-      const matches = plan.items.filter((item) =>
-        item.id === record.payload.itemId &&
-        (record.kind === "idle" || item.version === record.payload.contentVersion)
-      );
-      if (record.payload.studyDate !== plan.date || matches.length !== 1) {
-        await transaction.objectStore("rejectedActivities").put({
-          clientId: record.clientId,
-          kind: record.kind,
-          code: "LEGACY_AUTHORITY_UNAVAILABLE",
-          studyDate: record.payload.studyDate,
-          itemId: record.payload.itemId,
-          occurredAt: record.kind === "idle" ? record.payload.occurredAt : null,
-          localLegacyRecord: record
-        });
-      } else {
-        const occurredAt = record.kind === "attempt"
-          ? receivedAt
-          : record.payload.occurredAt;
-        await transaction.objectStore("activityQueue").put({
-          clientId: record.clientId,
-          occurredAt,
-          deviceSequence: sequence++,
-          planId: plan.planId,
-          sourcePlanId: null,
-          offlineEpoch: plan.offlineEpoch,
-          baseCursor: cursors[plan.planId] ?? plan.activityCursor,
-          requiresRecovery: false,
-          recoveryBlockedCode: null,
-          event: record.kind === "attempt"
-            ? { kind: "attempt", legacy: true, payload: record.payload }
-            : { kind: "idle", legacy: true, payload: record.payload }
-        });
-      }
-      await transaction.objectStore("legacyActivities").delete(record.clientId);
+  if (plan.planKind !== "daily") return false;
+  const reconciled = await serializeAuthorityWrite(async () => {
+    if (
+      options.expectedReceiptGeneration !== undefined &&
+      options.expectedReceiptGeneration !== receiptAuthorityGeneration
+    ) {
+      return false;
     }
-    await transaction.objectStore("meta").put({
-      key: "next-device-sequence",
-      value: sequence
+    await withDatabase(async (database) => {
+      const transaction = database.transaction(
+        ["legacyActivities", "activityQueue", "rejectedActivities", "meta"],
+        "readwrite"
+      );
+      await requireReady(transaction);
+      const legacy = await transaction.objectStore("legacyActivities").getAll();
+      const cursors = await acknowledgedCursors(transaction);
+      let sequenceRecord = await transaction.objectStore("meta").get("next-device-sequence");
+      let sequence = sequenceRecord?.key === "next-device-sequence"
+        ? sequenceRecord.value
+        : 0;
+      for (const record of legacy) {
+        const matches = plan.items.filter((item) =>
+          item.id === record.payload.itemId &&
+          (record.kind === "idle" || item.version === record.payload.contentVersion)
+        );
+        if (record.payload.studyDate !== plan.date || matches.length !== 1) {
+          await transaction.objectStore("rejectedActivities").put({
+            clientId: record.clientId,
+            kind: record.kind,
+            code: "LEGACY_AUTHORITY_UNAVAILABLE",
+            studyDate: record.payload.studyDate,
+            itemId: record.payload.itemId,
+            occurredAt: record.kind === "idle" ? record.payload.occurredAt : null,
+            localLegacyRecord: record
+          });
+        } else {
+          const occurredAt = record.kind === "attempt"
+            ? receivedAt
+            : record.payload.occurredAt;
+          await transaction.objectStore("activityQueue").put({
+            clientId: record.clientId,
+            occurredAt,
+            deviceSequence: sequence++,
+            planId: plan.planId,
+            sourcePlanId: null,
+            offlineEpoch: plan.offlineEpoch,
+            baseCursor: cursors[plan.planId] ?? plan.activityCursor,
+            requiresRecovery: false,
+            recoveryBlockedCode: null,
+            provisionalCompleted: record.kind === "attempt"
+              ? isLocallyCompleted(record.payload, plan)
+              : false,
+            event: record.kind === "attempt"
+              ? { kind: "attempt", legacy: true, payload: record.payload }
+              : { kind: "idle", legacy: true, payload: record.payload }
+          });
+        }
+        await transaction.objectStore("legacyActivities").delete(record.clientId);
+      }
+      await transaction.objectStore("meta").put({
+        key: "next-device-sequence",
+        value: sequence
+      });
+      await transaction.done;
     });
-    await transaction.done;
+    return true;
   });
-  await publishQueueCounts();
+  if (reconciled) await publishQueueCounts();
+  return reconciled;
 }

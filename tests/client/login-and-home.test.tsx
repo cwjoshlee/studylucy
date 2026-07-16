@@ -46,6 +46,63 @@ beforeEach(async () => {
 });
 
 describe("가족 로그인과 학생 홈", () => {
+  it("requires a student PIN when the server still has a student session but local authority is new or missing", async () => {
+    const api = createFakeApi({
+      me: vi.fn().mockResolvedValue({
+        id: "student-1",
+        role: "student",
+        displayName: "수아"
+      })
+    });
+
+    render(<App api={api} />);
+
+    expect(await screen.findByRole("heading", {
+      name: "수아 PIN으로 들어가기"
+    })).toBeVisible();
+    await expect(getDeviceState()).resolves.toBe("auth-required");
+    expect(api.getToday).not.toHaveBeenCalled();
+  });
+
+  it("does not let a lost-logout server student session restore local auth-required authority", async () => {
+    await markStudentAuthenticated();
+    await clearOfflineAuthority("auth-required");
+    const api = createFakeApi({
+      me: vi.fn().mockResolvedValue({
+        id: "student-1",
+        role: "student",
+        displayName: "수아"
+      })
+    });
+
+    render(<App api={api} />);
+
+    expect(await screen.findByRole("heading", {
+      name: "수아 PIN으로 들어가기"
+    })).toBeVisible();
+    await expect(getDeviceState()).resolves.toBe("auth-required");
+    expect(api.studentLogin).not.toHaveBeenCalled();
+  });
+
+  it("keeps a server student session behind registration when local device action is required", async () => {
+    await markStudentAuthenticated();
+    await handleDeviceActionRequired("DEVICE_REVOKED");
+    const api = createFakeApi({
+      me: vi.fn().mockResolvedValue({
+        id: "student-1",
+        role: "student",
+        displayName: "수아"
+      })
+    });
+
+    render(<App api={api} />);
+
+    expect(await screen.findByRole("heading", { name: "이 기기 등록하기" }))
+      .toBeVisible();
+    await expect(getDeviceState()).resolves.toBe("device-action-required");
+    expect(api.studentLogin).not.toHaveBeenCalled();
+  });
+
   it("cold-starts only from a ready unexpired same-KST-day student lease after a network TypeError", async () => {
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-07-16T02:00:00.000Z"));

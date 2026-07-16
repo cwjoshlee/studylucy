@@ -292,6 +292,13 @@ describe("IndexedDB v2 authority journal migration", () => {
 
   it("reconciles matching v1 records only after a current issued plan without fabricating attempt time or idle session authority", async () => {
     await seedVersionOne();
+    const versionOne = await openDB(OFFLINE_DB_NAME, 1);
+    await versionOne.put("attemptQueue", {
+      ...attempt,
+      readingScore: 100,
+      missedTokens: []
+    });
+    versionOne.close();
     await listLegacyActivities();
     await cacheIssuedPlan(plan, stars);
 
@@ -304,6 +311,7 @@ describe("IndexedDB v2 authority journal migration", () => {
         clientId: idle.clientIdleEventId,
         occurredAt: idle.occurredAt,
         planId: plan.planId,
+        provisionalCompleted: false,
         event: {
           kind: "idle",
           legacy: true,
@@ -317,13 +325,14 @@ describe("IndexedDB v2 authority journal migration", () => {
         clientId: attempt.clientAttemptId,
         occurredAt: "2026-07-16T02:00:00.000Z",
         planId: plan.planId,
+        provisionalCompleted: true,
         event: {
           kind: "attempt",
           legacy: true,
           payload: expect.objectContaining({
             clientAttemptId: attempt.clientAttemptId,
-            readingScore: attempt.readingScore,
-            missedTokens: attempt.missedTokens
+            readingScore: 100,
+            missedTokens: []
           })
         }
       })

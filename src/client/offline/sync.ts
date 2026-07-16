@@ -5,6 +5,7 @@ import {
   applyBatchReceipt,
   cacheIssuedPlan,
   clearOfflineAuthority,
+  getReceiptAuthorityGeneration,
   getQueueCounts,
   handleDeviceActionRequired,
   queueAttempt,
@@ -157,13 +158,22 @@ export async function preserveFailedIdleEvent(
 }
 
 async function fetchCurrentPlan(api: SyncApi) {
-  const current = await api.getToday();
-  if (current.planKind !== "daily") {
-    throw new Error("CURRENT_DAILY_PLAN_MUST_BE_ORDINARY");
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const receiptGeneration = getReceiptAuthorityGeneration();
+    const current = await api.getToday();
+    if (current.planKind !== "daily") {
+      throw new Error("CURRENT_DAILY_PLAN_MUST_BE_ORDINARY");
+    }
+    const cached = await cacheIssuedPlan(current, current.stars, {
+      expectedReceiptGeneration: receiptGeneration
+    });
+    if (!cached) continue;
+    const reconciled = await reconcileLegacyActivities(current, undefined, {
+      expectedReceiptGeneration: receiptGeneration
+    });
+    if (reconciled) return current;
   }
-  await cacheIssuedPlan(current, current.stars);
-  await reconcileLegacyActivities(current);
-  return current;
+  throw new TypeError("CURRENT_DAILY_PLAN_AUTHORITY_CHANGED");
 }
 
 export async function syncPending(

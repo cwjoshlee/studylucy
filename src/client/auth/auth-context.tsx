@@ -15,6 +15,7 @@ import {
 import {
   applyAuthorityFailure,
   clearOfflineAuthority,
+  getDeviceState,
   loadOfflineStudentSession,
   markStudentAuthenticated,
   storeOfflineLease,
@@ -82,8 +83,23 @@ export function AuthProvider({
   useEffect(() => {
     let active = true;
     void api.me().then(
-      (user) => {
-        if (active) setState({
+      async (user) => {
+        if (!active) return;
+        if (user.role === "student") {
+          const deviceState = await getDeviceState().catch(
+            () => "auth-required" as const
+          );
+          if (!active) return;
+          if (deviceState === "auth-required") {
+            setState({ phase: "student-login", user: null });
+            return;
+          }
+          if (deviceState === "device-action-required") {
+            setState({ phase: "device-registration", user: null });
+            return;
+          }
+        }
+        setState({
           phase: "authenticated",
           user,
           offlineSession: null
