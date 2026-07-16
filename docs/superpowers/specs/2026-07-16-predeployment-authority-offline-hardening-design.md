@@ -40,6 +40,10 @@
 - 보존 큐는 재등록·학생 PIN 로그인 전에는 열람·수정·동기화할 수 없다.
 - `DEVICE_REVOKED` 수신 시 메타 상태를 `device-action-required`로 바꾸고 동일 정책을 적용한다.
 
+해제 기기의 보존 큐는 옛 기기 계획을 새 기기 권한으로 직접 제출하지 않는다. 보호자가 현재 브라우저를 다시 등록하고 학생 PIN으로 재인증한 뒤에만, 서버가 같은 학생·해제된 원기기·미만료 원계획을 확인하여 현재 기기에 묶인 일회성 복구 계획을 발급한다. 복구 계획은 원계획의 날짜·항목·버전·필수 여부·제출 기한을 그대로 복사하며 새 날짜나 추가 별 획득 기회를 만들지 않는다. 시도는 복구 계획으로 검증하고, 보존 무반응 기록은 항상 차감 면제로 처리한다.
+
+기기 쿠키만 유실되어 `DEVICE_NOT_TRUSTED`가 된 경우에도 브라우저는 같은 원자적 큐 보존·차단 상태로 전환한다. 새 기기를 등록해도 원계획 기기가 서버에서 아직 활성이라면 복구 계획을 발급하지 않고 `SOURCE_DEVICE_STILL_ACTIVE`로 보류한다. 보호자가 기기 관리에서 원기기를 명시적으로 해제하고 학생이 다시 인증한 뒤에만 위 복구 절차를 진행한다. 보류 상태는 데이터 거절이나 자동 삭제로 취급하지 않는다.
+
 ## 3. 서버 발급 계획과 날짜 권위
 
 ### 날짜
@@ -60,6 +64,8 @@
 - `offline_batches`: 배치 ID, 기기, epoch, 처리 결과와 idempotency 상태.
 
 현재 날짜 계획을 성공적으로 읽을 때만 발급 행을 만든다. 각 발급 계획의 제출 기한은 다음 KST 날짜 23:59:59까지다. 이 범위는 이미 온라인에서 발급받은 어제 계획의 재연결 제출만 허용한다.
+
+`issued_daily_plans`는 일반 당일 계획과 복구 계획을 구분한다. 일반 계획은 학생·기기·날짜당 하나이고, 복구 계획은 원계획·현재 기기당 하나로 idempotent하다. 복구 계획 발급은 위 기기 수명주기 조건을 모두 만족할 때만 가능하며 원기기 계획 자체의 제출 권한을 새 기기에 이전하지 않는다.
 
 ### 시도 검증
 
@@ -157,6 +163,7 @@
 - `POST /api/guardian/devices/:deviceId/revoke`
 - `POST /api/auth/session/end`
 - `POST /api/student/learning-sessions`
+- `POST /api/student/recovery-plans`
 - `POST /api/student/offline-batches`
 
 주요 오류 코드:
@@ -165,6 +172,8 @@
 - `OFFLINE_ACCESS_EXPIRED`
 - `PLAN_NOT_ISSUED`, `PLAN_SUBMISSION_EXPIRED`
 - `LEARNING_SESSION_INVALID`, `LEARNING_SESSION_EXPIRED`
+- `CURRENT_DAILY_PLAN_REQUIRED`는 KST 자정 경계에서 현재 당일 계획을 다시 읽은 뒤 같은 예약 배치를 재시도하는 비종결 전제 조건이다.
+- `SOURCE_DEVICE_STILL_ACTIVE`는 보호자가 원기기를 해제할 때까지 보존 큐를 유지하는 비종결 보류 상태다.
 - `ORDER_CONFLICT_WAIVED`는 성공 영수증 상태이며 오류가 아니다.
 
 `session/end`는 현재 역할 세션만 종료하고 권한을 높이지 않는다. 학생에서 보호자로 전환할 때는 보호자 비밀번호를 다시 입력하고, 보호자에서 학생으로 전환할 때는 등록 기기의 4자리 PIN을 다시 입력한다. 역할 전환이라는 이름으로 자격 증명 없이 세션 역할을 바꾸는 API는 만들지 않는다.
@@ -181,8 +190,8 @@
 
 ## 9. 마이그레이션과 호환성
 
-- IndexedDB 버전을 올리고 기존 `attemptQueue`와 `idleEventQueue`를 `activityQueue`로 원자적으로 이전한다.
-- 이전 큐에 `occurredAt` 또는 epoch가 없으면 임의 차감을 만들지 않는다. 시도는 서버 검증 후 보존하고 무반응은 `ORDER_CONFLICT_WAIVED`로 처리한다.
+- IndexedDB 버전을 올리고 새 권위 완비 기록은 `activityQueue`를 사용하며, 기존 `attemptQueue`와 `idleEventQueue`는 한 업그레이드 트랜잭션에서 `legacyActivities`로 이전한다.
+- 이전 큐에는 발급 계획 ID·epoch·cursor가 없고 이전 시도에는 신뢰할 `occurredAt`도 없으므로 먼저 로컬 `legacyActivities`에 격리하며 값을 꾸며내지 않는다. 재인증 후 서버가 발급한 같은 당일 계획에 항목·버전이 일치하는 시도만 재연결 시각으로 검증하고, 이전 무반응은 같은 당일·항목 일치 시 발급 스냅샷 버전을 사용해 `ORDER_CONFLICT_WAIVED`로만 처리한다. 나머지는 `LEGACY_AUTHORITY_UNAVAILABLE`로 로컬 보호자 확인 목록에 보존한다.
 - 기존 신뢰 기기는 활성 상태로 유지한다. 장치 목록 표시 이름이 없으면 안전한 기본 이름을 사용한다.
 - 기존 오늘 계획과 별 원장은 삭제하거나 재작성하지 않는다.
 
