@@ -73,7 +73,8 @@ export const StarReasonSchema = z.enum([
 ]);
 export type StarReason = z.infer<typeof StarReasonSchema>;
 export type StarEvent = {
-  id: string; delta: number; balanceAfter: number; reason: StarReason;
+  id: string; requestedDelta: number; delta: number;
+  balanceAfter: number; reason: StarReason;
   reasonText: string; studyDate: string; itemId: string | null;
   actorType: "system" | "guardian"; createdAt: string;
   reversesEventId: string | null;
@@ -87,7 +88,7 @@ export type AppliedStarResult = { event: StarEvent; duplicate: boolean };
 
 - [ ] **Step 2: Write ledger RED tests**
 
-Create a family fixture, apply source `required:student-1:2026-07-16:ko-01` twice, and assert one `+1` event. Apply `-2` at balance 1 and assert actual `-1`, balance 0. Apply another negative request and assert a zero `NO_BALANCE_AUDIT` event. Reverse the earn once and assert the second reversal throws `EVENT_ALREADY_REVERSED`.
+Create a family fixture, apply source `required:student-1:2026-07-16:ko-01` twice, and assert one `+1` event. Apply `-2` at balance 1 and assert requested `-2`, actual `-1`, balance 0. Apply another negative request and assert a zero `NO_BALANCE_AUDIT` event. Reverse an earn when only part of its value remains and assert requested versus actual deltas, a linked `REVERSAL`, and that the second reversal throws `EVENT_ALREADY_REVERSED`.
 
 - [ ] **Step 3: Run RED**
 
@@ -160,7 +161,7 @@ Add indexes on `star_events(student_id, study_date, created_at)` and `pending_st
 
 - [ ] **Step 5: Implement atomic repository behavior**
 
-`apply()` uses one SQLite transaction: return an existing source event; insert balance 0 if absent; clamp a negative delta to `-balance`; use `NO_BALANCE_AUDIT` when requested negative becomes zero; update balance; insert event and return it. `reverse()` appends `-original.delta` using source `reversal:<eventId>` and `reverses_event_id` without deleting the original.
+`apply()` uses one SQLite transaction: return an existing source event; insert balance 0 if absent; clamp a negative delta to `-balance`; record requested and actual deltas separately; use `NO_BALANCE_AUDIT` when an ordinary requested negative becomes zero; update balance; insert event and return it. `reverse()` requests `-original.delta` using source `reversal:<eventId>` and `reverses_event_id` without deleting the original. It always records a linked `REVERSAL`, including partial or zero actual deductions, and consumes the original event's single reversal opportunity.
 
 - [ ] **Step 6: Verify and commit**
 
