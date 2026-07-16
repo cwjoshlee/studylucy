@@ -20,6 +20,7 @@ import {
   type IdleEventInput,
   type StudentStarSummary
 } from "../../shared/stars";
+import { READING_PASS_SCORE } from "../learning/reading-judge";
 
 export const OFFLINE_DB_NAME = "sua-learning-v1";
 export const OFFLINE_DB_VERSION = 2;
@@ -33,6 +34,7 @@ export type QueueCounts = {
 
 type QueueCountsListener = (counts: QueueCounts) => void;
 type ConfirmedStarsListener = (summary: StudentStarSummary) => void;
+type AuthorityStateListener = (state: DeviceState) => void;
 type WithoutDeviceSequence<T> = T extends unknown
   ? Omit<T, "deviceSequence">
   : never;
@@ -119,6 +121,29 @@ type OfflineTransaction = IDBPTransaction<OfflineDatabase, any, any>;
 
 const queueCountsListeners = new Set<QueueCountsListener>();
 const confirmedStarsListeners = new Set<ConfirmedStarsListener>();
+const authorityStateListeners = new Set<AuthorityStateListener>();
+let authorityWriteTail: Promise<void> = Promise.resolve();
+let receiptAuthorityGeneration = 0;
+
+async function serializeAuthorityWrite<T>(
+  operation: () => Promise<T>
+): Promise<T> {
+  const previous = authorityWriteTail;
+  let release!: () => void;
+  authorityWriteTail = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  await previous;
+  try {
+    return await operation();
+  } finally {
+    release();
+  }
+}
+
+export function getReceiptAuthorityGeneration(): number {
+  return receiptAuthorityGeneration;
+}
 
 export class OfflineAuthorityError extends Error {
   constructor(readonly code: "AUTH_REQUIRED" | "DEVICE_ACTION_REQUIRED" | "PLAN_AUTHORITY_REQUIRED" | "RESERVATION_INVALID" | "CLIENT_ID_CONFLICT") {
@@ -237,7 +262,7 @@ function migrateV1(
       value: state?.key === "device-state" &&
         (state.value === "ready" || state.value === "auth-required" || state.value === "device-action-required")
         ? state.value
-        : "ready"
+        : "auth-required"
     });
     if (confirmed?.key === "confirmed-stars") {
       const parsed = StudentStarSummarySchema.safeParse(confirmed.value);
@@ -273,7 +298,7 @@ async function withDatabase<T>(
 
 async function deviceStateIn(transaction: OfflineTransaction): Promise<DeviceState> {
   const state = await transaction.objectStore("meta").get("device-state");
-  return state?.key === "device-state" ? state.value : "ready";
+  return state?.key === "device-state" ? state.value : "auth-required";
 }
 
 async function requireReady(transaction: OfflineTransaction): Promise<void> {
@@ -402,26 +427,49 @@ export function subscribeConfirmedStars(
   return () => confirmedStarsListeners.delete(listener);
 }
 
+export function subscribeAuthorityState(
+  listener: AuthorityStateListener
+): () => void {
+  authorityStateListeners.add(listener);
+  return () => authorityStateListeners.delete(listener);
+}
+
+function publishAuthorityState(state: DeviceState): void {
+  for (const listener of authorityStateListeners) listener(state);
+}
+
 export async function cacheIssuedPlan(
   input: TodayPlan,
-  stars: StudentStarSummary = input.stars
-): Promise<void> {
+  stars: StudentStarSummary = input.stars,
+  options: { expectedReceiptGeneration?: number } = {}
+): Promise<boolean> {
   const plan = sanitizePlan(input);
-  if (plan.planKind !== "daily") return;
+  if (plan.planKind !== "daily") return false;
   const confirmed = sanitizeStars(stars);
-  await withDatabase(async (database) => {
-    const transaction = database.transaction(["todayPlans", "meta"], "readwrite");
-    await requireReady(transaction);
-    await transaction.objectStore("todayPlans").clear();
-    await transaction.objectStore("todayPlans").put({ ...plan, stars: confirmed });
-    await transaction.objectStore("meta").put({
-      key: "confirmed-stars",
-      value: confirmed
+  const cached = await serializeAuthorityWrite(async () => {
+    if (
+      options.expectedReceiptGeneration !== undefined &&
+      options.expectedReceiptGeneration !== receiptAuthorityGeneration
+    ) {
+      return false;
+    }
+    await withDatabase(async (database) => {
+      const transaction = database.transaction(["todayPlans", "meta"], "readwrite");
+      await requireReady(transaction);
+      await transaction.objectStore("todayPlans").clear();
+      await transaction.objectStore("todayPlans").put({ ...plan, stars: confirmed });
+      await transaction.objectStore("meta").put({
+        key: "confirmed-stars",
+        value: confirmed
+      });
+      await putAcknowledgedCursor(transaction, plan.planId, plan.activityCursor);
+      await transaction.done;
     });
-    await putAcknowledgedCursor(transaction, plan.planId, plan.activityCursor);
-    await transaction.done;
+    return true;
   });
+  if (!cached) return false;
   for (const listener of confirmedStarsListeners) listener(confirmed);
+  return true;
 }
 
 export const cacheTodayPlan = cacheIssuedPlan;
@@ -611,28 +659,68 @@ async function removeActivity(clientId: string): Promise<void> {
 export const removeQueuedAttempt = removeActivity;
 export const removeQueuedIdleEvent = removeActivity;
 
+function locallyCompletedItemId(
+  row: PersistedActivity,
+  plans: TodayPlan[]
+): string | null {
+  if (row.event.kind !== "attempt") return null;
+  const attempt = row.event.payload;
+  const plan = plans.find((candidate) =>
+    candidate.planId === row.planId || candidate.planId === row.sourcePlanId
+  );
+  const item = plan?.items.find((candidate) =>
+    candidate.id === attempt.itemId &&
+    candidate.version === attempt.contentVersion
+  );
+  if (
+    item === undefined ||
+    attempt.readingScore < READING_PASS_SCORE ||
+    attempt.missedTokens.length > 0
+  ) {
+    return null;
+  }
+  if (
+    item.payload.kind === "math-story" &&
+    attempt.mathAnswer !== item.payload.answer
+  ) {
+    return null;
+  }
+  return attempt.itemId;
+}
+
 export function getQueueCounts(): Promise<QueueCounts> {
   return withDatabase(async (database) => {
     const transaction = database.transaction(
-      ["activityQueue", "rejectedActivities", "meta"]
+      ["activityQueue", "rejectedActivities", "todayPlans", "meta"]
     );
     await requireReady(transaction);
     const activities = await transaction.objectStore("activityQueue").getAll();
+    const plans = await transaction.objectStore("todayPlans").getAll();
     const rejected = await transaction.objectStore("rejectedActivities").count();
     await transaction.done;
     return {
       activities: activities.length,
-      provisionalAttempts: activities.filter((row) => row.event.kind === "attempt").length,
+      provisionalAttempts: activities.filter(
+        (row) => locallyCompletedItemId(row, plans) !== null
+      ).length,
       rejected
     };
   });
 }
 
 export async function getProvisionalItemIds(): Promise<string[]> {
-  const rows = await listActivities();
-  return [...new Set(rows.flatMap((row) =>
-    row.event.kind === "attempt" ? [row.event.payload.itemId] : []
-  ))];
+  return withDatabase(async (database) => {
+    const transaction = database.transaction(["activityQueue", "todayPlans", "meta"]);
+    await requireReady(transaction);
+    const rows = await transaction.objectStore("activityQueue").getAll();
+    const plans = await transaction.objectStore("todayPlans").getAll();
+    await transaction.done;
+    const completed = rows.flatMap((row) => {
+      const itemId = locallyCompletedItemId(row, plans);
+      return itemId === null ? [] : [itemId];
+    });
+    return [...new Set(completed)];
+  });
 }
 
 export function getDeviceState(): Promise<DeviceState> {
@@ -644,10 +732,11 @@ export function getDeviceState(): Promise<DeviceState> {
   });
 }
 
-export function markStudentAuthenticated(): Promise<void> {
-  return withDatabase(async (database) => {
+export async function markStudentAuthenticated(): Promise<void> {
+  await withDatabase(async (database) => {
     await database.put("meta", { key: "device-state", value: "ready" });
   });
+  publishAuthorityState("ready");
 }
 
 export async function storeOfflineLease(input: OfflineLease): Promise<void> {
@@ -714,6 +803,7 @@ export async function clearOfflineAuthority(
     ]);
     await transaction.done;
   });
+  publishAuthorityState("auth-required");
 }
 
 export async function handleDeviceActionRequired(
@@ -755,6 +845,7 @@ export async function handleDeviceActionRequired(
     if (options.abortBeforeCommit) transaction.abort();
     await transaction.done;
   });
+  publishAuthorityState("device-action-required");
 }
 
 export function setDeviceActionRequired(): Promise<void> {
@@ -764,9 +855,9 @@ export function setDeviceActionRequired(): Promise<void> {
 export async function applyAuthorityFailure(code: string): Promise<void> {
   if (code === "DEVICE_REVOKED" || code === "DEVICE_NOT_TRUSTED") {
     await handleDeviceActionRequired(code);
-  } else if (code === "AUTH_REQUIRED" || code === "HTTP_401") {
-    await clearOfflineAuthority("auth-required");
+    return;
   }
+  await clearOfflineAuthority("auth-required");
 }
 
 export function clearCurrentV1Authority(code: string): Promise<void> {
@@ -927,57 +1018,60 @@ export async function applyBatchReceipt(
   options: { abortBeforeCommit?: boolean } = {}
 ): Promise<void> {
   const receipt = input;
-  await withDatabase(async (database) => {
-    const transaction = database.transaction(
-      ["activityQueue", "rejectedActivities", "pendingBatches", "todayPlans", "meta"],
-      "readwrite"
-    );
-    await requireReady(transaction);
-    const batchStore = transaction.objectStore("pendingBatches");
-    const batch = await batchStore.get(receipt.clientBatchId);
-    if (batch === undefined) throw new OfflineAuthorityError("RESERVATION_INVALID");
-    const expected = new Set(batch.orderedClientIds);
-    const received = new Set(receipt.receipts.map((entry) => entry.clientId));
-    if (
-      received.size !== expected.size ||
-      [...received].some((id) => !expected.has(id))
-    ) {
-      throw new OfflineAuthorityError("RESERVATION_INVALID");
-    }
-    for (const eventReceipt of receipt.receipts) {
-      const row = await transaction.objectStore("activityQueue").get(eventReceipt.clientId);
-      if (row === undefined) throw new OfflineAuthorityError("RESERVATION_INVALID");
-      if (eventReceipt.kind !== row.event.kind) {
+  await serializeAuthorityWrite(async () => {
+    await withDatabase(async (database) => {
+      const transaction = database.transaction(
+        ["activityQueue", "rejectedActivities", "pendingBatches", "todayPlans", "meta"],
+        "readwrite"
+      );
+      await requireReady(transaction);
+      const batchStore = transaction.objectStore("pendingBatches");
+      const batch = await batchStore.get(receipt.clientBatchId);
+      if (batch === undefined) throw new OfflineAuthorityError("RESERVATION_INVALID");
+      const expected = new Set(batch.orderedClientIds);
+      const received = new Set(receipt.receipts.map((entry) => entry.clientId));
+      if (
+        received.size !== expected.size ||
+        [...received].some((id) => !expected.has(id))
+      ) {
         throw new OfflineAuthorityError("RESERVATION_INVALID");
       }
-      if (eventReceipt.status === "REJECTED") {
-        await transaction.objectStore("rejectedActivities").put(
-          redactedRejection(row, eventReceipt.code ?? "REJECTED")
-        );
+      for (const eventReceipt of receipt.receipts) {
+        const row = await transaction.objectStore("activityQueue").get(eventReceipt.clientId);
+        if (row === undefined) throw new OfflineAuthorityError("RESERVATION_INVALID");
+        if (eventReceipt.kind !== row.event.kind) {
+          throw new OfflineAuthorityError("RESERVATION_INVALID");
+        }
+        if (eventReceipt.status === "REJECTED") {
+          await transaction.objectStore("rejectedActivities").put(
+            redactedRejection(row, eventReceipt.code ?? "REJECTED")
+          );
+        }
+        await transaction.objectStore("activityQueue").delete(row.clientId);
       }
-      await transaction.objectStore("activityQueue").delete(row.clientId);
-    }
-    await batchStore.delete(batch.clientBatchId);
-    await putAcknowledgedCursor(
-      transaction,
-      batch.planId,
-      receipt.activityCursor
-    );
-    const current = sanitizePlan(receipt.currentDailyPlan);
-    if (current.planKind === "daily" && current.date === currentKstDate()) {
-      await transaction.objectStore("todayPlans").clear();
-      await transaction.objectStore("todayPlans").put({
-        ...current,
-        stars: sanitizeStars(receipt.stars)
+      await batchStore.delete(batch.clientBatchId);
+      await putAcknowledgedCursor(
+        transaction,
+        batch.planId,
+        receipt.activityCursor
+      );
+      const current = sanitizePlan(receipt.currentDailyPlan);
+      if (current.planKind === "daily" && current.date === currentKstDate()) {
+        await transaction.objectStore("todayPlans").clear();
+        await transaction.objectStore("todayPlans").put({
+          ...current,
+          stars: sanitizeStars(receipt.stars)
+        });
+      }
+      const confirmed = sanitizeStars(receipt.stars);
+      await transaction.objectStore("meta").put({
+        key: "confirmed-stars",
+        value: confirmed
       });
-    }
-    const confirmed = sanitizeStars(receipt.stars);
-    await transaction.objectStore("meta").put({
-      key: "confirmed-stars",
-      value: confirmed
+      if (options.abortBeforeCommit) transaction.abort();
+      await transaction.done;
     });
-    if (options.abortBeforeCommit) transaction.abort();
-    await transaction.done;
+    receiptAuthorityGeneration += 1;
   });
   await publishQueueCounts();
   const confirmed = sanitizeStars(receipt.stars);

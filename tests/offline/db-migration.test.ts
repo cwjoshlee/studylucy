@@ -85,7 +85,9 @@ const idle: IdleEventInput = {
   occurredAt: "2026-07-16T01:05:00.000Z"
 };
 
-async function seedVersionOne(): Promise<void> {
+async function seedVersionOne(
+  deviceState: "ready" | "auth-required" | "device-action-required" | null = "ready"
+): Promise<void> {
   const database = await openDB(OFFLINE_DB_NAME, 1, {
     upgrade(db) {
       db.createObjectStore("todayPlans", { keyPath: "date" });
@@ -103,7 +105,12 @@ async function seedVersionOne(): Promise<void> {
     transaction.objectStore("attemptQueue").put(attempt),
     transaction.objectStore("idleEventQueue").put(idle),
     transaction.objectStore("meta").put({ key: "confirmed-stars", value: stars }),
-    transaction.objectStore("meta").put({ key: "device-state", value: "ready" })
+    ...(deviceState === null ? [] : [
+      transaction.objectStore("meta").put({
+        key: "device-state",
+        value: deviceState
+      })
+    ])
   ]);
   await transaction.done;
   database.close();
@@ -176,6 +183,35 @@ describe("IndexedDB v2 authority journal migration", () => {
     raw.close();
   });
 
+  it("fails closed when a new database has no authenticated device state", async () => {
+    await expect(getDeviceState()).resolves.toBe("auth-required");
+    await expect(listActivities()).rejects.toMatchObject({
+      code: "AUTH_REQUIRED"
+    });
+    await expect(queueAttempt(attempt)).rejects.toMatchObject({
+      code: "AUTH_REQUIRED"
+    });
+
+    await markStudentAuthenticated();
+    await expect(listActivities()).resolves.toEqual([]);
+  });
+
+  it("fails closed when v1 has no device state but preserves an explicit ready state", async () => {
+    await seedVersionOne(null);
+
+    await expect(getDeviceState()).resolves.toBe("auth-required");
+    await expect(listLegacyActivities()).rejects.toMatchObject({
+      code: "AUTH_REQUIRED"
+    });
+    await markStudentAuthenticated();
+    await expect(listLegacyActivities()).resolves.toHaveLength(2);
+
+    await deleteDB(OFFLINE_DB_NAME);
+    await seedVersionOne("ready");
+    await expect(getDeviceState()).resolves.toBe("ready");
+    await expect(listLegacyActivities()).resolves.toHaveLength(2);
+  });
+
   it("materializes IDs, times, and one transactional device sequence from validated payloads", async () => {
     await markStudentAuthenticated();
     await cacheIssuedPlan(plan, stars);
@@ -207,7 +243,7 @@ describe("IndexedDB v2 authority journal migration", () => {
     expect(JSON.stringify(activities[1])).not.toContain(idle.learningSessionId);
     await expect(getQueueCounts()).resolves.toEqual({
       activities: 2,
-      provisionalAttempts: 1,
+      provisionalAttempts: 0,
       rejected: 0
     });
   });

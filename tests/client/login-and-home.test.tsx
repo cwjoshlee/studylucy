@@ -8,13 +8,15 @@ import { deleteDB } from "idb";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { App } from "../../src/client/app";
 import { ApiError } from "../../src/client/api/client";
-import type { ActivityEvent } from "../../src/shared/learning";
+import { createProductionApi } from "../../src/client/api/production";
+import type { ActivityEvent, TodayPlan } from "../../src/shared/learning";
 import { TodayStars } from "../../src/client/delight/today-stars";
 import {
   OFFLINE_DB_NAME,
   cacheIssuedPlan,
   clearOfflineAuthority,
   getDeviceState,
+  getQueueCounts,
   handleDeviceActionRequired,
   listActivities,
   listQueuedAttempts,
@@ -28,6 +30,14 @@ import {
 } from "../../src/client/offline/db";
 import { syncPending } from "../../src/client/offline/sync";
 import { createFakeApi } from "../helpers/client";
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
 
 afterEach(cleanup);
 beforeEach(async () => {
@@ -432,6 +442,7 @@ describe("가족 로그인과 학생 홈", () => {
           displayName: "보호자"
         })
     });
+    await markStudentAuthenticated();
     render(<App api={api} />);
 
     await screen.findByText("수아야, 오늘도 한 걸음!");
@@ -457,6 +468,7 @@ describe("가족 로그인과 학생 홈", () => {
     const user = userEvent.setup();
     const endSession = vi.fn().mockResolvedValue(undefined);
     const api = createFakeApi({ endSession });
+    await markStudentAuthenticated();
     render(<App api={api} />);
 
     await screen.findByText("수아야, 오늘도 한 걸음!");
@@ -512,6 +524,7 @@ describe("가족 로그인과 학생 홈", () => {
 
   it("shows the A layout, required stars, and original friend", async () => {
     const api = createFakeApi();
+    await markStudentAuthenticated();
     render(<App api={api} />);
 
     expect(await screen.findByText("오늘의 학습")).toBeVisible();
@@ -526,10 +539,75 @@ describe("가족 로그인과 학생 홈", () => {
   });
 
   it.each([
+    [409, "PLAN_NOT_ISSUED", "수아 PIN으로 들어가기"],
+    [403, "DEVICE_NOT_TRUSTED", "이 기기 등록하기"]
+  ])(
+    "moves the live learning UI immediately after a direct %s %s authority failure",
+    async (status, code, expectedHeading) => {
+      const fixtures = createFakeApi();
+      const plan = await fixtures.getToday();
+      const stars = await fixtures.getStudentStars();
+      await markStudentAuthenticated();
+      const fetcher = vi.fn().mockImplementation(
+        async (input: RequestInfo | URL) => {
+          const path = String(input);
+          const response = (body: unknown, responseStatus = 200) =>
+            new Response(JSON.stringify(body), {
+              status: responseStatus,
+              headers: { "content-type": "application/json" }
+            });
+          if (path === "/api/auth/me") {
+            return response({
+              id: "student-1",
+              role: "student",
+              displayName: "수아"
+            });
+          }
+          if (path === "/api/student/today") return response(plan);
+          if (path === "/api/student/stars") return response(stars);
+          if (path === "/api/student/learning-sessions") {
+            return response({
+              learningSessionId: "live-authority-session-0001",
+              activeUntil: "2026-07-16T07:00:00.000Z",
+              submitUntil: "2026-07-17T14:59:59.999Z"
+            }, 201);
+          }
+          if (path === "/api/student/attempts") {
+            return response({ code }, status);
+          }
+          throw new Error(`Unexpected request: ${path}`);
+        }
+      );
+      const api = createProductionApi(fetcher);
+      const user = userEvent.setup();
+      render(<App api={api} />);
+
+      await user.click(await screen.findByRole("button", {
+        name: "바람과 꽃 시작하기"
+      }));
+      await user.type(
+        screen.getByLabelText("읽은 내용 직접 입력"),
+        "바람과 꽃"
+      );
+      await user.click(screen.getByRole("button", { name: "읽기 판정하기" }));
+
+      expect(await screen.findByRole("heading", {
+        name: expectedHeading
+      })).toBeVisible();
+      await expect(getDeviceState()).resolves.toBe(
+        code === "DEVICE_NOT_TRUSTED"
+          ? "device-action-required"
+          : "auth-required"
+      );
+    }
+  );
+
+  it.each([
     ["필수", "바람과 꽃"],
     ["선택", "구름 산책"]
   ])("launches a selected %s item from the dashboard", async (_kind, title) => {
     const user = userEvent.setup();
+    await markStudentAuthenticated();
     render(<App api={createFakeApi()} />);
 
     await user.click(await screen.findByRole("button", { name: `${title} 시작하기` }));
@@ -568,6 +646,7 @@ describe("가족 로그인과 학생 홈", () => {
         lastReason: "필수 학습을 마쳤어요."
       });
 
+    await markStudentAuthenticated();
     render(<App api={api} />);
     await user.click(await screen.findByRole("button", { name: "바람과 꽃 시작하기" }));
     await user.type(screen.getByLabelText("읽은 내용 직접 입력"), "바람과 꽃");
@@ -663,6 +742,7 @@ describe("가족 로그인과 학생 홈", () => {
       stars: confirmedAfterSync
     }));
 
+    await markStudentAuthenticated();
     render(<App api={api} />);
     await user.click(await screen.findByRole("button", { name: "바람과 꽃 시작하기" }));
     await user.type(screen.getByLabelText("읽은 내용 직접 입력"), "바람과 꽃");
@@ -698,6 +778,227 @@ describe("가족 로그인과 학생 홈", () => {
     expect(api.getToday).toHaveBeenCalledTimes(3);
     expect(api.getStudentStars).toHaveBeenCalledTimes(2);
   });
+
+  it("keeps the post-receipt plan, stars, React state, and cache when an older home request resolves last", async () => {
+    const fixtures = createFakeApi();
+    const oldPlan = await fixtures.getToday();
+    const freshStars = {
+      balance: 8,
+      earnedToday: 3,
+      deductedToday: 1,
+      lastReason: "동기화를 마쳤어요."
+    };
+    const freshPlan = {
+      ...oldPlan,
+      activityCursor: 1,
+      completedItemIds: ["ko-01"],
+      stars: freshStars
+    };
+    const delayedPlan = deferred<typeof oldPlan>();
+    const delayedStars = deferred<typeof oldPlan.stars>();
+    let todayCall = 0;
+    let starsCall = 0;
+    const api = createFakeApi({
+      getToday: vi.fn().mockImplementation(() => {
+        todayCall += 1;
+        if (todayCall === 1) return delayedPlan.promise;
+        if (todayCall === 2) return Promise.resolve(oldPlan);
+        return Promise.resolve(freshPlan);
+      }),
+      getStudentStars: vi.fn().mockImplementation(() => {
+        starsCall += 1;
+        return starsCall === 1
+          ? delayedStars.promise
+          : Promise.resolve(freshStars);
+      }),
+      applyOfflineBatch: vi.fn().mockImplementation(async (input) => ({
+        clientBatchId: input.clientBatchId,
+        duplicate: false,
+        orderConflict: false,
+        batchEndCursor: 1,
+        activityCursor: 1,
+        receipts: input.events.map((event: ActivityEvent) => ({
+          clientId: event.kind === "attempt"
+            ? event.payload.clientAttemptId
+            : event.payload.clientIdleEventId,
+          kind: event.kind,
+          status: "APPLIED" as const,
+          code: null,
+          attempt: event.kind === "attempt" ? {
+            id: "attempt-race-server-1",
+            duplicate: false,
+            readingPass: true,
+            mathPass: null,
+            completed: true,
+            activityCursor: 1,
+            starAward: {
+              awarded: true,
+              amount: 1,
+              balance: 8,
+              eventId: "star-race-1"
+            }
+          } : null,
+          idle: null
+        })),
+        processedPlan: freshPlan,
+        currentDailyPlan: freshPlan,
+        stars: freshStars
+      }))
+    });
+    await markStudentAuthenticated();
+    await cacheIssuedPlan(oldPlan, oldPlan.stars);
+    await queueAttempt({
+      clientAttemptId: "attempt-home-race-0001",
+      planId: oldPlan.planId,
+      itemId: "ko-01",
+      contentVersion: 1,
+      studyDate: oldPlan.date,
+      occurredAt: "2026-07-16T01:00:00.000Z",
+      readingScore: 100,
+      missedTokens: [],
+      mathAnswer: null,
+      durationMs: 30_000,
+      difficultyFeedback: null
+    });
+
+    render(<App api={api} />);
+    await waitFor(() => expect(api.getToday).toHaveBeenCalledTimes(1));
+    await act(async () => {
+      await syncPending(api);
+    });
+    expect(await screen.findByText("모은 별 8개")).toBeVisible();
+
+    await act(async () => {
+      delayedPlan.resolve(oldPlan);
+      delayedStars.resolve(oldPlan.stars);
+      await Promise.resolve();
+    });
+
+    expect(screen.getByText("모은 별 8개")).toBeVisible();
+    const completedCard = screen.getByRole("heading", {
+      name: "바람과 꽃"
+    }).closest("article");
+    expect(completedCard).not.toBeNull();
+    expect(within(completedCard!).getByText("완료했어요")).toBeVisible();
+    await expect(loadCachedTodayPlan(oldPlan.date)).resolves.toMatchObject({
+      activityCursor: 1,
+      completedItemIds: ["ko-01"],
+      stars: freshStars
+    });
+  });
+
+  it("keeps a locally incorrect offline math attempt queued without projecting provisional completion", async () => {
+    const api = createFakeApi();
+    const basePlan = await api.getToday();
+    const plan: TodayPlan = {
+      ...basePlan,
+      items: basePlan.items.map((item: TodayPlan["items"][number]) => item.id === "math-01" ? {
+        ...item,
+        payload: {
+          id: "math-01",
+          subject: "math",
+          unit: "수 이야기",
+          title: "별을 세어요",
+          level: "1단계",
+          readLabel: "수학 지문 읽기",
+          text: "별 세 개와 별 두 개가 있어요.",
+          hint: "천천히 읽어 봐요.",
+          tokens: ["별", "세 개", "두 개", "모두"],
+          kind: "math-story",
+          question: "별은 모두 몇 개일까요?",
+          answer: 5,
+          unitLabel: "개",
+          checkHint: "3과 2를 더해 봐요."
+        }
+      } : item)
+    };
+    api.getToday.mockResolvedValue(plan);
+    await markStudentAuthenticated();
+    await cacheIssuedPlan(plan, plan.stars);
+    await queueAttempt({
+      clientAttemptId: "attempt-wrong-math-projection-0001",
+      planId: plan.planId,
+      itemId: "math-01",
+      contentVersion: 1,
+      studyDate: plan.date,
+      occurredAt: "2026-07-16T01:00:00.000Z",
+      readingScore: 100,
+      missedTokens: [],
+      mathAnswer: 4,
+      durationMs: 30_000,
+      difficultyFeedback: null
+    });
+
+    render(<App api={api} />);
+
+    const card = (await screen.findByRole("heading", {
+      name: "별을 세어요"
+    })).closest("article");
+    expect(card).not.toBeNull();
+    await waitFor(() => {
+      expect(within(card!).queryByText("동기화 대기")).not.toBeInTheDocument();
+    });
+    expect(screen.getByText("동기화 대기 별 0개")).toBeVisible();
+    await expect(listQueuedAttempts()).resolves.toHaveLength(1);
+    await expect(getQueueCounts()).resolves.toEqual({
+      activities: 1,
+      provisionalAttempts: 0,
+      rejected: 0
+    });
+  });
+
+  it.each(["batch", "recovery"] as const)(
+    "removes provisional projection immediately after a terminal %s rejection",
+    async (kind) => {
+      const fixtures = createFakeApi();
+      const plan = await fixtures.getToday();
+      const api = createFakeApi({
+        getToday: vi.fn().mockResolvedValue(plan),
+        applyOfflineBatch: vi.fn().mockRejectedValue(
+          new ApiError(400, "INVALID_REQUEST")
+        ),
+        createRecoveryPlan: vi.fn().mockRejectedValue(
+          new ApiError(409, "PLAN_NOT_ISSUED")
+        )
+      });
+      await markStudentAuthenticated();
+      await cacheIssuedPlan(plan, plan.stars);
+      await queueAttempt({
+        clientAttemptId: `attempt-terminal-${kind}-projection-0001`,
+        planId: plan.planId,
+        itemId: "ko-01",
+        contentVersion: 1,
+        studyDate: plan.date,
+        occurredAt: "2026-07-16T01:00:00.000Z",
+        readingScore: 100,
+        missedTokens: [],
+        mathAnswer: null,
+        durationMs: 30_000,
+        difficultyFeedback: null
+      });
+      if (kind === "recovery") {
+        await handleDeviceActionRequired("DEVICE_REVOKED");
+        await markStudentAuthenticated();
+      }
+      render(<App api={api} />);
+
+      const card = (await screen.findByRole("heading", {
+        name: "바람과 꽃"
+      })).closest("article");
+      expect(card).not.toBeNull();
+      expect(await within(card!).findByText("동기화 대기")).toBeVisible();
+
+      await act(async () => {
+        await syncPending(api);
+      });
+
+      await waitFor(() => {
+        expect(within(card!).queryByText("동기화 대기"))
+          .not.toBeInTheDocument();
+      });
+      await expect(listActivities()).resolves.toEqual([]);
+    }
+  );
 
   it("keeps queued stars separate from the confirmed balance", () => {
     render(<TodayStars summary={{
@@ -787,6 +1088,7 @@ describe("가족 로그인과 학생 홈", () => {
       ...plan,
       completedItemIds: ["ko-01"]
     });
+    await markStudentAuthenticated();
     render(<App api={api} />);
 
     const title = await screen.findByRole("heading", { name: "바람과 꽃" });

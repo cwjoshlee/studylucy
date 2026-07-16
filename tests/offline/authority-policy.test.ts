@@ -72,6 +72,7 @@ type AuthorityDb = typeof offlineDb & {
 };
 
 async function seedAuthorityAndReplayData(): Promise<void> {
+  await offlineDb.markStudentAuthenticated();
   await offlineDb.cacheTodayPlan(plan);
   await offlineDb.storeConfirmedStars(stars);
   await offlineDb.queueAttempt(attempt);
@@ -131,16 +132,24 @@ describe("centralized offline authority policy", () => {
     await expect(offlineDb.listActivities()).resolves.toHaveLength(2);
   });
 
-  it.each(["PLAN_NOT_ISSUED", "INVALID_REQUEST"])(
-    "leaves authority transitions to sync terminal handling for %s",
+  it.each([
+    "PLAN_NOT_ISSUED",
+    "PLAN_SUBMISSION_EXPIRED",
+    "INVALID_REQUEST",
+    "ROLE_FORBIDDEN"
+  ])(
+    "clears direct student authority and preserves the blocked journal for %s",
     async (code) => {
       await seedAuthorityAndReplayData();
 
       await (offlineDb as AuthorityDb).clearCurrentV1Authority(code);
 
-      await expect(offlineDb.loadCachedTodayPlan(plan.date)).resolves.toEqual(plan);
-      await expect(offlineDb.getConfirmedStars()).resolves.toEqual(stars);
-      await expect(offlineDb.getDeviceState()).resolves.toBe("ready");
+      await expectAuthorityClearedAndReplayPreserved();
+      await expect(offlineDb.getDeviceState()).resolves.toBe("auth-required");
+      await expect(offlineDb.listActivities()).rejects.toMatchObject({
+        code: "AUTH_REQUIRED"
+      });
+      await offlineDb.markStudentAuthenticated();
       await expect(offlineDb.listActivities()).resolves.toHaveLength(2);
     }
   );

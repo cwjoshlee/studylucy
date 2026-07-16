@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import type { TodayPlan } from "../../shared/learning";
 import type { StudentStarSummary } from "../../shared/stars";
 import type { ClientApi } from "../api/client";
@@ -15,6 +15,7 @@ import {
   cacheIssuedPlan,
   getQueueCounts,
   getProvisionalItemIds,
+  getReceiptAuthorityGeneration,
   loadOfflineStudentSession,
   recoveryGroups,
   subscribeConfirmedStars,
@@ -51,6 +52,7 @@ export function StudentHome({
     () => new Set()
   );
   const [selectedItem, setSelectedItem] = useState<TodayPlan["items"][number] | null>(null);
+  const authorityRequestGeneration = useRef(0);
 
   useEffect(() => {
     let active = true;
@@ -60,14 +62,25 @@ export function StudentHome({
       }, () => undefined);
     };
     const loadAuthoritativeData = (showFailure: boolean) => {
+      const requestGeneration = ++authorityRequestGeneration.current;
+      const receiptGeneration = getReceiptAuthorityGeneration();
       void (async () => {
         try {
           const [plan, stars] = await Promise.all([
             api.getToday(),
             api.getStudentStars()
           ]);
-          await cacheIssuedPlan(plan, stars);
-          if (active) {
+          if (!active || requestGeneration !== authorityRequestGeneration.current) {
+            return;
+          }
+          const cached = await cacheIssuedPlan(plan, stars, {
+            expectedReceiptGeneration: receiptGeneration
+          });
+          if (
+            cached &&
+            active &&
+            requestGeneration === authorityRequestGeneration.current
+          ) {
             setData({ plan, stars });
             setOfflineMode(false);
             setFailed(false);
@@ -89,7 +102,10 @@ export function StudentHome({
       })();
     };
     const updateQueueCounts = (counts: QueueCounts) => {
-      if (active) setQueuedCount(counts.provisionalAttempts);
+      if (active) {
+        setQueuedCount(counts.provisionalAttempts);
+        loadProvisionalItems();
+      }
     };
     const unsubscribe = subscribeQueueCounts(updateQueueCounts);
     const unsubscribeConfirmedStars = subscribeConfirmedStars((stars) => {
@@ -132,12 +148,18 @@ export function StudentHome({
       setSelectedItem(null);
       return;
     }
+    const requestGeneration = ++authorityRequestGeneration.current;
+    const receiptGeneration = getReceiptAuthorityGeneration();
     try {
       const [plan, stars] = await Promise.all([
         api.getToday(),
         api.getStudentStars()
       ]);
-      await cacheIssuedPlan(plan, stars);
+      if (requestGeneration !== authorityRequestGeneration.current) return;
+      const cached = await cacheIssuedPlan(plan, stars, {
+        expectedReceiptGeneration: receiptGeneration
+      });
+      if (!cached || requestGeneration !== authorityRequestGeneration.current) return;
       setData({ plan, stars });
       setOfflineMode(false);
       setSelectedItem(null);

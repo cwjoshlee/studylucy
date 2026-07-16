@@ -29,6 +29,7 @@ import {
   OFFLINE_DB_NAME,
   cacheIssuedPlan,
   getQueueCounts,
+  listActivities,
   listQueuedAttempts,
   listQueuedIdleEvents,
   markStudentAuthenticated
@@ -555,11 +556,14 @@ describe("LearningSession", () => {
     expect(screen.queryByText(/별 1개를 모았어요/)).not.toBeInTheDocument();
   });
 
-  it("keeps a failed online-issued idle volatile and never writes its learning session ID to IndexedDB", async () => {
+  it.each([
+    ["network", new TypeError("offline")],
+    ["server", new ApiError(503, "HTTP_503")]
+  ])("journals a failed online-issued idle as a sanitized legacy waiver after a %s failure", async (_label, failure) => {
     vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout", "Date"] });
     vi.setSystemTime(new Date("2026-07-16T01:00:00.000Z"));
     const api = createLearningApi();
-    api.sendIdleEvent.mockRejectedValue(new TypeError("offline"));
+    api.sendIdleEvent.mockRejectedValue(failure);
     render(<LearningSession
       item={readingPlanItem}
       api={api}
@@ -574,9 +578,27 @@ describe("LearningSession", () => {
       await Promise.resolve();
     });
     vi.useRealTimers();
+    await expect(listActivities()).resolves.toEqual([
+      expect.objectContaining({
+        clientId: "idle-event-offline-0001",
+        planId: "plan-daily-1",
+        event: {
+          kind: "idle",
+          legacy: true,
+          payload: expect.objectContaining({
+            clientIdleEventId: "idle-event-offline-0001",
+            itemId: "ko-01",
+            studyDate: "2026-07-16"
+          })
+        }
+      })
+    ]);
     await expect(listQueuedIdleEvents()).resolves.toEqual([]);
-    expect(JSON.stringify(await listQueuedIdleEvents()))
+    expect(JSON.stringify(await listActivities()))
       .not.toContain("server-issued-learning-session-0001");
+    expect(screen.getByText(
+      "쉬는 기록을 동기화 대기 중이에요. 연결되면 확인할게요."
+    )).toBeVisible();
     expect(screen.getByRole("button", { name: "학습 계속하기" })).toBeVisible();
   });
 
@@ -601,6 +623,7 @@ describe("LearningSession", () => {
     });
 
     expect(onExit).toHaveBeenCalledOnce();
+    await expect(listActivities()).resolves.toEqual([]);
     await expect(listQueuedIdleEvents()).resolves.toEqual([]);
   });
 
@@ -641,6 +664,7 @@ describe("LearningSession", () => {
     });
 
     expect(onExit).toHaveBeenCalledOnce();
+    await expect(listActivities()).resolves.toEqual([]);
     await expect(listQueuedIdleEvents()).resolves.toEqual([]);
   });
 

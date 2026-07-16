@@ -440,6 +440,29 @@ describe("unified persistent offline synchronization", () => {
     await expect(listPendingBatches()).resolves.toHaveLength(1);
   });
 
+  it("treats ROLE_FORBIDDEN as authorization loss and preserves the reservation and rows", async () => {
+    await readyWithPlan();
+    await queueAttempt(attempt("attempt-role-forbidden-0001"));
+
+    await expect(syncPending(api({
+      applyOfflineBatch: vi.fn().mockRejectedValue(
+        new ApiError(403, "ROLE_FORBIDDEN")
+      )
+    }))).resolves.toMatchObject({
+      sent: 0,
+      remaining: 1,
+      rejected: 0,
+      stopped: "auth-required"
+    });
+
+    await expect(getDeviceState()).resolves.toBe("auth-required");
+    await expect(listActivities()).rejects.toMatchObject({ code: "AUTH_REQUIRED" });
+    await markStudentAuthenticated();
+    await expect(listActivities()).resolves.toHaveLength(1);
+    await expect(listPendingBatches()).resolves.toHaveLength(1);
+    await expect(listRejectedActivities()).resolves.toEqual([]);
+  });
+
   it.each(["DEVICE_REVOKED", "DEVICE_NOT_TRUSTED"] as const)(
     "atomically enters recovery and invalidates the old reservation for %s",
     async (code) => {
@@ -649,6 +672,7 @@ describe("unified persistent offline synchronization", () => {
       provisionalAttempts: 0,
       rejected: 1
     });
+    await expect(getDeviceState()).resolves.toBe("ready");
     expect(JSON.stringify(await listRejectedActivities())).not.toContain("원문 답");
   });
 });

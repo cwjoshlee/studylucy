@@ -18,6 +18,7 @@ import {
   loadOfflineStudentSession,
   markStudentAuthenticated,
   storeOfflineLease,
+  subscribeAuthorityState,
   type OfflineStudentSession
 } from "../offline/db";
 import { syncPending } from "../offline/sync";
@@ -60,6 +61,14 @@ export function AuthProvider({
   children: ReactNode;
 }) {
   const [state, setState] = useState<AuthState>({ phase: "loading", user: null });
+
+  useEffect(() => subscribeAuthorityState((deviceState) => {
+    if (deviceState === "auth-required") {
+      setState({ phase: "student-login", user: null });
+    } else if (deviceState === "device-action-required") {
+      setState({ phase: "device-registration", user: null });
+    }
+  }), []);
 
   const endSession = async () => {
     try {

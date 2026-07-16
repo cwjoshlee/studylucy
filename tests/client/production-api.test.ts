@@ -7,6 +7,7 @@ import {
   OFFLINE_DB_NAME,
   getConfirmedStars,
   getDeviceState,
+  markStudentAuthenticated,
   storeConfirmedStars
 } from "../../src/client/offline/db";
 
@@ -16,6 +17,7 @@ describe("production ApiClient authority wiring", () => {
   });
 
   it("runs the current-v1 authority policy for an explicit student denial", async () => {
+    await markStudentAuthenticated();
     await storeConfirmedStars({
       balance: 7,
       earnedToday: 2,

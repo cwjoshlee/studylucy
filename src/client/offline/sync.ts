@@ -81,7 +81,8 @@ function isRetryable(error: unknown): boolean {
 }
 
 function isAuth(error: unknown): boolean {
-  return errorFacts(error).status === 401;
+  const { status, code } = errorFacts(error);
+  return status === 401 || code === "ROLE_FORBIDDEN";
 }
 
 function deviceCode(
@@ -98,7 +99,8 @@ const NONTERMINAL_CODES = new Set([
   "SOURCE_DEVICE_STILL_ACTIVE",
   "DEVICE_REVOKED",
   "DEVICE_NOT_TRUSTED",
-  "AUTH_REQUIRED"
+  "AUTH_REQUIRED",
+  "ROLE_FORBIDDEN"
 ]);
 
 function isTerminal4xx(error: unknown): boolean {

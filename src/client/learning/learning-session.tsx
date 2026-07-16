@@ -16,7 +16,10 @@ import type { ReadingResult } from "../../shared/reading";
 import type { IdleEventInput, IdleEventResult } from "../../shared/stars";
 import type { ApiClient } from "../api/client";
 import { StarCelebration } from "../delight/star-celebration";
-import { preserveFailedAttempt } from "../offline/sync";
+import {
+  preserveFailedAttempt,
+  preserveFailedIdleEvent
+} from "../offline/sync";
 import {
   createInactivityController,
   type InactivityActivity,
@@ -127,7 +130,6 @@ function LearningSessionView({
   const [speechListening, setSpeechListening] = useState(false);
   const controllerRef = useRef<InactivityController | null>(null);
   const speechRef = useRef<SpeechController | null>(null);
-  const volatileIdleRef = useRef<IdleEventInput | null>(null);
   const learningControlsPaused =
     authority.phase === "unavailable" ||
     waiting ||
@@ -189,7 +191,6 @@ function LearningSessionView({
     };
     try {
       const result = await api.sendIdleEvent(input);
-      volatileIdleRef.current = null;
       onActivityCursor?.(result.activityCursor);
       setIdleUi({ phase: "paused", message: IDLE_RESULT_TEXT[result.outcome] });
     } catch (error) {
@@ -197,10 +198,13 @@ function LearningSessionView({
         onExit?.();
         return;
       }
-      volatileIdleRef.current = input;
+      const queued = await preserveFailedIdleEvent(error, input)
+        .catch(() => false);
       setIdleUi({
         phase: "paused",
-        message: "쉬는 기록을 보내지 못했어요. 준비되면 다시 시작해 주세요."
+        message: queued
+          ? "쉬는 기록을 동기화 대기 중이에요. 연결되면 확인할게요."
+          : "쉬는 기록을 보내지 못했어요. 준비되면 다시 시작해 주세요."
       });
     } finally {
       setWaiting(false);
