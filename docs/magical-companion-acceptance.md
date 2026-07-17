@@ -14,13 +14,13 @@
 | 10 | 서버 권위 데이터 흐름 | `tests/client/learning-session.test.tsx`; `tests/server/star-learning.test.ts` | PASS |
 | 11 | 오류와 대체 동작 | `tests/client/companion-components.test.tsx`; `tests/client/auth-offline-lifecycle.test.tsx` | PASS |
 | 12 | 성능·오프라인·PWA | `tests/client/companion-components.test.tsx`; `tests/offline/pwa-config.test.ts` | PASS |
-| 13 | 자동·브라우저 인수 기준 | Node 22 `npm run check`; Task 8 localhost 브라우저 | PASS |
-| 14 | 완료 판단 | 이 표의 자동·localhost 행과 최종 clean-tree 검사 | PASS |
+| 13 | 자동·브라우저 인수 기준 | Node 22 `npm run check`; Task 8 localhost 브라우저 | PENDING |
+| 14 | 완료 판단 | 이 표의 자동·localhost 행과 최종 clean-tree 검사 | PENDING |
 
 | 실행 환경 | 증거 | 상태 |
 |---|---|---|
 | localhost 자동 검사 | Node 22 `npm run check` | PASS |
-| localhost 브라우저 | 아래 Task 8 headed Chromium 기록 | PASS |
+| localhost 브라우저 | `ac9d935b60dfa281383c5cf463a12ed6ec73f337` 이후 전체 재검증 필요 | NOT RUN |
 | 실제 Galaxy Tab | 실제 기기 확인 필요 | NOT RUN |
 | Synology NAS | NAS 배포 뒤 확인 필요 | NOT RUN |
 | 외부 HTTPS·DDNS·443 | 외부망 확인 필요 | NOT RUN |
@@ -29,12 +29,14 @@
 ## 자동 검사 기록
 
 - 실행 환경: Node `v22.23.1`, npm `11.11.0`
-- `npm run check`: TypeScript 검사, Vitest 34개 파일·441개 테스트, Vite 클라이언트 빌드와 tsup 서버 빌드 통과
+- `npm run check`: TypeScript 검사, Vitest 34개 파일·447개 테스트, Vite 클라이언트 빌드와 tsup 서버 빌드 통과
 - 추가 검사: `bash -n scripts/*.sh`, `git diff --check`, `git diff --check 05804ed..HEAD` 통과
 - 비차단 경고: Vite가 축소 후 500 kB를 넘는 청크를 보고함
 - 비차단 경고: PWA 서비스 워커 빌드가 `inlineDynamicImports` 사용 중단 예정 경고를 보고함
 
-## localhost 브라우저 검사 기록
+## 이전 localhost 브라우저 검사 기록 (대체됨)
+
+아래 기록은 `55618586acc00e2a9b2bdf99603df9c72a4dc569`에서 수집했으며, 이후 브라우저-visible authority 경계가 바뀌었으므로 현재 localhost PASS 증거로 사용하지 않는다.
 
 - 검증한 구현 HEAD: `55618586acc00e2a9b2bdf99603df9c72a4dc569`
 - 최종 QA 실행: fresh DB를 사용한 headed Chromium, localhost Vite `5173` + Fastify `8787`
