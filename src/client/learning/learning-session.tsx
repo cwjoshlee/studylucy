@@ -138,6 +138,9 @@ function LearningSessionView({
   const [speechListening, setSpeechListening] = useState(false);
   const controllerRef = useRef<InactivityController | null>(null);
   const speechRef = useRef<SpeechController | null>(null);
+  const completionCueTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const attemptGenerationRef = useRef(0);
+  const attemptReceiptRef = useRef<AttemptReceipt | null>(null);
   const learningControlsPaused =
     authority.phase === "unavailable" ||
     waiting ||
@@ -293,14 +296,26 @@ function LearningSessionView({
     difficultyFeedback
   }), [contentVersion, difficultyFeedback, idFactory, item.id, planId, studyDate, viewStartedAt]);
 
+  const beginAttempt = useCallback(() => {
+    attemptGenerationRef.current += 1;
+    attemptReceiptRef.current = null;
+    setAttemptReceipt(null);
+    if (completionCueTimerRef.current !== null) {
+      clearTimeout(completionCueTimerRef.current);
+      completionCueTimerRef.current = null;
+    }
+    setShowNextCue(false);
+  }, []);
+
   const saveReadingAttempt = useCallback(async (result: ReadingResult) => {
     controllerRef.current?.pause("server-wait");
     setSaveUiState("saving");
-    setShowNextCue(false);
+    beginAttempt();
     setWaiting(true);
     const input = buildAttempt(result, null);
     try {
       const receipt = await api.saveAttempt(input);
+      attemptReceiptRef.current = receipt;
       setAttemptReceipt(receipt);
       setSaveUiState("idle");
       if (receipt.completed && !receipt.duplicate) setShowNextCue(false);
@@ -327,17 +342,31 @@ function LearningSessionView({
       setWaiting(false);
       controllerRef.current?.resume("server-wait");
     }
-  }, [api, buildAttempt, onActivityCursor, onExit, onProvisional]);
+  }, [api, beginAttempt, buildAttempt, onActivityCursor, onExit, onProvisional]);
 
   useEffect(() => {
     if (!attemptReceipt?.completed || attemptReceipt.duplicate) return;
+    const generation = attemptGenerationRef.current;
     const receiptId = attemptReceipt.id;
     const timer = setTimeout(() => {
-      setShowNextCue((current) =>
-        attemptReceipt.id === receiptId ? true : current
-      );
+      const currentReceipt = attemptReceiptRef.current;
+      completionCueTimerRef.current = null;
+      if (
+        attemptGenerationRef.current === generation &&
+        currentReceipt?.id === receiptId &&
+        currentReceipt.completed &&
+        !currentReceipt.duplicate
+      ) {
+        setShowNextCue(true);
+      }
     }, 1_000);
-    return () => clearTimeout(timer);
+    completionCueTimerRef.current = timer;
+    return () => {
+      clearTimeout(timer);
+      if (completionCueTimerRef.current === timer) {
+        completionCueTimerRef.current = null;
+      }
+    };
   }, [attemptReceipt?.completed, attemptReceipt?.duplicate, attemptReceipt?.id]);
 
   const judgeTranscript = useCallback((transcript: string) => {
@@ -381,11 +410,12 @@ function LearningSessionView({
     recordActivity("answer");
     controllerRef.current?.pause("server-wait");
     setSaveUiState("saving");
-    setShowNextCue(false);
+    beginAttempt();
     setWaiting(true);
     const input = buildAttempt(readingResult, Number(mathAnswer));
     try {
       const receipt = await api.saveAttempt(input);
+      attemptReceiptRef.current = receipt;
       setAttemptReceipt(receipt);
       setSaveUiState("idle");
       if (receipt.completed && !receipt.duplicate) setShowNextCue(false);

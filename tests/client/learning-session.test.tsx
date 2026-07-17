@@ -107,6 +107,14 @@ function receipt(overrides: Partial<AttemptReceipt> = {}): AttemptReceipt {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((settle) => {
+    resolve = settle;
+  });
+  return { promise, resolve };
+}
+
 function idleResult(outcome: IdleEventResult["outcome"]): IdleEventResult {
   return {
     id: `idle-${outcome}-0001`,
@@ -309,6 +317,101 @@ describe("LearningSession", () => {
     expect(screen.queryByText("별 1개를 모았어요")).not.toBeInTheDocument();
   });
 
+  it("does not show stale next after a delayed duplicate resubmit invalidates the prior completion timer", async () => {
+    vi.useFakeTimers();
+    const delayedDuplicate = deferred<AttemptReceipt>();
+    const api = createLearningApi();
+    api.saveAttempt
+      .mockResolvedValueOnce(receipt({ id: "attempt-first-completion-1" }))
+      .mockReturnValueOnce(delayedDuplicate.promise);
+    render(<LearningSession
+      item={readingPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+    />);
+    fireEvent.click(screen.getByText("직접 입력으로 확인하기"));
+    fireEvent.change(screen.getByLabelText("읽은 내용 직접 입력"), {
+      target: { value: readingItem.text }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "읽기 판정하기" }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(companionBubble()).toHaveTextContent(readingItem.delight!.celebrationCue);
+
+    act(() => vi.advanceTimersByTime(500));
+    fireEvent.click(screen.getByRole("button", { name: "읽기 판정하기" }));
+    act(() => vi.advanceTimersByTime(500));
+    await act(async () => {
+      delayedDuplicate.resolve(receipt({
+        id: "attempt-first-completion-1",
+        duplicate: true,
+        completed: true
+      }));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(api.saveAttempt).toHaveBeenCalledTimes(2);
+    expect(companionBubble()).not.toHaveTextContent(
+      "다음 마법 걸음으로 가요. 루미가 도망간 양말을 잡아 둘게요."
+    );
+    expect(companionBubble()).toHaveTextContent(readingItem.delight!.openingCue);
+    act(() => vi.advanceTimersByTime(2_000));
+    expect(companionBubble()).not.toHaveTextContent(
+      "다음 마법 걸음으로 가요. 루미가 도망간 양말을 잡아 둘게요."
+    );
+  });
+
+  it("removes both companion and awarded star status when a resubmit exits on 4xx", async () => {
+    vi.useFakeTimers();
+    const api = createLearningApi();
+    api.saveAttempt
+      .mockResolvedValueOnce(receipt({
+        id: "attempt-awarded-before-exit-1",
+        starAward: {
+          awarded: true,
+          amount: 1,
+          balance: 8,
+          eventId: "star-awarded-before-exit-1"
+        }
+      }))
+      .mockRejectedValueOnce(new ApiError(409, "PLAN_NOT_ISSUED"));
+    const onExit = vi.fn();
+    render(<LearningSession
+      item={readingPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      onExit={onExit}
+    />);
+    fireEvent.click(screen.getByText("직접 입력으로 확인하기"));
+    fireEvent.change(screen.getByLabelText("읽은 내용 직접 입력"), {
+      target: { value: readingItem.text }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "읽기 판정하기" }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByRole("status", { name: "별 보상" })).toBeVisible();
+
+    act(() => vi.advanceTimersByTime(500));
+    fireEvent.click(screen.getByRole("button", { name: "읽기 판정하기" }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(onExit).toHaveBeenCalledOnce();
+    expect(screen.queryByRole("status", { name: "마법 친구 말풍선" }))
+      .not.toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: "별 보상" }))
+      .not.toBeInTheDocument();
+  });
+
   it.each([
     [false, false],
     [true, true]
@@ -402,7 +505,7 @@ describe("LearningSession", () => {
     expectNoProtectedHumor(bubble);
   });
 
-  it("maps the 2, 4, and 5 minute idle states to protected companion cues", async () => {
+  it("maps 2-minute idle to thinking while keeping 4 and 5 minutes protected", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-16T01:00:00.000Z"));
     const api = createLearningApi();
@@ -416,8 +519,7 @@ describe("LearningSession", () => {
 
     act(() => vi.advanceTimersByTime(120_000));
     expect(companionBubble()).toHaveTextContent("힌트를 살짝 열어도 괜찮아요.");
-    expect(companionBubble()).toHaveAttribute("data-cue-tone", "support");
-    expectNoProtectedHumor(companionBubble());
+    expect(companionBubble()).toHaveAttribute("data-cue-tone", "humor");
 
     act(() => vi.advanceTimersByTime(120_000));
     expect(companionBubble()).toHaveAttribute("data-cue-tone", "support");
@@ -1179,6 +1281,30 @@ describe("StarCelebration", () => {
     expect(onComplete).toHaveBeenCalledOnce();
     expect(onComplete).toHaveBeenCalledWith("star-celebration-completion-1");
     expect(screen.queryByRole("status", { name: "별 보상" })).not.toBeInTheDocument();
+  });
+
+  it("still completes an active event after its receipt is cleared from view", () => {
+    vi.useFakeTimers();
+    const onComplete = vi.fn();
+    const starAward = {
+      awarded: true,
+      amount: 1,
+      balance: 11,
+      eventId: "star-cleared-active-completion-1"
+    };
+    const view = render(<StarCelebration
+      starAward={starAward}
+      onComplete={onComplete}
+    />);
+    expect(screen.getByRole("status", { name: "별 보상" })).toBeVisible();
+
+    view.rerender(<StarCelebration starAward={null} onComplete={onComplete} />);
+    expect(screen.queryByRole("status", { name: "별 보상" }))
+      .not.toBeInTheDocument();
+    act(() => vi.advanceTimersByTime(1_000));
+
+    expect(onComplete).toHaveBeenCalledOnce();
+    expect(onComplete).toHaveBeenCalledWith("star-cleared-active-completion-1");
   });
 });
 

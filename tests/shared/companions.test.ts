@@ -117,6 +117,6 @@ describe("magical companion contracts", () => {
       key: "math-01:thinking",
       subject: "math",
       preferredCompanion: "bongbong"
-    })).toMatchObject({ companion: "momo", tone: "support" });
+    })).toMatchObject({ companion: "momo", tone: "humor" });
   });
 });

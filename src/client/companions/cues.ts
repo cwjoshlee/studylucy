@@ -37,8 +37,8 @@ const CUES: Record<CompanionMoment, readonly CompanionCue[]> = {
     { companion: "momo", text: "모모의 주판에 포도알 하나가 슬쩍 앉았어요. 숫자만 찾아볼까요?", tone: "humor" }
   ],
   thinking: [
-    { companion: "toto", text: "또또도 낱말 수첩을 천천히 넘기는 중이에요. 힌트를 살짝 열어도 괜찮아요.", tone: "support" },
-    { companion: "momo", text: "모모가 꼬리 줄무늬를 다시 세는 중이에요. 우리도 천천히 단서를 찾아봐요.", tone: "support" }
+    { companion: "toto", text: "또또도 낱말 수첩을 천천히 넘기는 중이에요. 힌트를 살짝 열어도 괜찮아요.", tone: "humor" },
+    { companion: "momo", text: "모모가 꼬리 줄무늬를 다시 세는 중이에요. 우리도 천천히 단서를 찾아봐요.", tone: "humor" }
   ],
   correct: [
     { companion: "bongbong", text: "정답이에요! 봉봉의 축하 불꽃이 비눗방울로 변했어요.", tone: "humor" },
