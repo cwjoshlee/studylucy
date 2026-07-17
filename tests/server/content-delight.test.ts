@@ -1,4 +1,3 @@
-import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import * as ts from "typescript/unstable/ast";
 import { API } from "typescript/unstable/sync";
@@ -54,12 +53,21 @@ const AUDITED_JSX_ATTRIBUTES = new Set([
   "placeholder"
 ]);
 const CHILD_COPY_SETTER = /(?:Feedback|Message|Guidance|Text)$/;
-const ANALYTICS_MODULE = /(?:^|[/@-])(?:analytics|amplitude|mixpanel|posthog|segment|tracking|sentry|datadog|gtag|google-analytics|plausible|fullstory|heap)(?:[/@.-]|$)/i;
-const LLM_MODULE = /(?:^|[/@-])(?:ai|openai|anthropic|cohere|mistral(?:ai)?|ollama|groq|langchain|bedrock|vertexai|gemini|generative-ai|genai|deepseek|xai|huggingface|transformers|replicate|together|perplexity|fireworks)(?:[/@.-]|$)/i;
-const NETWORK_MODULE = /(?:^|[/@-])(?:axios|got|ky|node-fetch|undici|network|http|api|sync)(?:[/@.-]|$)/i;
-const AUDIO_MODULE = /(?:^|[/@-])(?:howler|tone|audio|speech)(?:[/@.-]|$)/i;
-const ANALYTICS_CALL = /\b(?:analytics|amplitude|mixpanel|posthog|sentry|datadog|fullstory|heap)\.[A-Za-z_$][\w$]*\s*\(|\bgtag\s*\(/i;
-const LLM_CALL = /\b(?:openai|anthropic|cohere|mistral|ollama|groq|gemini|deepseek|xai|replicate|together|perplexity|fireworks)\.[A-Za-z_$][\w$]*\s*\(|\bnew\s+(?:OpenAI|Anthropic|Cohere|Mistral|Ollama|Groq|Gemini|DeepSeek)\b/i;
+type SideEffectCategory =
+  | "NETWORK"
+  | "AUDIO"
+  | "ANALYTICS"
+  | "LLM_PROVIDER"
+  | "REACT"
+  | "INDEXED_DB";
+const SIDE_EFFECT_MODULES: readonly [SideEffectCategory, RegExp][] = [
+  ["REACT", /^react(?:-dom)?(?:\/|$)/],
+  ["INDEXED_DB", /^(?:idb(?:-keyval)?|fake-indexeddb)(?:\/|$)/],
+  ["NETWORK", /^(?:(?:cross|isomorphic|node)-fetch|axios|got|ky|undici|superagent|https?|node:https?|@whatwg-node\/fetch)(?:\/|$)/],
+  ["AUDIO", /(?:^|[/@._-])(?:audio|howler|speech|tone)(?:[/@._-]|$)/],
+  ["ANALYTICS", /(?:^|[/@._-])(?:analytics|amplitude|datadog|fullstory|gtag|heap|mixpanel|plausible|posthog|segment|sentry|tracking)(?:[/@._-]|$)/],
+  ["LLM_PROVIDER", /(?:^|[/@._-])(?:ai|anthropic|bedrock|cohere|deepseek|fireworks|gemini|genai|generative|groq|huggingface|langchain|mistral|ollama|openai|perplexity|replicate|together|transformers|vertexai|xai)(?:[/@._-]|$)/]
+];
 const VIRTUAL_FIXTURE_FILE = "/virtual/child-copy-audit-fixture.tsx";
 const TECHNICAL_CLASS_FIXTURE = `
   const childView = (
@@ -68,19 +76,41 @@ const TECHNICAL_CLASS_FIXTURE = `
     </section>
   );
 `;
+const SIDE_EFFECT_FIXTURES = [
+  {
+    name: "comment-separated fetch",
+    fileName: "/virtual/comment-separated-fetch.tsx",
+    source: `fetch /* child audit must ignore trivia */ ("/x");`,
+    expected: ["NETWORK_CALL"]
+  },
+  {
+    name: "spaced sendBeacon",
+    fileName: "/virtual/spaced-send-beacon.tsx",
+    source: `navigator . sendBeacon("/x");`,
+    expected: ["NETWORK_CALL"]
+  },
+  {
+    name: "aliased network import",
+    fileName: "/virtual/aliased-network-import.tsx",
+    source: `import { fetch as load } from "cross-fetch"; load("/x");`,
+    expected: ["NETWORK_IMPORT", "NETWORK_CALL"]
+  }
+] as const;
+const VIRTUAL_FILES = new Map<string, string>([
+  [VIRTUAL_FIXTURE_FILE, TECHNICAL_CLASS_FIXTURE],
+  ...SIDE_EFFECT_FIXTURES.map(({ fileName, source }) => [fileName, source] as const)
+]);
 
 const compilerApi = new API({
   cwd: process.cwd(),
   fs: {
-    fileExists: (fileName) => fileName === VIRTUAL_FIXTURE_FILE ? true : undefined,
-    readFile: (fileName) => fileName === VIRTUAL_FIXTURE_FILE
-      ? TECHNICAL_CLASS_FIXTURE
-      : undefined
+    fileExists: (fileName) => VIRTUAL_FILES.has(fileName) ? true : undefined,
+    readFile: (fileName) => VIRTUAL_FILES.get(fileName)
   }
 });
 const compilerSnapshot = compilerApi.updateSnapshot({
   openProjects: [resolve("tsconfig.json")],
-  openFiles: [VIRTUAL_FIXTURE_FILE]
+  openFiles: [...VIRTUAL_FILES.keys()]
 });
 const compilerProject = compilerSnapshot.getProjects().find(
   (project) => project.configFileName === resolve("tsconfig.json")
@@ -137,11 +167,11 @@ function callName(node: ts.Node): string | null {
 }
 
 function parsedSourceFile(fileName: string): ts.SourceFile {
-  const project = fileName === VIRTUAL_FIXTURE_FILE
+  const project = VIRTUAL_FILES.has(fileName)
     ? compilerSnapshot.getDefaultProjectForFile(fileName)
     : compilerProject;
   const sourceFile = project?.program.getSourceFile(
-    fileName === VIRTUAL_FIXTURE_FILE ? fileName : resolve(fileName)
+    VIRTUAL_FILES.has(fileName) ? fileName : resolve(fileName)
   );
   if (sourceFile === undefined) throw new Error(`Missing compiler source file: ${fileName}`);
   return sourceFile;
@@ -198,75 +228,150 @@ function collectChildCopy(fileName: string): string[] {
   return copy;
 }
 
-function moduleSpecifiers(fileName: string): string[] {
+function moduleCategory(specifier: string): SideEffectCategory | null {
+  if (specifier.startsWith(".") || specifier.startsWith("/") || specifier.startsWith("#")) {
+    return null;
+  }
+  return SIDE_EFFECT_MODULES.find(([, pattern]) => pattern.test(specifier.toLowerCase()))?.[0] ?? null;
+}
+
+function literalText(node: ts.Node | undefined): string | null {
+  return node !== undefined && (
+    ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)
+  ) ? node.text : null;
+}
+
+function importedBindingNames(node: ts.ImportDeclaration): string[] {
+  const names: string[] = [];
+  const clause = node.importClause;
+  if (clause?.name !== undefined) names.push(clause.name.text);
+  const bindings = clause?.namedBindings;
+  if (bindings === undefined) return names;
+  if (ts.isNamespaceImport(bindings)) {
+    names.push(bindings.name.text);
+  } else if (ts.isNamedImports(bindings)) {
+    for (const element of bindings.elements) names.push(element.name.text);
+  }
+  return names;
+}
+
+function accessPath(node: ts.Node): string[] {
+  if (ts.isParenthesizedExpression(node) || ts.isNonNullExpression(node)) {
+    return accessPath(node.expression);
+  }
+  if (ts.isIdentifier(node)) return [node.text];
+  if (ts.isPropertyAccessExpression(node)) {
+    return [...accessPath(node.expression), node.name.text];
+  }
+  if (ts.isElementAccessExpression(node)) {
+    const property = literalText(node.argumentExpression);
+    return property === null ? accessPath(node.expression) : [
+      ...accessPath(node.expression),
+      property
+    ];
+  }
+  return [];
+}
+
+function operationCategory(
+  path: readonly string[],
+  importedBindings: ReadonlyMap<string, SideEffectCategory>
+): SideEffectCategory | null {
+  if (path.length === 0) return null;
+  const lowerPath = path.map((part) => part.toLowerCase());
+  const root = lowerPath[0]!;
+  const last = lowerPath.at(-1)!;
+  const imported = importedBindings.get(path[0]!);
+  if (imported !== undefined) return imported;
+  if (["fetch", "sendbeacon", "xmlhttprequest", "websocket", "eventsource"].includes(last)) {
+    return "NETWORK";
+  }
+  if (
+    lowerPath.includes("speechsynthesis") ||
+    ["audio", "audiocontext", "webkitaudiocontext", "speechsynthesisutterance"].includes(last)
+  ) {
+    return "AUDIO";
+  }
+  if (root === "react") return "REACT";
+  if (root === "indexeddb" || ["opendb", "deletedb"].includes(last)) return "INDEXED_DB";
+  if ([
+    "analytics", "amplitude", "datadog", "fullstory", "gtag", "heap",
+    "mixpanel", "plausible", "posthog", "segment", "sentry"
+  ].includes(root)) return "ANALYTICS";
+  if ([
+    "anthropic", "cohere", "deepseek", "fireworks", "gemini", "groq",
+    "mistral", "ollama", "openai", "perplexity", "replicate", "together", "xai"
+  ].includes(root)) return "LLM_PROVIDER";
+  return null;
+}
+
+function importViolation(category: SideEffectCategory): string {
+  return `${category}_IMPORT`;
+}
+
+function callViolation(category: SideEffectCategory): string {
+  return `${category}_CALL`;
+}
+
+function inspectSideEffects(fileName: string): string[] {
   const sourceFile = parsedSourceFile(fileName);
-  const specifiers: string[] = [];
+  const violations = new Set<string>();
+  const importedBindings = new Map<string, SideEffectCategory>();
+
+  function recordImport(category: SideEffectCategory, bindings: readonly string[] = []): void {
+    violations.add(importViolation(category));
+    for (const binding of bindings) importedBindings.set(binding, category);
+  }
+
   for (const statement of sourceFile.statements) {
-    if (
-      (ts.isImportDeclaration(statement) || ts.isExportDeclaration(statement)) &&
-      statement.moduleSpecifier !== undefined &&
-      ts.isStringLiteral(statement.moduleSpecifier)
-    ) {
-      specifiers.push(statement.moduleSpecifier.text);
+    if (ts.isImportDeclaration(statement)) {
+      const category = moduleCategory(literalText(statement.moduleSpecifier) ?? "");
+      if (category !== null) recordImport(category, importedBindingNames(statement));
     } else if (
       ts.isImportEqualsDeclaration(statement) &&
-      ts.isExternalModuleReference(statement.moduleReference) &&
-      statement.moduleReference.expression !== undefined &&
-      ts.isStringLiteral(statement.moduleReference.expression)
+      ts.isExternalModuleReference(statement.moduleReference)
     ) {
-      specifiers.push(statement.moduleReference.expression.text);
+      const category = moduleCategory(literalText(statement.moduleReference.expression) ?? "");
+      if (category !== null) recordImport(category, [statement.name.text]);
+    } else if (ts.isExportDeclaration(statement)) {
+      const category = moduleCategory(literalText(statement.moduleSpecifier) ?? "");
+      if (category !== null) recordImport(category);
     }
   }
+
   function visit(node: ts.Node): void {
-    if (
-      ts.isCallExpression(node) &&
-      node.expression.kind === ts.SyntaxKind.ImportKeyword &&
-      node.arguments.length === 1 &&
-      ts.isStringLiteral(node.arguments[0]!)
-    ) {
-      specifiers.push(node.arguments[0].text);
+    if (ts.isCallExpression(node)) {
+      const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
+      const isRequire = ts.isIdentifier(node.expression) && node.expression.text === "require";
+      if ((isDynamicImport || isRequire) && node.arguments.length === 1) {
+        const category = moduleCategory(literalText(node.arguments[0]) ?? "");
+        if (category !== null) recordImport(category);
+      } else {
+        const category = operationCategory(accessPath(node.expression), importedBindings);
+        if (category !== null) violations.add(callViolation(category));
+      }
+    } else if (ts.isNewExpression(node)) {
+      const category = operationCategory(accessPath(node.expression), importedBindings);
+      if (category !== null) violations.add(callViolation(category));
+    } else if (ts.isJsxOpeningElement(node) || ts.isJsxSelfClosingElement(node)) {
+      if (node.tagName.getText(sourceFile).toLowerCase() === "audio") {
+        violations.add("AUDIO_ELEMENT");
+      }
     }
     node.forEachChild(visit);
   }
+
   sourceFile.forEachChild(visit);
-  return specifiers;
+  return [...violations];
 }
 
-function auditChildUiSideEffects(sourceText: string, fileName: string): string[] {
-  const violations: string[] = [];
-  const imports = moduleSpecifiers(fileName);
-  if (/(?:\b(?:globalThis|window)\.)?\bfetch\s*\(/.test(sourceText)) violations.push("FETCH_CALL");
-  if (/\bnew\s+(?:window\.)?Audio\b/.test(sourceText)) violations.push("AUDIO_CONSTRUCTION");
-  if (/<audio\b/i.test(sourceText)) violations.push("AUDIO_ELEMENT");
-  if (/\bspeechSynthesis\b/.test(sourceText)) violations.push("SPEECH_SYNTHESIS");
-  if (imports.some((specifier) => ANALYTICS_MODULE.test(specifier))) violations.push("ANALYTICS_IMPORT");
-  if (imports.some((specifier) => LLM_MODULE.test(specifier))) violations.push("LLM_PROVIDER_IMPORT");
-  return violations;
+function auditChildUiSideEffects(fileName: string): string[] {
+  return inspectSideEffects(fileName).filter((violation) =>
+    !violation.startsWith("REACT_") && !violation.startsWith("INDEXED_DB_"));
 }
 
-function auditPureDisplaySideEffects(sourceText: string, fileName: string): string[] {
-  const violations = auditChildUiSideEffects(sourceText, fileName);
-  const imports = moduleSpecifiers(fileName);
-  if (imports.some((specifier) => /^react(?:[/.-]|$)|^react-dom(?:[/.-]|$)/i.test(specifier))) {
-    violations.push("REACT_IMPORT");
-  }
-  if (/\bReact\.[A-Za-z_$][\w$]*\s*\(/.test(sourceText)) violations.push("REACT_ACCESS");
-  if (
-    imports.some((specifier) => /(?:^|[/@-])(?:idb|indexeddb)(?:[/@.-]|$)/i.test(specifier)) ||
-    /\b(?:indexedDB|openDB|deleteDB)\b/.test(sourceText)
-  ) {
-    violations.push("INDEXED_DB_ACCESS");
-  }
-  if (
-    imports.some((specifier) => NETWORK_MODULE.test(specifier)) ||
-    /\b(?:XMLHttpRequest|WebSocket|EventSource)\b|\bnavigator\.sendBeacon\s*\(|\b(?:axios|got|ky)\s*\(|\b(?:http|https)\.(?:get|request)\s*\(/.test(sourceText)
-  ) {
-    violations.push("NETWORK_ACCESS");
-  }
-  if (imports.some((specifier) => AUDIO_MODULE.test(specifier))) violations.push("AUDIO_IMPORT");
-  if (ANALYTICS_CALL.test(sourceText)) violations.push("ANALYTICS_CALL");
-  if (LLM_CALL.test(sourceText)) violations.push("LLM_PROVIDER_CALL");
-  return violations;
+function auditPureDisplaySideEffects(fileName: string): string[] {
+  return inspectSideEffects(fileName);
 }
 
 function activeItemChildCopy(item: (typeof INITIAL_ITEMS)[number]): string[] {
@@ -288,10 +393,6 @@ function activeItemChildCopy(item: (typeof INITIAL_ITEMS)[number]): string[] {
   return copy.filter((value): value is string => typeof value === "string");
 }
 
-function readSource(fileName: string): string {
-  return readFileSync(fileName, "utf8");
-}
-
 describe("approved magical companion seed content", () => {
   it("classifies English instructions and child-shaming copy", () => {
     expect(auditChildCopy(["Read this, 바보야"])).toEqual(expect.arrayContaining([
@@ -306,6 +407,22 @@ describe("approved magical companion seed content", () => {
     expect(copy).toEqual(["Read this"]);
     expect(auditChildCopy(copy)).toEqual(["ENGLISH_INSTRUCTION"]);
   });
+
+  it.each(SIDE_EFFECT_FIXTURES)(
+    "blocks $name in child UI modules",
+    ({ fileName, source, expected }) => {
+      expect(source).toBe(VIRTUAL_FILES.get(fileName));
+      expect(auditChildUiSideEffects(fileName)).toEqual(expect.arrayContaining([...expected]));
+    }
+  );
+
+  it.each(SIDE_EFFECT_FIXTURES)(
+    "blocks $name in pure display modules",
+    ({ fileName, source, expected }) => {
+      expect(source).toBe(VIRTUAL_FILES.get(fileName));
+      expect(auditPureDisplaySideEffects(fileName)).toEqual(expect.arrayContaining([...expected]));
+    }
+  );
 
   it("publishes exactly ten Korean and ten math v2 items", () => {
     expect(INITIAL_CONTENT_VERSION).toBe(2);
@@ -341,11 +458,11 @@ describe("approved magical companion seed content", () => {
   });
 
   it.each(CHILD_UI_FILES)("blocks direct child UI side effects in %s", (fileName) => {
-    expect(auditChildUiSideEffects(readSource(fileName), fileName)).toEqual([]);
+    expect(auditChildUiSideEffects(fileName)).toEqual([]);
   });
 
   it.each(PURE_DISPLAY_FILES)("keeps pure display data side-effect free in %s", (fileName) => {
-    expect(auditPureDisplaySideEffects(readSource(fileName), fileName)).toEqual([]);
+    expect(auditPureDisplaySideEffects(fileName)).toEqual([]);
   });
 
   it.each([
