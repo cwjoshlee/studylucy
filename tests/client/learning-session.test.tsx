@@ -16,6 +16,7 @@ import { ApiClient, ApiError } from "../../src/client/api/client";
 import type {
   AttemptReceipt,
   LearningItemPayload,
+  LearningSessionReceipt,
   TodayPlan
 } from "../../src/shared/learning";
 import type { IdleEventResult } from "../../src/shared/stars";
@@ -109,10 +110,12 @@ function receipt(overrides: Partial<AttemptReceipt> = {}): AttemptReceipt {
 
 function deferred<T>() {
   let resolve!: (value: T) => void;
-  const promise = new Promise<T>((settle) => {
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((settle, fail) => {
     resolve = settle;
+    reject = fail;
   });
-  return { promise, resolve };
+  return { promise, reject, resolve };
 }
 
 function idleResult(outcome: IdleEventResult["outcome"]): IdleEventResult {
@@ -162,7 +165,7 @@ function supportSpeechRecognition(): void {
 
 async function submitManualTranscript(transcript: string): Promise<void> {
   const user = userEvent.setup();
-  await user.click(screen.getByText("직접 입력으로 확인하기"));
+  await user.click(await screen.findByText("직접 입력으로 확인하기"));
   await user.type(screen.getByLabelText("읽은 내용 직접 입력"), transcript);
   await user.click(screen.getByRole("button", { name: "읽기 판정하기" }));
 }
@@ -211,9 +214,121 @@ afterEach(() => {
 
 describe("LearningSession", () => {
   it.each([
+    [readingPlanItem, "읽기 판정하기", readingItem.delight!.openingCue],
+    [mathPlanItem, "답 확인", mathItem.delight!.openingCue]
+  ] as const)("keeps %s unavailable until online session issuance resolves", async (
+    item,
+    submissionName,
+    openingCue
+  ) => {
+    const issuance = deferred<LearningSessionReceipt>();
+    const api = createLearningApi();
+    api.createLearningSession.mockReturnValue(issuance.promise);
+    const onExit = vi.fn();
+
+    render(<LearningSession
+      item={item}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      onExit={onExit}
+    />);
+
+    const preparing = screen.getByRole("status", { name: "학습 준비 상태" });
+    expect(preparing).toHaveTextContent("학습을 준비하고 있어요. 잠깐 기다려 주세요.");
+    expect(preparing).toHaveAttribute("data-cue-tone", "status");
+    expect(screen.getByRole("button", { name: "대시보드로 돌아가기" })).toBeEnabled();
+    expect(screen.queryByRole("status", { name: "마법 친구 말풍선" }))
+      .not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "읽기 판정하기" }))
+      .not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "답 확인" }))
+      .not.toBeInTheDocument();
+    expect(screen.queryByText(item.payload.text)).not.toBeInTheDocument();
+    expect(api.saveAttempt).not.toHaveBeenCalled();
+
+    await act(async () => {
+      issuance.resolve({
+        learningSessionId: "server-issued-learning-session-deferred-1",
+        activeUntil: "2026-07-16T07:00:00.000Z",
+        submitUntil: "2026-07-17T14:59:59.999Z"
+      });
+      await issuance.promise;
+    });
+
+    expect(await screen.findByRole("status", { name: "마법 친구 말풍선" }))
+      .toHaveTextContent(openingCue);
+    expect(screen.getByRole("button", { name: submissionName })).toBeInTheDocument();
+    expect(screen.getByText(item.payload.text)).toBeVisible();
+  });
+
+  it("keeps a rejected issuance unavailable with no late lesson reveal or submission", async () => {
+    const issuance = deferred<LearningSessionReceipt>();
+    const api = createLearningApi();
+    api.createLearningSession.mockReturnValue(issuance.promise);
+    const onExit = vi.fn();
+
+    render(<LearningSession
+      item={readingPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      onExit={onExit}
+    />);
+
+    expect(screen.getByRole("status", { name: "학습 준비 상태" })).toBeVisible();
+    await act(async () => {
+      issuance.reject(new ApiError(409, "PLAN_NOT_ISSUED"));
+      await issuance.promise.catch(() => undefined);
+      await Promise.resolve();
+    });
+
+    expect(onExit).toHaveBeenCalledOnce();
+    const unavailable = screen.getByRole("status", { name: "학습 이용 불가 상태" });
+    expect(unavailable).toHaveTextContent("학습을 시작할 수 없어요. 대시보드에서 다시 시도해 주세요.");
+    expect(unavailable).toHaveAttribute("data-cue-tone", "status");
+    expect(screen.queryByRole("status", { name: "마법 친구 말풍선" }))
+      .not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "읽기 판정하기" }))
+      .not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "답 확인" }))
+      .not.toBeInTheDocument();
+    expect(screen.queryByText(readingItem.text)).not.toBeInTheDocument();
+    expect(api.saveAttempt).not.toHaveBeenCalled();
+  });
+
+  it("reveals the validated offline lesson only after network issuance fails", async () => {
+    const issuance = deferred<LearningSessionReceipt>();
+    const api = createLearningApi();
+    api.createLearningSession.mockReturnValue(issuance.promise);
+
+    render(<LearningSession
+      item={readingPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      offlineEligibility="validated"
+    />);
+
+    expect(screen.getByRole("status", { name: "학습 준비 상태" })).toBeVisible();
+    expect(screen.queryByText(readingItem.text)).not.toBeInTheDocument();
+
+    await act(async () => {
+      issuance.reject(new TypeError("offline"));
+      await issuance.promise.catch(() => undefined);
+    });
+
+    const bubble = await screen.findByRole("status", { name: "마법 친구 말풍선" });
+    expect(bubble).toHaveAttribute("data-cue-tone", "status");
+    expect(bubble).toHaveTextContent("지금은 오프라인이에요");
+    expect(screen.getByText(readingItem.text)).toBeVisible();
+    expect(screen.getByText("직접 입력으로 확인하기")).toBeVisible();
+  });
+
+  it.each([
     [readingPlanItem, "수달 또또", readingItem.delight!.openingCue],
     [mathPlanItem, "너구리 모모", mathItem.delight!.openingCue]
-  ] as const)("opens %s with its subject friend and exact content cue", (item, friend, openingCue) => {
+  ] as const)("opens %s with its subject friend and exact content cue", async (item, friend, openingCue) => {
     render(<LearningSession
       item={item}
       api={createLearningApi()}
@@ -221,7 +336,7 @@ describe("LearningSession", () => {
       studyDate="2026-07-16"
     />);
 
-    const bubble = companionBubble();
+    const bubble = await screen.findByRole("status", { name: "마법 친구 말풍선" });
     expect(bubble).toHaveTextContent(friend);
     expect(bubble).toHaveTextContent(openingCue);
   });
@@ -295,6 +410,7 @@ describe("LearningSession", () => {
       planId="plan-daily-1"
       studyDate="2026-07-16"
     />);
+    await flushLearningSessionIssue();
     fireEvent.click(screen.getByText("직접 입력으로 확인하기"));
     fireEvent.change(screen.getByLabelText("읽은 내용 직접 입력"), {
       target: { value: readingItem.text }
@@ -331,6 +447,7 @@ describe("LearningSession", () => {
       planId="plan-daily-1"
       studyDate="2026-07-16"
     />);
+    await flushLearningSessionIssue();
     fireEvent.click(screen.getByText("직접 입력으로 확인하기"));
     fireEvent.change(screen.getByLabelText("읽은 내용 직접 입력"), {
       target: { value: readingItem.text }
@@ -388,6 +505,7 @@ describe("LearningSession", () => {
       studyDate="2026-07-16"
       onExit={onExit}
     />);
+    await flushLearningSessionIssue();
     fireEvent.click(screen.getByText("직접 입력으로 확인하기"));
     fireEvent.change(screen.getByLabelText("읽은 내용 직접 입력"), {
       target: { value: readingItem.text }
@@ -535,7 +653,7 @@ describe("LearningSession", () => {
     expectNoProtectedHumor(companionBubble());
   });
 
-  it("keeps manual reading as a collapsed details fallback", () => {
+  it("keeps manual reading as a collapsed details fallback", async () => {
     render(<LearningSession
       item={readingPlanItem}
       api={createLearningApi()}
@@ -543,7 +661,7 @@ describe("LearningSession", () => {
       studyDate="2026-07-16"
     />);
 
-    const summary = screen.getByText("직접 입력으로 확인하기");
+    const summary = await screen.findByText("직접 입력으로 확인하기");
     const details = summary.closest("details");
     expect(details).not.toBeNull();
     expect(details).not.toHaveAttribute("open");
@@ -558,7 +676,7 @@ describe("LearningSession", () => {
       studyDate="2026-07-16"
     />);
 
-    const button = screen.getByRole("button", { name: "낱말 힌트" });
+    const button = await screen.findByRole("button", { name: "낱말 힌트" });
     expect(button).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByRole("region", { name: "낱말 힌트" })).not.toBeInTheDocument();
 
@@ -757,7 +875,7 @@ describe("LearningSession", () => {
   it("keeps math locked until the full reading passes", async () => {
     render(<LearningSession item={mathPlanItem} api={createLearningApi()} planId="plan-daily-1" studyDate="2026-07-16" />);
 
-    expect(screen.getByLabelText("답 쓰기")).toBeDisabled();
+    expect(await screen.findByLabelText("답 쓰기")).toBeDisabled();
     await submitManualTranscript(`${mathItem.text} ${mathItem.question}`);
     expect(screen.getByText("읽기가 잘 도착했어요")).toBeVisible();
     expect(screen.getByLabelText("답 쓰기")).toBeEnabled();

@@ -39,6 +39,23 @@ const PURE_DISPLAY_IMPORT_ALLOWLIST = new Map<string, ReadonlySet<string>>([
   ["src/client/companions/cues.ts", new Set(["../../shared/companions"])],
   ["src/client/learning/problem-breakdown.ts", new Set(["../../shared/learning"])]
 ]);
+const CHILD_UI_IMPORT_ALLOWLIST = new Map<string, ReadonlySet<string>>([
+  ["src/client/home/student-home.tsx", new Set([
+    "react",
+    "../api/client",
+    "../offline/db",
+    "../offline/sync"
+  ])],
+  ["src/client/learning/learning-session.tsx", new Set([
+    "react",
+    "../api/client",
+    "../offline/sync",
+    "./speech-recognition"
+  ])],
+  ["src/client/companions/companion-avatar.tsx", new Set(["react"])],
+  ["src/client/companions/friend-stage.tsx", new Set(["react"])],
+  ["src/client/delight/star-celebration.tsx", new Set(["react"])]
+]);
 
 const AUDITED_OBJECT_PROPERTIES = new Set([
   "text",
@@ -75,11 +92,11 @@ const SIDE_EFFECT_MODULES: readonly [SideEffectCategory, RegExp][] = [
   ["ANALYTICS", /(?:^|[/@._-])(?:analytics|amplitude|datadog|fullstory|gtag|heap|mixpanel|plausible|posthog|segment|sentry|tracking)(?:[/@._-]|$)/],
   ["LLM_PROVIDER", /(?:^|[/@._-])(?:ai|anthropic|bedrock|cohere|deepseek|fireworks|gemini|genai|generative|groq|huggingface|langchain|mistral|ollama|openai|perplexity|replicate|together|transformers|vertexai|xai)(?:[/@._-]|$)/]
 ];
-const PURE_DISPLAY_LOCAL_EFFECT_MODULES: readonly [SideEffectCategory, RegExp][] = [
+const LOCAL_EFFECT_MODULES: readonly [SideEffectCategory, RegExp][] = [
   ["NETWORK", /(?:^|[/@._-])(?:api|sync|network|fetch|https?)(?:[/@._-]|$)/],
-  ["AUDIO", /(?:^|[/@._-])(?:audio|howler|speech|tone)(?:[/@._-]|$)/],
-  ["ANALYTICS", /(?:^|[/@._-])(?:analytics|amplitude|datadog|fullstory|gtag|heap|mixpanel|plausible|posthog|segment|sentry|tracking)(?:[/@._-]|$)/],
-  ["LLM_PROVIDER", /(?:^|[/@._-])(?:ai|anthropic|bedrock|cohere|deepseek|fireworks|gemini|genai|generative|groq|huggingface|langchain|mistral|ollama|openai|perplexity|replicate|together|transformers|vertexai|xai)(?:[/@._-]|$)/],
+  ["AUDIO", /(?:^|[/@._-])(?:audio|howler|playback|player|speech|synthesis|tone)(?:[/@._-]|$)/],
+  ["ANALYTICS", /(?:^|[/@._-])(?:analytics|amplitude|datadog|fullstory|gtag|heap|mixpanel|plausible|posthog|segment|sentry|telemetry|tracking)(?:[/@._-]|$)/],
+  ["LLM_PROVIDER", /(?:^|[/@._-])(?:ai|anthropic|bedrock|cohere|deepseek|fireworks|gemini|genai|generative|groq|huggingface|langchain|llm|mistral|ollama|openai|perplexity|provider|providers|replicate|together|transformers|vertexai|xai)(?:[/@._-]|$)/],
   ["INDEXED_DB", /(?:^|[/@._-])(?:idb|indexed[-_]?db)(?:[/@._-]|$)/],
   ["REACT", /(?:^|[/@._-])(?:react|react-dom)(?:[/@._-]|$)/]
 ];
@@ -138,15 +155,33 @@ const PURE_LOCAL_EFFECT_FIXTURES = [
     expected: ["LLM_PROVIDER_IMPORT", "LLM_PROVIDER_CALL"]
   },
   {
+    name: "local Gemini provider alias import",
+    fileName: "/virtual/pure-local-gemini-provider-alias.ts",
+    source: `import { generate as run } from "../llm/providers/gemini-client"; run /* alias trivia */ ();`,
+    expected: ["LLM_PROVIDER_IMPORT", "LLM_PROVIDER_CALL"]
+  },
+  {
     name: "local audio alias import",
     fileName: "/virtual/pure-local-audio-alias.ts",
     source: `import { play as run } from "../audio/player"; run ();`,
     expected: ["AUDIO_IMPORT", "AUDIO_CALL"]
   },
   {
+    name: "local playback synthesis alias import",
+    fileName: "/virtual/pure-local-playback-synthesis-alias.ts",
+    source: `import { speak as run } from "../playback/synthesis/player"; run /* alias trivia */ ();`,
+    expected: ["AUDIO_IMPORT", "AUDIO_CALL"]
+  },
+  {
     name: "local analytics alias import",
     fileName: "/virtual/pure-local-analytics-alias.ts",
     source: `import { track as run } from "../analytics/client"; run ();`,
+    expected: ["ANALYTICS_IMPORT", "ANALYTICS_CALL"]
+  },
+  {
+    name: "local tracking wrapper alias import",
+    fileName: "/virtual/pure-local-tracking-wrapper-alias.ts",
+    source: `import { record as run } from "../telemetry/tracking-wrapper"; run /* alias trivia */ ();`,
     expected: ["ANALYTICS_IMPORT", "ANALYTICS_CALL"]
   },
   {
@@ -329,7 +364,16 @@ function importCategory(
   boundary: SideEffectBoundary,
   isTypeOnly: boolean
 ): SideEffectCategory | null {
-  if (boundary === "CHILD_UI") return moduleCategory(specifier);
+  if (boundary === "CHILD_UI") {
+    if (CHILD_UI_IMPORT_ALLOWLIST.get(fileName)?.has(specifier) === true) {
+      return null;
+    }
+    return moduleCategory(specifier) ??
+      LOCAL_EFFECT_MODULES.find(
+        ([, pattern]) => pattern.test(specifier.toLowerCase())
+      )?.[0] ??
+      null;
+  }
   if (
     isTypeOnly &&
     PURE_DISPLAY_IMPORT_ALLOWLIST.get(fileName)?.has(specifier) === true
@@ -337,7 +381,7 @@ function importCategory(
     return null;
   }
   return moduleCategory(specifier) ??
-    PURE_DISPLAY_LOCAL_EFFECT_MODULES.find(
+    LOCAL_EFFECT_MODULES.find(
       ([, pattern]) => pattern.test(specifier.toLowerCase())
     )?.[0] ??
     "UNAPPROVED_DEPENDENCY";
@@ -501,8 +545,7 @@ function inspectSideEffects(fileName: string, boundary: SideEffectBoundary): str
 }
 
 function auditChildUiSideEffects(fileName: string): string[] {
-  return inspectSideEffects(fileName, "CHILD_UI").filter((violation) =>
-    !violation.startsWith("REACT_") && !violation.startsWith("INDEXED_DB_"));
+  return inspectSideEffects(fileName, "CHILD_UI");
 }
 
 function auditPureDisplaySideEffects(fileName: string): string[] {
@@ -559,14 +602,27 @@ describe("approved magical companion seed content", () => {
     }
   );
 
-  it("blocks local API aliases only in pure display modules", () => {
+  it("blocks local effect aliases in pure display modules", () => {
     for (const { fileName, source, expected } of PURE_LOCAL_EFFECT_FIXTURES) {
       expect(source).toBe(VIRTUAL_FILES.get(fileName));
       expect(auditPureDisplaySideEffects(fileName)).toEqual(
         expect.arrayContaining([...expected])
       );
-      expect(auditChildUiSideEffects(fileName)).toEqual([]);
     }
+  });
+
+  it("blocks local effect aliases outside the exact child orchestration allowlist", () => {
+    for (const { fileName, source, expected } of PURE_LOCAL_EFFECT_FIXTURES) {
+      expect(source).toBe(VIRTUAL_FILES.get(fileName));
+      expect(auditChildUiSideEffects(fileName)).toEqual(
+        expect.arrayContaining([...expected])
+      );
+    }
+  });
+
+  it("allows the exact approved home and learning orchestration imports", () => {
+    expect(auditChildUiSideEffects("src/client/home/student-home.tsx")).toEqual([]);
+    expect(auditChildUiSideEffects("src/client/learning/learning-session.tsx")).toEqual([]);
   });
 
   it("publishes exactly ten Korean and ten math v2 items", () => {

@@ -142,7 +142,10 @@ function LearningSessionView({
   const attemptGenerationRef = useRef(0);
   const attemptReceiptRef = useRef<AttemptReceipt | null>(null);
   const learningControlsPaused =
-    authority.phase === "unavailable" ||
+    (
+      authority.phase !== "online-issued" &&
+      authority.phase !== "offline-unissued"
+    ) ||
     waiting ||
     idleUi?.phase === "paused";
 
@@ -465,6 +468,28 @@ function LearningSessionView({
     setSpeechListening(true);
   }
 
+  if (authority.phase === "issuing" || authority.phase === "unavailable") {
+    const issuing = authority.phase === "issuing";
+    return (
+      <section className="learning-session" aria-label={`${item.title} 학습`}>
+        {onExit ? (
+          <button type="button" className="button-secondary" onClick={onExit}>
+            대시보드로 돌아가기
+          </button>
+        ) : null}
+        <p
+          role="status"
+          aria-label={issuing ? "학습 준비 상태" : "학습 이용 불가 상태"}
+          data-cue-tone="status"
+        >
+          {issuing
+            ? "학습을 준비하고 있어요. 잠깐 기다려 주세요."
+            : "학습을 시작할 수 없어요. 대시보드에서 다시 시도해 주세요."}
+        </p>
+      </section>
+    );
+  }
+
   const companionMoment: CompanionMoment =
     idleUi?.phase === "paused" ? "idle-paused" :
     idleUi?.phase === "confirm" ? "idle-confirm" :
@@ -489,14 +514,12 @@ function LearningSessionView({
           대시보드로 돌아가기
         </button>
       ) : null}
-      {authority.phase !== "unavailable" ? (
-        <LearningCompanion
-          moment={companionMoment}
-          studyDate={studyDate}
-          item={item}
-          saveState={saveUiState === "idle" ? undefined : saveUiState}
-        />
-      ) : null}
+      <LearningCompanion
+        moment={companionMoment}
+        studyDate={studyDate}
+        item={item}
+        saveState={saveUiState === "idle" ? undefined : saveUiState}
+      />
       <p className="subject-chip">{item.subject === "korean" ? "국어" : "수학"} · {item.unit}</p>
       <h2>{item.title}</h2>
       <ProblemBreakdown
