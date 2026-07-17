@@ -240,6 +240,7 @@ describe("LearningSession", () => {
     expect(within(result).getByText("한 번 더 읽어 볼 낱말이 있어요")).toBeVisible();
     expect(result).toHaveTextContent("밝은 해");
     expect(screen.queryByText(/PASS|FAIL/)).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent(/바보|못하|틀렸잖|왜 이것도|느려|벌 받아/);
     const bubble = companionBubble();
     expect(bubble).toHaveAttribute("data-cue-tone", "support");
     expectNoProtectedHumor(bubble);

@@ -848,6 +848,8 @@ describe("가족 로그인과 학생 홈", () => {
       .toBeTruthy();
     expect(within(optional).getByText("구름 산책")).toBeVisible();
     expect(within(optional).queryByText(/\uBCC4 1\uAC1C/)).not.toBeInTheDocument();
+    expect(document.body).not.toHaveTextContent(/\bPASS\b|\bFAIL\b/);
+    expect(document.body).not.toHaveTextContent(/마이\s*리틀\s*포니|티니핑|시나모롤/i);
     expect(api.getToday).toHaveBeenCalledWith();
   });
 
