@@ -60,7 +60,7 @@ bash scripts/smoke-container.sh
 
 ## 5. 이미지 빌드와 앱 시작
 
-`Dockerfile`은 Node `22.23.1`에서 `npm ci`, 전체 `npm run check`, 프로덕션 의존성 정리를 수행한다. 런타임은 UID/GID 1000이고 `/data` 외 파일 시스템은 읽기 전용이다.
+`Dockerfile`은 Node `22.23.1`에서 `npm ci`, 프로덕션 빌드, 프로덕션 의존성 정리를 수행한다. 전체 `npm run check`는 개발 Mac과 CI에서 이미지 빌드 전에 통과시킨다. 리소스가 제한된 NAS에서는 검증된 소스로 이미지만 빌드해 Vitest 제한 시간에 배포가 좌우되지 않게 한다. 런타임은 UID/GID 1000이고 `/data` 외 파일 시스템은 읽기 전용이다.
 
 ```bash
 cd /volume1/docker/sua-learning

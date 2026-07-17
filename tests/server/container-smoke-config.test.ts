@@ -6,6 +6,15 @@ async function source(path: string): Promise<string> {
 }
 
 describe("isolated container smoke configuration", () => {
+  it("builds the production image without rerunning the full test suite", async () => {
+    const dockerfile = await source("Dockerfile");
+
+    expect(dockerfile).toContain("RUN npm run build");
+    expect(dockerfile).not.toContain("RUN npm run check");
+    expect(dockerfile.indexOf("RUN npm run build"))
+      .toBeLessThan(dockerfile.indexOf("npm prune --omit=dev"));
+  });
+
   it("uses a dedicated project, temporary data, and nonproduction port", async () => {
     const [script, smokeCompose, productionCompose] = await Promise.all([
       source("scripts/smoke-container.sh"),
