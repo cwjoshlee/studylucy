@@ -29,7 +29,7 @@
 ## 자동 검사 기록
 
 - 실행 환경: Node `v22.23.1`, npm `11.11.0`
-- `npm run check`: TypeScript 검사, Vitest 34개 파일·434개 테스트, Vite 클라이언트 빌드와 tsup 서버 빌드 통과
+- `npm run check`: TypeScript 검사, Vitest 34개 파일·441개 테스트, Vite 클라이언트 빌드와 tsup 서버 빌드 통과
 - 추가 검사: `bash -n scripts/*.sh`, `git diff --check`, `git diff --check 05804ed..HEAD` 통과
 - 비차단 경고: Vite가 축소 후 500 kB를 넘는 청크를 보고함
 - 비차단 경고: PWA 서비스 워커 빌드가 `inlineDynamicImports` 사용 중단 예정 경고를 보고함

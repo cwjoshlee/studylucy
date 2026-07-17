@@ -34,6 +34,11 @@ const PURE_DISPLAY_FILES = [
   "src/client/companions/cues.ts",
   "src/client/learning/problem-breakdown.ts"
 ] as const;
+const PURE_DISPLAY_IMPORT_ALLOWLIST = new Map<string, ReadonlySet<string>>([
+  ["src/client/companions/cast.ts", new Set(["../../shared/companions"])],
+  ["src/client/companions/cues.ts", new Set(["../../shared/companions"])],
+  ["src/client/learning/problem-breakdown.ts", new Set(["../../shared/learning"])]
+]);
 
 const AUDITED_OBJECT_PROPERTIES = new Set([
   "text",
@@ -59,7 +64,9 @@ type SideEffectCategory =
   | "ANALYTICS"
   | "LLM_PROVIDER"
   | "REACT"
-  | "INDEXED_DB";
+  | "INDEXED_DB"
+  | "UNAPPROVED_DEPENDENCY";
+type SideEffectBoundary = "CHILD_UI" | "PURE_DISPLAY";
 const SIDE_EFFECT_MODULES: readonly [SideEffectCategory, RegExp][] = [
   ["REACT", /^react(?:-dom)?(?:\/|$)/],
   ["INDEXED_DB", /^(?:idb(?:-keyval)?|fake-indexeddb)(?:\/|$)/],
@@ -67,6 +74,14 @@ const SIDE_EFFECT_MODULES: readonly [SideEffectCategory, RegExp][] = [
   ["AUDIO", /(?:^|[/@._-])(?:audio|howler|speech|tone)(?:[/@._-]|$)/],
   ["ANALYTICS", /(?:^|[/@._-])(?:analytics|amplitude|datadog|fullstory|gtag|heap|mixpanel|plausible|posthog|segment|sentry|tracking)(?:[/@._-]|$)/],
   ["LLM_PROVIDER", /(?:^|[/@._-])(?:ai|anthropic|bedrock|cohere|deepseek|fireworks|gemini|genai|generative|groq|huggingface|langchain|mistral|ollama|openai|perplexity|replicate|together|transformers|vertexai|xai)(?:[/@._-]|$)/]
+];
+const PURE_DISPLAY_LOCAL_EFFECT_MODULES: readonly [SideEffectCategory, RegExp][] = [
+  ["NETWORK", /(?:^|[/@._-])(?:api|sync|network|fetch|https?)(?:[/@._-]|$)/],
+  ["AUDIO", /(?:^|[/@._-])(?:audio|howler|speech|tone)(?:[/@._-]|$)/],
+  ["ANALYTICS", /(?:^|[/@._-])(?:analytics|amplitude|datadog|fullstory|gtag|heap|mixpanel|plausible|posthog|segment|sentry|tracking)(?:[/@._-]|$)/],
+  ["LLM_PROVIDER", /(?:^|[/@._-])(?:ai|anthropic|bedrock|cohere|deepseek|fireworks|gemini|genai|generative|groq|huggingface|langchain|mistral|ollama|openai|perplexity|replicate|together|transformers|vertexai|xai)(?:[/@._-]|$)/],
+  ["INDEXED_DB", /(?:^|[/@._-])(?:idb|indexed[-_]?db)(?:[/@._-]|$)/],
+  ["REACT", /(?:^|[/@._-])(?:react|react-dom)(?:[/@._-]|$)/]
 ];
 const VIRTUAL_FIXTURE_FILE = "/virtual/child-copy-audit-fixture.tsx";
 const TECHNICAL_CLASS_FIXTURE = `
@@ -96,9 +111,61 @@ const SIDE_EFFECT_FIXTURES = [
     expected: ["NETWORK_IMPORT", "NETWORK_CALL"]
   }
 ] as const;
+const PURE_LOCAL_API_FIXTURE = {
+  name: "local API alias import",
+  fileName: "/virtual/pure-local-api-alias.ts",
+  source: `import { request as load } from "../api/client"; load /* alias spacing */ ();`,
+  expected: ["NETWORK_IMPORT", "NETWORK_CALL"]
+} as const;
+const PURE_LOCAL_EFFECT_FIXTURES = [
+  PURE_LOCAL_API_FIXTURE,
+  {
+    name: "local sync alias import",
+    fileName: "/virtual/pure-local-sync-alias.ts",
+    source: `import { flush as run } from "../sync/client"; run ();`,
+    expected: ["NETWORK_IMPORT", "NETWORK_CALL"]
+  },
+  {
+    name: "local network alias import",
+    fileName: "/virtual/pure-local-network-alias.ts",
+    source: `import { request as run } from "../network/client"; run ();`,
+    expected: ["NETWORK_IMPORT", "NETWORK_CALL"]
+  },
+  {
+    name: "local LLM alias import",
+    fileName: "/virtual/pure-local-llm-alias.ts",
+    source: `import { complete as run } from "../providers/openai-client"; run ();`,
+    expected: ["LLM_PROVIDER_IMPORT", "LLM_PROVIDER_CALL"]
+  },
+  {
+    name: "local audio alias import",
+    fileName: "/virtual/pure-local-audio-alias.ts",
+    source: `import { play as run } from "../audio/player"; run ();`,
+    expected: ["AUDIO_IMPORT", "AUDIO_CALL"]
+  },
+  {
+    name: "local analytics alias import",
+    fileName: "/virtual/pure-local-analytics-alias.ts",
+    source: `import { track as run } from "../analytics/client"; run ();`,
+    expected: ["ANALYTICS_IMPORT", "ANALYTICS_CALL"]
+  },
+  {
+    name: "local IndexedDB alias import",
+    fileName: "/virtual/pure-local-idb-alias.ts",
+    source: `import { open as run } from "../idb/store"; run ();`,
+    expected: ["INDEXED_DB_IMPORT", "INDEXED_DB_CALL"]
+  },
+  {
+    name: "local React-like alias import",
+    fileName: "/virtual/pure-local-react-alias.ts",
+    source: `import { effect as run } from "../react/effect"; run ();`,
+    expected: ["REACT_IMPORT", "REACT_CALL"]
+  }
+] as const;
 const VIRTUAL_FILES = new Map<string, string>([
   [VIRTUAL_FIXTURE_FILE, TECHNICAL_CLASS_FIXTURE],
-  ...SIDE_EFFECT_FIXTURES.map(({ fileName, source }) => [fileName, source] as const)
+  ...SIDE_EFFECT_FIXTURES.map(({ fileName, source }) => [fileName, source] as const),
+  ...PURE_LOCAL_EFFECT_FIXTURES.map(({ fileName, source }) => [fileName, source] as const)
 ]);
 
 const compilerApi = new API({
@@ -235,6 +302,47 @@ function moduleCategory(specifier: string): SideEffectCategory | null {
   return SIDE_EFFECT_MODULES.find(([, pattern]) => pattern.test(specifier.toLowerCase()))?.[0] ?? null;
 }
 
+function isTypeOnlyImport(node: ts.ImportDeclaration): boolean {
+  const clause = node.importClause;
+  if (clause === undefined) return false;
+  if (clause.phaseModifier === ts.SyntaxKind.TypeKeyword) return true;
+  const bindings = clause.namedBindings;
+  return clause.name === undefined &&
+    bindings !== undefined &&
+    ts.isNamedImports(bindings) &&
+    bindings.elements.length > 0 &&
+    bindings.elements.every((element) => element.isTypeOnly);
+}
+
+function isTypeOnlyExport(node: ts.ExportDeclaration): boolean {
+  if (node.isTypeOnly) return true;
+  const clause = node.exportClause;
+  return clause !== undefined &&
+    ts.isNamedExports(clause) &&
+    clause.elements.length > 0 &&
+    clause.elements.every((element) => element.isTypeOnly);
+}
+
+function importCategory(
+  fileName: string,
+  specifier: string,
+  boundary: SideEffectBoundary,
+  isTypeOnly: boolean
+): SideEffectCategory | null {
+  if (boundary === "CHILD_UI") return moduleCategory(specifier);
+  if (
+    isTypeOnly &&
+    PURE_DISPLAY_IMPORT_ALLOWLIST.get(fileName)?.has(specifier) === true
+  ) {
+    return null;
+  }
+  return moduleCategory(specifier) ??
+    PURE_DISPLAY_LOCAL_EFFECT_MODULES.find(
+      ([, pattern]) => pattern.test(specifier.toLowerCase())
+    )?.[0] ??
+    "UNAPPROVED_DEPENDENCY";
+}
+
 function literalText(node: ts.Node | undefined): string | null {
   return node !== undefined && (
     ts.isStringLiteral(node) || ts.isNoSubstitutionTemplateLiteral(node)
@@ -313,7 +421,7 @@ function callViolation(category: SideEffectCategory): string {
   return `${category}_CALL`;
 }
 
-function inspectSideEffects(fileName: string): string[] {
+function inspectSideEffects(fileName: string, boundary: SideEffectBoundary): string[] {
   const sourceFile = parsedSourceFile(fileName);
   const violations = new Set<string>();
   const importedBindings = new Map<string, SideEffectCategory>();
@@ -325,17 +433,41 @@ function inspectSideEffects(fileName: string): string[] {
 
   for (const statement of sourceFile.statements) {
     if (ts.isImportDeclaration(statement)) {
-      const category = moduleCategory(literalText(statement.moduleSpecifier) ?? "");
-      if (category !== null) recordImport(category, importedBindingNames(statement));
+      const specifier = literalText(statement.moduleSpecifier);
+      if (specifier !== null) {
+        const category = importCategory(
+          fileName,
+          specifier,
+          boundary,
+          isTypeOnlyImport(statement)
+        );
+        if (category !== null) recordImport(category, importedBindingNames(statement));
+      }
     } else if (
       ts.isImportEqualsDeclaration(statement) &&
       ts.isExternalModuleReference(statement.moduleReference)
     ) {
-      const category = moduleCategory(literalText(statement.moduleReference.expression) ?? "");
-      if (category !== null) recordImport(category, [statement.name.text]);
+      const specifier = literalText(statement.moduleReference.expression);
+      if (specifier !== null) {
+        const category = importCategory(
+          fileName,
+          specifier,
+          boundary,
+          statement.isTypeOnly
+        );
+        if (category !== null) recordImport(category, [statement.name.text]);
+      }
     } else if (ts.isExportDeclaration(statement)) {
-      const category = moduleCategory(literalText(statement.moduleSpecifier) ?? "");
-      if (category !== null) recordImport(category);
+      const specifier = literalText(statement.moduleSpecifier);
+      if (specifier !== null) {
+        const category = importCategory(
+          fileName,
+          specifier,
+          boundary,
+          isTypeOnlyExport(statement)
+        );
+        if (category !== null) recordImport(category);
+      }
     }
   }
 
@@ -344,8 +476,11 @@ function inspectSideEffects(fileName: string): string[] {
       const isDynamicImport = node.expression.kind === ts.SyntaxKind.ImportKeyword;
       const isRequire = ts.isIdentifier(node.expression) && node.expression.text === "require";
       if ((isDynamicImport || isRequire) && node.arguments.length === 1) {
-        const category = moduleCategory(literalText(node.arguments[0]) ?? "");
-        if (category !== null) recordImport(category);
+        const specifier = literalText(node.arguments[0]);
+        if (specifier !== null) {
+          const category = importCategory(fileName, specifier, boundary, false);
+          if (category !== null) recordImport(category);
+        }
       } else {
         const category = operationCategory(accessPath(node.expression), importedBindings);
         if (category !== null) violations.add(callViolation(category));
@@ -366,12 +501,12 @@ function inspectSideEffects(fileName: string): string[] {
 }
 
 function auditChildUiSideEffects(fileName: string): string[] {
-  return inspectSideEffects(fileName).filter((violation) =>
+  return inspectSideEffects(fileName, "CHILD_UI").filter((violation) =>
     !violation.startsWith("REACT_") && !violation.startsWith("INDEXED_DB_"));
 }
 
 function auditPureDisplaySideEffects(fileName: string): string[] {
-  return inspectSideEffects(fileName);
+  return inspectSideEffects(fileName, "PURE_DISPLAY");
 }
 
 function activeItemChildCopy(item: (typeof INITIAL_ITEMS)[number]): string[] {
@@ -423,6 +558,16 @@ describe("approved magical companion seed content", () => {
       expect(auditPureDisplaySideEffects(fileName)).toEqual(expect.arrayContaining([...expected]));
     }
   );
+
+  it("blocks local API aliases only in pure display modules", () => {
+    for (const { fileName, source, expected } of PURE_LOCAL_EFFECT_FIXTURES) {
+      expect(source).toBe(VIRTUAL_FILES.get(fileName));
+      expect(auditPureDisplaySideEffects(fileName)).toEqual(
+        expect.arrayContaining([...expected])
+      );
+      expect(auditChildUiSideEffects(fileName)).toEqual([]);
+    }
+  });
 
   it("publishes exactly ten Korean and ten math v2 items", () => {
     expect(INITIAL_CONTENT_VERSION).toBe(2);
