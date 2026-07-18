@@ -56,8 +56,10 @@ function safeMessage(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const message = value.trim();
   if (message.length < 4 || message.length > 45) return null;
-  if (!/^[가-힣]+(?: [가-힣]+){1,8}$/.test(message)) return null;
-  if (/바보|멍청|못하|틀렸|느려|게으르|벌|혼나|실패|포기|정답|답은|죽|해치|욕|비밀|개인정보|연락|전화|번호|카톡|메일|주소|링크/.test(message)) {
+  if (!/^[가-힣]+(?: [가-힣]+){0,8}[.!?…]?(?: [가-힣]+(?: [가-힣]+){0,8}[.!?…]?)?$/.test(message)) {
+    return null;
+  }
+  if (/바보|멍청|못하|틀렸|느려|게으르|혼내|혼낼|혼나|벌|때리|맞아|창피|망신|실망|야단|꾸짖|반성|실패|포기|정답|답은|죽|해치|욕|비밀|개인정보|연락|전화|번호|카톡|메일|주소|링크/.test(message)) {
     return null;
   }
   return message;

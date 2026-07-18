@@ -59,11 +59,31 @@ describe("AI coach privacy and budget boundaries", () => {
   });
 
   it.each([
+    "천천히 다시 해 보자!",
+    "한 걸음씩 해 보자. 잘하고 있어!",
+    "차근차근 해 보자…"
+  ])("accepts safe Korean coach punctuation %s", async (message) => {
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: JSON.stringify({ message }) }] } }]
+    }), { status: 200 }));
+    const service = new AiCoachService({ db, encryptionKey: key, fetcher });
+    service.updateSettings({ enabled: true, apiKey: "provider-secret" });
+
+    await expect(service.message({
+      event: "retry", subject: "korean", retryCount: 1, hintStage: "first"
+    })).resolves.toEqual({ message, source: "llm" });
+    db.close();
+  });
+
+  it.each([
     "가 010-1234-5678로 연락해!",
     "여기 https://example.test 를 눌러 봐",
     "천천히 again 해 보자",
     "바보야 벌 받아",
-    "천천히! 다시 해 보자"
+    "공부 안 하면 혼낼 거야",
+    "공부 안 하면 벌 줄 거야"
   ])("fails closed for unsafe provider message %s", async (message) => {
     const db = openDatabase(":memory:");
     migrate(db);
