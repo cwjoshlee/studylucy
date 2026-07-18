@@ -84,6 +84,36 @@ const mathPlanItem: TodayPlan["items"][number] = {
   payload: mathItem
 };
 
+const calculationItem: Extract<LearningItemPayload, { kind: "math-calculation" }> = {
+  id: "calculation-01",
+  kind: "math-calculation",
+  subject: "math",
+  unit: "세 수의 혼합 계산",
+  title: "세 수를 계산해요",
+  level: "2단계",
+  readLabel: "읽으면 안 되는 안내",
+  text: "이야기 문장으로 보이면 안 되는 텍스트예요.",
+  hint: "낱말 힌트로 보이면 안 되는 텍스트예요.",
+  tokens: ["이야기", "낱말"],
+  operands: [13, 9, 4],
+  operators: ["+", "+"],
+  layout: "horizontal",
+  answer: 26,
+  checkHint: "13에 9를 더한 뒤 4를 더해 봐요.",
+  delight: {
+    companion: "momo",
+    mishap: "모모의 주판이 살짝 흔들렸어요.",
+    openingCue: "모모가 계산판을 펼쳤어요.",
+    celebrationCue: "모모와 함께 계산을 끝냈어요!"
+  }
+};
+
+const calculationPlanItem: TodayPlan["items"][number] = {
+  id: calculationItem.id,
+  version: 3,
+  payload: calculationItem
+};
+
 const readingPlanItem: TodayPlan["items"][number] = {
   id: readingItem.id,
   version: 1,
@@ -879,6 +909,62 @@ describe("LearningSession", () => {
     await submitManualTranscript(`${mathItem.text} ${mathItem.question}`);
     expect(screen.getByText("읽기가 잘 도착했어요")).toBeVisible();
     expect(screen.getByLabelText("답 쓰기")).toBeEnabled();
+  });
+
+  it("uses the keypad-only calculation screen and submits its answer without a reading result", async () => {
+    const api = createLearningApi();
+    api.saveAttempt.mockImplementation(async (input) => input.mathAnswer === 26
+      ? receipt()
+      : receipt({ mathPass: false, completed: false }));
+    const user = userEvent.setup();
+    render(<LearningSession
+      item={calculationPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+    />);
+
+    expect(await screen.findByLabelText("13 + 9 + 4 = ?")).toBeVisible();
+    expect(screen.queryByRole("button", { name: "읽기 시작" })).not.toBeInTheDocument();
+    expect(screen.queryByText("직접 입력으로 확인하기")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "낱말 힌트" })).not.toBeInTheDocument();
+    expect(screen.queryByText(calculationItem.text)).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("답 쓰기")).not.toBeInTheDocument();
+
+    for (const key of ["0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "지우기"]) {
+      expect(screen.getByRole("button", { name: key })).toBeEnabled();
+    }
+    expect(screen.getByRole("button", { name: "답 확인" })).toBeDisabled();
+    await user.click(screen.getByRole("button", { name: "2" }));
+    await user.click(screen.getByRole("button", { name: "6" }));
+    expect(screen.getByRole("button", { name: "답 확인" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "답 확인" }));
+
+    await waitFor(() => expect(api.saveAttempt).toHaveBeenCalledWith(expect.objectContaining({
+      readingScore: 100,
+      missedTokens: [],
+      mathAnswer: 26
+    })));
+    expect(await screen.findByText("정답이에요.")).toBeVisible();
+  });
+
+  it("shows the calculation check hint after the first wrong keypad answer", async () => {
+    const api = createLearningApi();
+    api.saveAttempt.mockResolvedValue(receipt({ mathPass: false, completed: false }));
+    const user = userEvent.setup();
+    render(<LearningSession
+      item={calculationPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+    />);
+
+    await screen.findByLabelText("13 + 9 + 4 = ?");
+    await user.click(screen.getByRole("button", { name: "1" }));
+    await user.click(screen.getByRole("button", { name: "답 확인" }));
+
+    expect(await screen.findByRole("status", { name: "수학 도움" }))
+      .toHaveTextContent(calculationItem.checkHint);
   });
 
   it("keeps Next locked for a server-rejected math answer and unlocks it after a correct attempt", async () => {

@@ -207,6 +207,53 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .question-focus p { min-width: 0; margin: 0; overflow-wrap: anywhere; }
 .unit-badge { width: fit-content; background: #fff3bd; }
 
+.calculation-lesson {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(280px, .85fr);
+  align-items: start;
+  gap: 20px;
+}
+.calculation-board {
+  display: grid;
+  min-height: 156px;
+  place-items: center;
+  padding: 24px;
+  border: 3px solid var(--lavender);
+  border-radius: var(--radius-large);
+  background: #fbf6ff;
+  color: var(--ink);
+  font-size: clamp(2rem, 5vw, 3.5rem);
+  font-variant-numeric: tabular-nums;
+  font-weight: 900;
+}
+.calculation-board--vertical { place-items: stretch end; }
+.calculation-board__vertical-operands {
+  display: grid;
+  min-width: 5ch;
+  justify-items: end;
+  text-align: right;
+}
+.calculation-board__vertical-operands b { display: inline-block; width: 1.1em; margin-right: .2em; text-align: left; }
+.calculation-board__line { width: 100%; border-top: 3px solid currentColor; }
+.calculation-keypad { display: grid; gap: 12px; }
+.calculation-keypad__display {
+  display: grid;
+  min-height: 56px;
+  place-items: center end;
+  padding: 0 18px;
+  border: 2px solid var(--line);
+  border-radius: var(--radius-medium);
+  background: white;
+  font-size: 2rem;
+  font-variant-numeric: tabular-nums;
+  font-weight: 900;
+}
+.calculation-keypad__keys { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px; }
+.calculation-keypad__keys button,
+.calculation-keypad__actions button { min-height: 56px; font-size: 1.25rem; font-weight: 900; }
+.calculation-keypad__actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+.calculation-keypad__actions button { grid-column: 1 / -1; }
+
 .today-stars, .star-bunny, .login-card, .guardian-placeholder {
   margin: 0;
   padding: 22px;

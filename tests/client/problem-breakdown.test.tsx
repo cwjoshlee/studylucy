@@ -3,6 +3,7 @@ import { cleanup, render, screen, within } from "@testing-library/react";
 import { afterEach, describe, expect, it } from "vitest";
 import { ProblemBreakdown } from "../../src/client/learning/problem-breakdown-view";
 import {
+  calculationExpression,
   extractNumberClues,
   mathScaffold,
   splitKoreanSentences
@@ -39,6 +40,24 @@ const koreanItem: Extract<LearningItemPayload, { kind: "korean-reading" }> = {
   text: "또또는 줄무늬 조개를 만났어요. 조개는 양말을 모자로 썼어요.",
   hint: "마침표에서 잠깐 쉬어요.",
   tokens: ["또또", "줄무늬 조개", "양말", "모자"]
+};
+
+const calculationItem: Extract<LearningItemPayload, { kind: "math-calculation" }> = {
+  id: "calculation-test",
+  kind: "math-calculation",
+  subject: "math",
+  unit: "세 수의 혼합 계산",
+  title: "세 수를 계산해요",
+  level: "2단계",
+  readLabel: "읽으면 안 되는 안내",
+  text: "이야기 문장으로 보이면 안 되는 텍스트예요.",
+  hint: "낱말 힌트로 보이면 안 되는 텍스트예요.",
+  tokens: ["이야기", "낱말"],
+  operands: [13, 9, 4],
+  operators: ["+", "+"],
+  layout: "horizontal",
+  answer: 26,
+  checkHint: "13에 9를 더한 뒤 4를 더해 봐요."
 };
 
 describe("problem breakdown", () => {
@@ -88,5 +107,22 @@ describe("problem breakdown", () => {
     expect(screen.getByLabelText("답의 단위 개")).toBeVisible();
     expect(screen.getByRole("status", { name: "수학 도움" }))
       .toHaveTextContent(mathItem.checkHint);
+  });
+
+  it("renders calculations as an expression-only board without story or word UI", () => {
+    expect(calculationExpression(calculationItem)).toBe("13 + 9 + 4");
+    render(<ProblemBreakdown
+      item={calculationItem}
+      mathRetryCount={0}
+      showMathScaffold={false}
+    />);
+
+    const board = screen.getByLabelText("13 + 9 + 4 = ?");
+    expect(board).toHaveClass("calculation-board");
+    expect(board).toHaveTextContent("13 + 9 + 4 = ?");
+    expect(screen.queryByRole("group", { name: "이야기 문장" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("group", { name: "오늘 만날 낱말" })).not.toBeInTheDocument();
+    expect(screen.queryByText(calculationItem.text)).not.toBeInTheDocument();
+    expect(screen.queryByText(calculationItem.hint)).not.toBeInTheDocument();
   });
 });

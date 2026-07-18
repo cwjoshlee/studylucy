@@ -28,6 +28,7 @@ import {
   type InactivityController,
   type InactivityEvent
 } from "./inactivity-controller";
+import { CalculationKeypad } from "./calculation-keypad";
 import { judgeReading } from "./reading-judge";
 import { ProblemBreakdown } from "./problem-breakdown-view";
 import {
@@ -410,12 +411,25 @@ function LearningSessionView({
       setMathFeedback("숫자로 답을 써 보세요.");
       return;
     }
+    await saveMathAnswer(readingResult, Number(mathAnswer));
+  }
+
+  async function checkCalculationAnswer(): Promise<void> {
+    if (
+      item.kind !== "math-calculation" ||
+      learningControlsPaused ||
+      !/^\d+$/.test(mathAnswer)
+    ) return;
+    await saveMathAnswer({ score: 100, passed: true, missedTokens: [] }, Number(mathAnswer));
+  }
+
+  async function saveMathAnswer(result: ReadingResult, answer: number): Promise<void> {
     recordActivity("answer");
     controllerRef.current?.pause("server-wait");
     setSaveUiState("saving");
     beginAttempt();
     setWaiting(true);
-    const input = buildAttempt(readingResult, Number(mathAnswer));
+    const input = buildAttempt(result, answer);
     try {
       const receipt = await api.saveAttempt(input);
       attemptReceiptRef.current = receipt;
@@ -435,7 +449,7 @@ function LearningSessionView({
       }
       const queued = await preserveFailedAttempt(error, input).catch(() => false);
       setSaveUiState(queued ? "queued" : "failed");
-      const locallyComplete = queued && Number(mathAnswer) === item.answer;
+      const locallyComplete = queued && answer === item.answer;
       if (!locallyComplete) setMathRetryCount((count) => count + 1);
       setNextUnlocked(locallyComplete);
       setProvisional(locallyComplete);
@@ -522,12 +536,31 @@ function LearningSessionView({
       />
       <p className="subject-chip">{item.subject === "korean" ? "국어" : "수학"} · {item.unit}</p>
       <h2>{item.title}</h2>
-      <ProblemBreakdown
-        item={item}
-        mathRetryCount={mathRetryCount}
-        showMathScaffold={mathRetryCount > 0 && !nextUnlocked}
-      />
-      <button
+      {item.kind === "math-calculation" ? (
+        <div className="calculation-lesson">
+          <ProblemBreakdown
+            item={item}
+            mathRetryCount={mathRetryCount}
+            showMathScaffold={mathRetryCount > 0 && !nextUnlocked}
+          />
+          <CalculationKeypad
+            value={mathAnswer}
+            disabled={learningControlsPaused}
+            onChange={(value) => {
+              setMathAnswer(value);
+              recordActivity("answer");
+            }}
+            onSubmit={() => void checkCalculationAnswer()}
+          />
+        </div>
+      ) : (
+        <>
+          <ProblemBreakdown
+            item={item}
+            mathRetryCount={mathRetryCount}
+            showMathScaffold={mathRetryCount > 0 && !nextUnlocked}
+          />
+          <button
         type="button"
         aria-expanded={showHint}
         aria-controls="learning-word-hint"
@@ -535,8 +568,8 @@ function LearningSessionView({
           setShowHint((current) => !current);
           recordActivity("hint");
         }}
-      >낱말 힌트</button>
-      {showHint ? (
+          >낱말 힌트</button>
+          {showHint ? (
         <section id="learning-word-hint" role="region" aria-label="낱말 힌트">
           <p>{item.hint}</p>
           <div className="learning-clues">
@@ -545,9 +578,9 @@ function LearningSessionView({
             ))}
           </div>
         </section>
-      ) : null}
+          ) : null}
 
-      <div aria-label="읽기 연습">
+          <div aria-label="읽기 연습">
         <button
           type="button"
           onClick={toggleSpeech}
@@ -577,9 +610,9 @@ function LearningSessionView({
             </button>
           </form>
         </details>
-      </div>
+          </div>
 
-      {readingResult ? (
+          {readingResult ? (
         <div role="status" aria-label="읽기 결과">
           <strong>{readingResult.passed ? "읽기가 잘 도착했어요" : "한 번 더 읽어 볼 낱말이 있어요"}</strong>
           <span> {readingResult.score}점</span>
@@ -587,9 +620,9 @@ function LearningSessionView({
             <p>다시 읽을 표현: {readingResult.missedTokens.join(", ")}</p>
           ) : null}
         </div>
-      ) : null}
+          ) : null}
 
-      {item.kind === "math-story" ? (
+          {item.kind === "math-story" ? (
         <form onSubmit={(event) => void checkMathAnswer(event)}>
           <label>
             답 쓰기
@@ -606,7 +639,9 @@ function LearningSessionView({
           <span>{item.unitLabel}</span>
           <button type="submit" disabled={readingResult?.passed !== true || learningControlsPaused}>답 확인</button>
         </form>
-      ) : null}
+          ) : null}
+        </>
+      )}
       {mathFeedback && saveUiState === "idle" ? <p role="status">{mathFeedback}</p> : null}
       {provisional ? <p className="provisional-label" role="status">동기화 대기</p> : null}
 

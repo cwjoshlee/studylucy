@@ -1,5 +1,7 @@
 import type { LearningItemPayload } from "../../shared/learning";
 import {
+  calculationExpression,
+  calculationScaffold,
   extractNumberClues,
   mathScaffold,
   splitKoreanSentences
@@ -16,6 +18,36 @@ export function ProblemBreakdown({
   mathRetryCount,
   showMathScaffold
 }: ProblemBreakdownProps) {
+  if (item.kind === "math-calculation") {
+    const expression = calculationExpression(item);
+    const label = `${expression} = ?`;
+    const [firstOperand, secondOperand] = item.operands;
+
+    return (
+      <section className="problem-breakdown">
+        <div
+          className={`calculation-board calculation-board--${item.layout}`}
+          aria-label={label}
+        >
+          {item.layout === "vertical" ? (
+            <div className="calculation-board__vertical-operands">
+              <span>{firstOperand}</span>
+              <span><b aria-hidden="true">{item.operators[0]}</b>{secondOperand}</span>
+              <span className="calculation-board__line">?</span>
+            </div>
+          ) : (
+            <span>{label}</span>
+          )}
+        </div>
+        {showMathScaffold ? (
+          <aside role="status" aria-label="수학 도움">
+            {calculationScaffold(item, mathRetryCount)}
+          </aside>
+        ) : null}
+      </section>
+    );
+  }
+
   const sentences = splitKoreanSentences(item.text);
 
   return (
