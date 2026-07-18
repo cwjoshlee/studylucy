@@ -717,6 +717,11 @@ function LearningSessionView({
         studyDate={studyDate}
         item={item}
         saveState={saveUiState === "idle" ? undefined : saveUiState}
+        bunnyMoment={attemptReceipt?.challengeBonus?.awarded
+          ? "perfect-challenge"
+          : attemptReceipt?.starAward.awarded
+            ? "reward"
+            : undefined}
       />
       <ChanaPingCoach
         event={chanaPingEvent}
@@ -862,6 +867,9 @@ function LearningSessionView({
         </>
       )}
       {mathFeedback && saveUiState === "idle" ? <p role="status">{mathFeedback}</p> : null}
+      {item.kind === "korean-dictation" && saveUiState === "failed" && mathFeedback ? (
+        <p role="alert">{mathFeedback}</p>
+      ) : null}
       {attemptReceipt?.challengeBonus?.awarded ? (
         <p className="challenge-bonus" role="status">
           도전 만점 보너스 별 {attemptReceipt.challengeBonus.amount}개

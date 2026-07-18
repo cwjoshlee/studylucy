@@ -3,6 +3,7 @@ import { CompanionAvatar } from "./companion-avatar";
 import { COMPANION_CAST } from "./cast";
 import {
   selectCompanionCue,
+  type BunnyMoment,
   type CompanionMoment
 } from "./cues";
 
@@ -16,12 +17,14 @@ export function LearningCompanion({
   moment,
   studyDate,
   item,
-  saveState
+  saveState,
+  bunnyMoment
 }: {
   moment: CompanionMoment;
   studyDate: string;
   item: LearningItemPayload;
   saveState?: "saving" | "queued" | "failed";
+  bunnyMoment?: BunnyMoment;
 }) {
   const cue = selectCompanionCue({
     moment,
@@ -30,7 +33,8 @@ export function LearningCompanion({
     delight: item.delight,
     preferredCompanion: item.kind === "korean-dictation" || isCalculationItem(item)
       ? "bongbong"
-      : undefined
+      : undefined,
+    bunnyMoment
   });
   const text = moment === "save-wait" && saveState !== undefined
     ? SAVE_STATUS_TEXT[saveState]

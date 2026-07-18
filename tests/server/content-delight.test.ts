@@ -756,6 +756,18 @@ describe("approved magical companion seed content", () => {
     }).tone).not.toBe("humor");
   });
 
+  it("keeps generic reading status cues outside Bunny and Milky role boundaries", () => {
+    for (const moment of [
+      "next", "offline", "save-wait", "idle-confirm", "idle-paused"
+    ] satisfies CompanionMoment[]) {
+      expect(selectCompanionCue({
+        moment,
+        key: `content-audit:${moment}`,
+        subject: "korean"
+      }).companion).toBe("toto");
+    }
+  });
+
   it("keeps the local coach outside network, audio, LLM, and reward authority", () => {
     expect(auditPureDisplaySideEffects("src/client/companions/chanaping-cues.ts")).toEqual([]);
     expect(auditChildUiSideEffects("src/client/companions/chanaping.tsx")).toEqual([]);

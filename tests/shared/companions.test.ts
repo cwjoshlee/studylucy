@@ -125,7 +125,14 @@ describe("magical companion contracts", () => {
       key: "ko-01",
       subject: "korean",
       delight
-    })).toMatchObject({ companion: "bongbong", text: delight.celebrationCue, tone: "humor" });
+    })).toMatchObject({ companion: "toto", text: delight.celebrationCue, tone: "humor" });
+    expect(selectCompanionCue({
+      moment: "correct",
+      key: "ko-01:reward",
+      subject: "korean",
+      delight,
+      bunnyMoment: "reward"
+    })).toMatchObject({ companion: "lumi", text: delight.celebrationCue, tone: "humor" });
   });
 
   it.each([
@@ -139,12 +146,31 @@ describe("magical companion contracts", () => {
     }).tone).not.toBe("humor");
   });
 
-  it("falls back to the moment pool when a preferred friend has no cue", () => {
+  it("reserves Milky for calculation and dictation help while reading flow stays with its subject friend", () => {
+    for (const moment of [
+      "next", "offline", "save-wait", "idle-confirm", "idle-paused"
+    ] satisfies CompanionMoment[]) {
+      expect(selectCompanionCue({
+        moment,
+        key: `ko-01:${moment}`,
+        subject: "korean"
+      }).companion).toBe("toto");
+    }
+
     expect(selectCompanionCue({
       moment: "thinking",
       key: "math-01:thinking",
       subject: "math",
       preferredCompanion: "bongbong"
+    })).toMatchObject({ companion: "bongbong", tone: "support" });
+  });
+
+  it("falls back to the subject friend when a preferred friend has no cue", () => {
+    expect(selectCompanionCue({
+      moment: "thinking",
+      key: "math-01:thinking",
+      subject: "math",
+      preferredCompanion: "lumi"
     })).toMatchObject({ companion: "momo", tone: "humor" });
   });
 });
