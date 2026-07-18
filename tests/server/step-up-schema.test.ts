@@ -151,6 +151,10 @@ describe("step-up learning schema", () => {
         .get("legacy-attempt")).toEqual({ completed: 1 });
       expect(db.prepare("SELECT dictation_pass FROM attempts WHERE id = ?")
         .get("legacy-attempt")).toEqual({ dictation_pass: null });
+      expect(db.prepare(`
+        SELECT dictation_input_fingerprint AS dictationInputFingerprint
+        FROM attempts WHERE id = ?
+      `).get("legacy-attempt")).toEqual({ dictationInputFingerprint: null });
       expect(db.prepare("PRAGMA table_info('attempts')").all()
         .map((column) => (column as { name: string }).name)).not.toContain("dictation_text");
       expect(db.prepare("SELECT id, source_key FROM star_events WHERE id = ?")

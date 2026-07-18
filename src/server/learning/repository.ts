@@ -1,7 +1,9 @@
 import type Database from "better-sqlite3";
+import { createHash } from "node:crypto";
 import {
   evaluateAttemptCompletion,
   LearningItemPayloadSchema,
+  normalizeDictationText,
   type AttemptInput,
   type AttemptReceipt,
   type ChallengeBonusReceipt,
@@ -53,6 +55,7 @@ type CanonicalAttemptRow = AttemptRow & {
   durationMs: number;
   difficultyFeedback: AttemptInput["difficultyFeedback"];
   payloadJson: string;
+  dictationInputFingerprint: string | null;
 };
 
 type AttemptReceiptCore = Omit<AttemptReceipt, "activityCursor">;
@@ -101,6 +104,16 @@ function receiptFromRow(
       eventId: row.starEventId
     }
   };
+}
+
+function dictationInputFingerprint(
+  payload: LearningItemPayload,
+  input: Pick<AttemptInput, "dictationText">
+): string | null {
+  if (payload.kind !== "korean-dictation") return null;
+  return createHash("sha256")
+    .update(normalizeDictationText(input.dictationText ?? ""), "utf8")
+    .digest("hex");
 }
 
 export class LearningRepository {
@@ -154,6 +167,7 @@ export class LearningRepository {
              a.math_answer_json AS mathAnswerJson,
              a.duration_ms AS durationMs,
              a.difficulty_feedback AS difficultyFeedback,
+             a.dictation_input_fingerprint AS dictationInputFingerprint,
              cv.payload_json AS payloadJson,
              a.reading_pass AS readingPass,
              a.math_pass AS mathPass,
@@ -177,10 +191,14 @@ export class LearningRepository {
     const persistedDictationPass = row.dictationPass === null
       ? null
       : row.dictationPass === 1;
-    const currentDictationPass = evaluateAttemptCompletion(
-      LearningItemPayloadSchema.parse(JSON.parse(row.payloadJson)),
-      input
-    ).dictationPass;
+    const payload = LearningItemPayloadSchema.parse(JSON.parse(row.payloadJson));
+    const currentDictationPass = evaluateAttemptCompletion(payload, input)
+      .dictationPass;
+    const currentDictationFingerprint = dictationInputFingerprint(payload, input);
+    const dictationInputMatches = payload.kind !== "korean-dictation" || (
+      row.dictationInputFingerprint !== null &&
+      currentDictationFingerprint === row.dictationInputFingerprint
+    );
     const matches =
       row.userId === userId &&
       row.trustedDeviceId === trustedDeviceId &&
@@ -194,7 +212,8 @@ export class LearningRepository {
       row.mathAnswerJson === mathAnswerJson &&
       row.durationMs === input.durationMs &&
       row.difficultyFeedback === input.difficultyFeedback &&
-      currentDictationPass === persistedDictationPass;
+      currentDictationPass === persistedDictationPass &&
+      dictationInputMatches;
     if (!matches) throw new AttemptIdempotencyError();
     return {
       ...receiptFromRow(row, true),
@@ -302,6 +321,7 @@ export class LearningRepository {
       input
     );
     const { readingPass, mathPass, dictationPass } = evaluation;
+    const inputFingerprint = dictationInputFingerprint(payload, input);
     const completed = input.snapshot.step === "challenge"
       ? true
       : evaluation.completed;
@@ -311,9 +331,9 @@ export class LearningRepository {
           id, client_attempt_id, user_id, item_id, content_version,
           study_date, reading_score, reading_pass, missed_tokens_json,
           math_answer_json, math_pass, completed, dictation_pass,
-          duration_ms, difficulty_feedback,
+          dictation_input_fingerprint, duration_ms, difficulty_feedback,
           created_at, issued_plan_id, occurred_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
         input.id,
         input.clientAttemptId,
@@ -328,6 +348,7 @@ export class LearningRepository {
         mathPass === null ? null : mathPass ? 1 : 0,
         completed ? 1 : 0,
         dictationPass === null ? null : dictationPass ? 1 : 0,
+        inputFingerprint,
         input.durationMs,
         input.difficultyFeedback,
         input.createdAt,

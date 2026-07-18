@@ -207,7 +207,7 @@ export function evaluateAttemptCompletion(
   };
 }
 
-function normalizeDictationText(value: string): string {
+export function normalizeDictationText(value: string): string {
   return value.normalize("NFC").replace(/\s+/gu, "").trim();
 }
 

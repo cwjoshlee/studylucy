@@ -37,7 +37,7 @@ describe("database bootstrap", () => {
     migrate(db);
 
     expect(db.prepare("select count(*) as count from schema_migrations").get())
-      .toEqual({ count: 7 });
+      .toEqual({ count: 8 });
   });
 
   it("seeds the exact thirteen Korean and ten math items", () => {
@@ -225,7 +225,7 @@ describe("database bootstrap", () => {
       migrate(versionTwo);
 
       expect(versionTwo.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get())
-        .toEqual({ count: 7 });
+        .toEqual({ count: 8 });
       const deviceColumns = versionTwo.prepare("PRAGMA table_info('trusted_devices')").all()
         .map((column) => (column as { name: string }).name);
       expect(deviceColumns).toEqual(expect.arrayContaining([
@@ -239,7 +239,9 @@ describe("database bootstrap", () => {
       `).run()).toThrow();
       const attemptColumns = versionTwo.prepare("PRAGMA table_info('attempts')").all()
         .map((column) => (column as { name: string }).name);
-      expect(attemptColumns).toEqual(expect.arrayContaining(["issued_plan_id", "occurred_at"]));
+      expect(attemptColumns).toEqual(expect.arrayContaining([
+        "issued_plan_id", "occurred_at", "dictation_input_fingerprint"
+      ]));
 
       const publicId = (versionTwo.prepare(`
         SELECT public_id AS publicId FROM trusted_devices WHERE id = 'device-1'
@@ -376,7 +378,7 @@ describe("database bootstrap", () => {
 
       expect(versionThree.prepare(`
         SELECT COUNT(*) AS count FROM schema_migrations
-      `).get()).toEqual({ count: 7 });
+      `).get()).toEqual({ count: 8 });
       expect(versionThree.prepare(`
         SELECT * FROM offline_activity_receipts
         WHERE client_event_id = 'event-v3-existing'
