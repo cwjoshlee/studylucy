@@ -38,6 +38,8 @@ describe("isolated container smoke configuration", () => {
 
     expect(productionCompose).toContain("127.0.0.1:8787:8787");
     expect(productionCompose).toContain("./data:/data");
+    expect(productionCompose).toContain("image: ${APP_IMAGE:-ghcr.io/cwjoshlee/studylucy:main}");
+    expect(productionCompose).not.toContain("build:");
   });
 
   it("installs cleanup before startup and logs failures before removing smoke resources", async () => {

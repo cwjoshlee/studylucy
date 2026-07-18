@@ -1,8 +1,6 @@
 services:
   app:
-    build:
-      context: .
-      dockerfile: Dockerfile
+    image: ${APP_IMAGE:-ghcr.io/cwjoshlee/studylucy:main}
     restart: unless-stopped
     init: true
     env_file: .env

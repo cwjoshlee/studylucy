@@ -21,7 +21,7 @@ sudo chmod 700 /volume1/docker/sua-learning/data
 
 저장소 파일을 `/volume1/docker/sua-learning`에 복사하되 `.env`, `data`, `.local`, `node_modules`, `dist`는 개발 컴퓨터에서 복사하지 않는다.
 
-## 3. 운영 환경 파일
+## 3. 운영 환경 파일과 GHCR 이미지
 
 배포 디렉터리에서 아래 명령으로 새 `.env`를 만든다. `your-host.synology.me`만 발급받은 DDNS 호스트로 바꾼다. 명령 결과나 완성된 파일 내용을 로그에 붙여 넣지 않는다.
 
@@ -35,6 +35,7 @@ session_pepper="$(openssl rand -hex 32)"
   printf '%s\n' "SETUP_SECRET=${setup_secret}"
   printf '%s\n' "SESSION_PEPPER=${session_pepper}"
   printf '%s\n' 'SESSION_DAYS=14'
+  printf '%s\n' 'APP_IMAGE=ghcr.io/cwjoshlee/studylucy:main'
 } > .env
 unset setup_secret session_pepper
 chmod 600 .env
@@ -43,9 +44,18 @@ chmod 600 .env
 확인할 권한은 다음 두 값이다.
 
 ```text
-data  1000:1000, mode 700
-.env  배포 관리자 소유, mode 600
+data       1000:1000, mode 700
+.env       배포 관리자 소유, mode 600 (APP_IMAGE와 비밀값 포함)
 ```
+
+`main` 이미지가 public이면 GHCR 로그인은 필요 없다. 패키지가 private인 경우에만 최소 read 권한의 별도 토큰을 사용해 표준 입력으로 로그인하고, 토큰이나 `.env` 내용을 터미널 기록에 남기지 않는다.
+
+```bash
+printf '%s' "$GHCR_READ_TOKEN" | docker login ghcr.io -u cwjoshlee --password-stdin
+unset GHCR_READ_TOKEN
+```
+
+운영 Compose는 로컬 소스의 `build`를 사용하지 않는다. `.env`의 `APP_IMAGE`(기본값은 `ghcr.io/cwjoshlee/studylucy:main`)만 pull하며, `./data:/data`와 `127.0.0.1:8787:8787`은 유지한다.
 
 ## 4. 격리된 이미지 smoke
 
@@ -58,14 +68,15 @@ bash scripts/smoke-container.sh
 
 이 스크립트는 동적 `sua-learning-smoke-*` 프로젝트와 `compose.smoke.yaml`만 사용한다. 데이터는 임시 `/data`, 포트는 `127.0.0.1:18787`이며 운영 `./data`, 운영 Compose 프로젝트와 8787 바인딩에 접근하지 않는다. 실패 로그를 먼저 출력한 뒤 smoke 컨테이너·네트워크·임시 데이터만 제거한다. `{"status":"ok"}`까지 확인되지 않으면 운영 배포를 진행하지 않는다.
 
-## 5. 이미지 빌드와 앱 시작
+## 5. 첫 GHCR 이미지 시작
 
-`Dockerfile`은 Node `22.23.1`에서 `npm ci`, 프로덕션 빌드, 프로덕션 의존성 정리를 수행한다. 전체 `npm run check`는 개발 Mac과 CI에서 이미지 빌드 전에 통과시킨다. 리소스가 제한된 NAS에서는 검증된 소스로 이미지만 빌드해 Vitest 제한 시간에 배포가 좌우되지 않게 한다. 런타임은 UID/GID 1000이고 `/data` 외 파일 시스템은 읽기 전용이다.
+`Dockerfile`은 Node `22.23.1`에서 프로덕션 이미지를 만들고 `GET /api/health` Docker healthcheck를 가진다. GitHub Actions는 모든 PR과 `main`에서 `npm run check`를 실행하며, 성공한 `main`만 `amd64`/`arm64` GHCR manifest와 `main`·커밋 SHA 태그를 게시한다. NAS는 이미 검증된 이미지만 가져오므로 여기서 `docker compose build`를 실행하지 않는다.
 
 ```bash
 cd /volume1/docker/sua-learning
-docker compose build --pull
-docker compose up -d
+chmod 700 ops/synology/pull-deploy.sh
+docker compose pull app
+docker compose up -d --no-deps app
 docker compose ps
 curl --fail --silent http://127.0.0.1:8787/api/health
 ```
@@ -98,7 +109,14 @@ docker compose logs --tail=200 app
 
 ## 7. DSM 예약 작업
 
-DSM 제어판 > 작업 스케줄러에서 사용자 정의 스크립트 두 개를 만든다. 시간대는 `Asia/Seoul`이며, 컨테이너를 실행할 권한이 있는 계정을 사용한다.
+DSM 제어판 > 작업 스케줄러에서 사용자 정의 스크립트 세 개를 만든다. 시간대는 `Asia/Seoul`이며, 컨테이너를 실행할 권한이 있는 계정을 사용한다. 자동 배포는 NAS에서 외부 GitHub로만 연결하는 pull 방식이며, webhook·self-hosted runner·새 공개 포트를 만들지 않는다.
+
+```text
+매 5분
+cd /volume1/docker/sua-learning && /usr/bin/env bash ops/synology/pull-deploy.sh
+```
+
+이 스크립트는 빈 디렉터리 잠금으로 겹친 실행을 막고, 30분 이상 남은 비어 있는 잠금만 해제한다. 새 image ID가 없으면 종료한다. 새 image ID가 있으면 현재 실행 이미지의 SQLite backup 성공 뒤 `app`만 바꾸고, Docker `healthy`와 loopback health를 모두 열두 번(5초 간격) 확인한다. 실패 시 data를 복원·삭제하지 않고 이전 app image로 한 번 되돌린다.
 
 ```text
 매일 03:00
@@ -112,17 +130,14 @@ cd /volume1/docker/sua-learning && docker compose exec -T app npm run daily-main
 
 ## 8. 업데이트와 롤백
 
-업데이트 전 03:00 작업과 같은 명령으로 백업을 만들고 최근 백업 검증이 성공했는지 확인한다.
+새 `main` SHA가 NAS에 도착하는 운영 업데이트는 5분 작업에 맡긴다. 수동 재시도에도 스크립트만 사용한다.
 
 ```bash
 cd /volume1/docker/sua-learning
-docker compose exec -T app npm run backup
-docker compose build --pull
-docker compose up -d
-curl --fail --silent http://127.0.0.1:8787/api/health
+bash ops/synology/pull-deploy.sh
 ```
 
-새 이미지가 시작되지 않으면 데이터 디렉터리를 삭제하거나 새 데이터베이스를 만들지 않는다. 이전 Git 커밋의 소스로 이미지를 다시 빌드하고, 스키마 또는 데이터 손상이 확인될 때만 검증된 백업 복원 절차를 사용한다.
+새 이미지가 시작되지 않으면 스크립트는 이전 Docker image ID로 `app`만 되돌리고 Docker health와 `127.0.0.1:8787/api/health`를 한 번 다시 확인한다. data 디렉터리를 삭제하거나 새 데이터베이스를 만들지 않으며, 자동 data 복원도 하지 않는다. 데이터 손상이 확인된 경우에만 승인된 [복원 절차](./restore-backup.md)를 별도로 사용한다.
 
 ## 9. 배포 승인 체크
 
@@ -136,6 +151,10 @@ curl --fail --silent http://127.0.0.1:8787/api/health
 | 외부 셀룰러망 HTTPS 443 앱/health | NOT RUN | KST 시각, 마스킹한 호스트, 결과 |
 | 외부 TCP 5001과 8787 차단 | NOT RUN | 포트별 실패 결과 |
 | `npm run smoke:restore -- [backup]` | NOT RUN | 백업 파일명, 비식별 행 수, 종료 코드 |
+| `main` SHA GHCR image pull/교체 | NOT RUN | SHA 태그 또는 digest, 이전/새 image ID 앞 12자, KST 시각 |
+| pull 실패 rollback | NOT RUN | 실패 image ID, 이전 app image 재기동, Docker+loopback health 결과 |
 | DSM 03:00 백업 예약 작업 | NOT RUN | 작업 ID, 수동 실행 시각, 종료 코드 |
 | DSM 06:00 유지보수 예약 작업 | NOT RUN | 작업 ID, 수동 실행 시각, 종료 코드 |
+| DSM 5분 pull 작업 | NOT RUN | 작업 ID, 마지막 실행 시각, 무변경/교체 결과 (비밀값 제외) |
+| 외부 DSM 5001/SSH/8787/배포 훅 차단 | NOT RUN | 셀룰러망의 포트별 실패 결과 |
 | Galaxy Tab/두 기기/revoke 인수 | NOT RUN | `docs/phase1-acceptance.md` 증거 |
