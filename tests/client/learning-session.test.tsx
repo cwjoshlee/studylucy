@@ -477,6 +477,36 @@ describe("LearningSession", () => {
     expect(coach).not.toHaveTextContent(/별|차감|바보|느려|게으르|벌|못하|틀렸잖/);
   });
 
+  it("keeps ChanaPing celebrating after a correct keypad receipt reaches the next cue", async () => {
+    vi.useFakeTimers();
+    const api = createLearningApi();
+    const onNext = vi.fn();
+    render(<LearningSession
+      item={calculationPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      onNext={onNext}
+    />);
+    await flushLearningSessionIssue();
+
+    fireEvent.click(screen.getByRole("button", { name: "2" }));
+    fireEvent.click(screen.getByRole("button", { name: "6" }));
+    fireEvent.click(screen.getByRole("button", { name: "답 확인" }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    act(() => vi.advanceTimersByTime(1_000));
+
+    expect(onNext).not.toHaveBeenCalled();
+    expect(screen.getByRole("img", { name: "누운 차나핑 학습 코치" }))
+      .toHaveAttribute("src", "/assets/companions/chanaping-celebrate.svg");
+    expect(screen.getByRole("status", { name: "차나핑 코치" }))
+      .toHaveTextContent(/칭찬하는 것도 귀찮은데|살짝 기분이 좋아졌어|작은 반짝임으로 기록/);
+  });
+
   it("keeps reading retry supportive, names missed tokens, and never exposes PASS or FAIL", async () => {
     render(<LearningSession
       item={readingPlanItem}

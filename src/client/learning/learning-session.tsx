@@ -610,7 +610,7 @@ function LearningSessionView({
     idleUi?.phase === "hint" ? "thinking" :
     speechPhase === "listening" ? "speech-start" :
     speechPhase === "finishing" ? "speech-finish" :
-    attemptReceipt?.completed && !attemptReceipt.duplicate && !showNextCue ? "correct" :
+    attemptReceipt?.completed && !attemptReceipt.duplicate ? "correct" :
     nextUnlocked && showNextCue ? "next" :
     readingResult !== null && !readingResult.passed ? "retry" :
     mathRetryCount > 0 && !nextUnlocked ? "retry" :
