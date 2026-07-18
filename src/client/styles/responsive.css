@@ -49,14 +49,7 @@
   .study-grid { grid-template-columns: minmax(0, 1fr); }
   .section-heading { align-items: flex-start; flex-direction: column; }
   .guardian-shell {
-    grid-template-columns: minmax(0, 1fr);
-    grid-template-areas: "guardian-header" "guardian-tabs" "guardian-panel";
     padding: 14px;
-  }
-  .guardian-tabs {
-    grid-template-columns: repeat(5, minmax(120px, 1fr));
-    overflow-x: auto;
-    position: static;
   }
   .guardian-filter, .guardian-manual-stars, .guardian-plan-form,
   .guardian-plan-loader, .guardian-metrics, .adjustment-values {
@@ -72,6 +65,27 @@
     box-sizing: border-box;
   }
   .chanaping-coach__art { width: 62px; height: 62px; }
+}
+
+@media (min-width: 900px) and (orientation: landscape) {
+  .responsive-shell {
+    display: grid;
+    grid-template-columns: minmax(248px, 300px) minmax(0, 1fr);
+    align-items: start;
+    gap: 22px;
+  }
+  .responsive-nav__rail {
+    display: grid;
+    position: sticky;
+    top: 16px;
+    align-self: start;
+  }
+  .responsive-nav__fab,
+  .responsive-nav__drawer { display: none; }
+  .responsive-shell__content {
+    min-width: 0;
+    max-width: 1120px;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

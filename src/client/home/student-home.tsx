@@ -8,6 +8,7 @@ import { CompanionAvatar } from "../companions/companion-avatar";
 import { FriendStage, FriendTrail } from "../companions/friend-stage";
 import { TodayStars } from "../delight/today-stars";
 import { LearningSession } from "../learning/learning-session";
+import { StudentNavigation } from "./student-navigation";
 import {
   SOURCE_DEVICE_RECOVERY_GUIDANCE,
   subscribeRecoveryGuidance,
@@ -80,6 +81,7 @@ export function StudentHome({
     () => new Set()
   );
   const [selectedItem, setSelectedItem] = useState<TodayPlan["items"][number] | null>(null);
+  const [navigationHelpOpen, setNavigationHelpOpen] = useState(false);
   const authorityRequestGeneration = useRef(0);
 
   useEffect(() => {
@@ -292,7 +294,15 @@ export function StudentHome({
   };
 
   return (
-    <div className="student-shell">
+    <div className="responsive-shell student-responsive-shell">
+      <StudentNavigation
+        activeId={navigationHelpOpen ? "help" : "today"}
+        onExit={() => window.history.back()}
+        onHelp={() => setNavigationHelpOpen((open) => !open)}
+        onPauseForBreak={() => undefined}
+        onToday={() => setNavigationHelpOpen(false)}
+      />
+      <div className="student-shell responsive-shell__content">
       <header className="student-header">
         <p>수아야, 오늘도 한 걸음!</p>
         <div className="student-account-actions">
@@ -324,6 +334,9 @@ export function StudentHome({
             <p className="recovery-guidance" role="status">{recoveryGuidance}</p>
           )}
           <h1>오늘의 학습</h1>
+          {navigationHelpOpen ? (
+            <p role="status">도움이 필요하면 보호자와 함께 학습 카드를 골라 보세요.</p>
+          ) : null}
         </div>
         <section className="learning-section student-shell__required" aria-labelledby="required-title">
           <div className="section-heading">
@@ -372,6 +385,7 @@ export function StudentHome({
           <div className="study-grid">{optionalItems.map((item) => renderCard(item, false))}</div>
         </section>
       </main>
+      </div>
     </div>
   );
 }

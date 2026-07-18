@@ -114,6 +114,26 @@ function deferred<T>() {
 }
 
 describe("GuardianDashboard", () => {
+  it("exposes the guardian sections, AI hierarchy, and separate device management in responsive navigation", async () => {
+    const user = userEvent.setup();
+    render(<GuardianDashboard api={createGuardianApi()} />);
+
+    for (const label of [
+      "진도", "별 기록", "차감 승인", "학습 계획", "AI 학습실", "백업", "기기 관리"
+    ]) {
+      expect(screen.getByRole("button", { name: label })).toBeVisible();
+    }
+
+    const navigation = screen.getByRole("navigation", { name: "보호자 메뉴" });
+    await user.click(within(navigation).getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(navigation).getByRole("button", { name: "문제 생성" }));
+    await user.click(within(navigation).getByRole("button", { name: "수학 문제 배치" }));
+    expect(screen.getByRole("heading", { name: "수학 문제 배치" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "기기 관리" }));
+    expect(await screen.findByRole("heading", { name: "기기 관리" })).toBeVisible();
+  });
+
   it("expands the exact AI learning studio tree and blanks each saved provider key", async () => {
     const user = userEvent.setup();
     const updateAiStudioProvider = vi.fn(async (
@@ -134,11 +154,13 @@ describe("GuardianDashboard", () => {
     });
     render(<GuardianDashboard api={api} />);
 
-    const studioTab = screen.getByRole("tab", { name: "AI 학습실" });
+    const studioTab = screen.getByRole("button", { name: "AI 학습실" });
     expect(studioTab).toBeVisible();
     await user.click(studioTab);
-    await user.click(screen.getByRole("button", { name: "문제 생성" }));
-    await user.click(screen.getByRole("button", { name: "보고서" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "보고서" }));
     for (const label of [
       "제공자·모델 선택", "API 키 관리", "월 예산·사용량",
       "수학 문제 배치", "국어·받아쓰기 배치", "오늘의 학습 요약", "주간 변화"
@@ -230,8 +252,9 @@ describe("GuardianDashboard", () => {
     const api = createGuardianApi({ createAiDraft, updateAiDraftItem, publishAiDraft });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "AI 학습실" }));
-    await user.click(screen.getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
     await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
     await user.type(screen.getByLabelText("자주 틀린 유형"), "받아올림");
     await user.click(screen.getByRole("button", { name: "초안 만들기" }));
@@ -315,8 +338,9 @@ describe("GuardianDashboard", () => {
     });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "AI 학습실" }));
-    await user.click(screen.getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
     await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
     await user.click(screen.getByRole("button", { name: "초안 만들기" }));
     const accepted = await screen.findByRole("article", { name: "받아올림 더하기 초안" });
@@ -344,7 +368,7 @@ describe("GuardianDashboard", () => {
     const user = userEvent.setup();
     render(<GuardianDashboard api={createGuardianApi()} />);
 
-    await user.click(screen.getByRole("tab", { name: "AI 학습실" }));
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
     const tree = screen.getByRole("tree", { name: "AI 학습실 메뉴" });
     expect(within(tree).getByRole("treeitem", { name: "AI 설정" }))
       .toHaveAttribute("aria-expanded", "true");
@@ -357,8 +381,8 @@ describe("GuardianDashboard", () => {
     await user.keyboard("{Enter}");
     expect(screen.getByRole("heading", { name: "수학 문제 배치" })).toBeVisible();
 
-    await user.click(screen.getByRole("tab", { name: "진도" }));
-    await user.click(screen.getByRole("tab", { name: "AI 학습실" }));
+    await user.click(screen.getByRole("button", { name: "진도" }));
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
     expect(screen.getByRole("heading", { name: "수학 문제 배치" })).toBeVisible();
     expect(screen.getByRole("treeitem", { name: "수학 문제 배치" }))
       .toHaveAttribute("aria-selected", "true");
@@ -370,11 +394,12 @@ describe("GuardianDashboard", () => {
     const user = userEvent.setup();
     render(<GuardianDashboard api={createGuardianApi()} />);
 
-    await user.click(screen.getByRole("tab", { name: "AI 학습실" }));
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
     await user.click(screen.getByRole("treeitem", { name: "API 키 관리" }));
-    await user.click(screen.getByRole("button", { name: "문제 생성" }));
-    await user.click(screen.getByRole("tab", { name: "진도" }));
-    await user.click(screen.getByRole("tab", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("button", { name: "진도" }));
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
 
     expect(screen.getByRole("treeitem", { name: "API 키 관리" }))
       .toHaveAttribute("aria-selected", "true");
@@ -404,8 +429,9 @@ describe("GuardianDashboard", () => {
       });
     render(<GuardianDashboard api={createGuardianApi({ getGuardianAiReport })} />);
 
-    await user.click(screen.getByRole("tab", { name: "AI 학습실" }));
-    await user.click(screen.getByRole("button", { name: "보고서" }));
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "보고서" }));
     await user.click(screen.getByRole("treeitem", { name: "오늘의 학습 요약" }));
     await waitFor(() => expect(getGuardianAiReport).toHaveBeenCalledWith(today, today));
     expect(await screen.findByText("오늘은 로컬 요약이에요.")).toBeVisible();
@@ -428,8 +454,9 @@ describe("GuardianDashboard", () => {
     const getGuardianAiReport = vi.fn().mockRejectedValue(new Error("offline"));
     render(<GuardianDashboard api={createGuardianApi({ getGuardianAiReport })} />);
 
-    await user.click(screen.getByRole("tab", { name: "AI 학습실" }));
-    await user.click(screen.getByRole("button", { name: "보고서" }));
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "보고서" }));
     await user.click(screen.getByRole("treeitem", { name: "주간 변화" }));
     await waitFor(() => expect(getGuardianAiReport).toHaveBeenCalledWith(formatDate(weeklyStart), formatDate(now)));
     expect(await screen.findByRole("alert")).toHaveTextContent("학습 보고서를 불러오지 못했어요.");
@@ -447,12 +474,12 @@ describe("GuardianDashboard", () => {
     expect(screen.getByText("수학 통과율 75%")).toBeVisible();
     expect(screen.getByText("꽃잎 · 2회")).toBeVisible();
     for (const tab of ["진도", "별 기록", "차감 승인", "학습 계획", "AI 학습실", "백업"]) {
-      expect(screen.getByRole("tab", { name: tab })).toBeVisible();
+      expect(screen.getByRole("button", { name: tab })).toBeVisible();
     }
     expect(document.body.textContent).not.toMatch(
       /event-private|item-private|password|PIN|cookie|audio|transcript|삭제/i
     );
-    expect(screen.queryByRole("tab", { name: "기기 관리" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "기기 관리" })).toBeVisible();
   });
 
   it("merges server and current-browser redacted rejections without rendering private payload fields", async () => {
@@ -689,7 +716,7 @@ describe("GuardianDashboard", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "차감 승인" }));
+    await user.click(screen.getByRole("button", { name: "차감 승인" }));
     const card = await screen.findByRole("article", { name: "2026-07-15 차감 요청" });
     expect(within(card).getByText("요청 1개")).toBeVisible();
     expect(within(card).getByText("승인 —")).toBeVisible();
@@ -736,7 +763,7 @@ describe("GuardianDashboard", () => {
     });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "차감 승인" }));
+    await user.click(screen.getByRole("button", { name: "차감 승인" }));
     const reason = await screen.findByLabelText("면제 사유");
     expect(reason).toBeRequired();
     await user.click(screen.getByRole("button", { name: "아픈 날로 면제" }));
@@ -782,7 +809,7 @@ describe("GuardianDashboard", () => {
     });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "차감 승인" }));
+    await user.click(screen.getByRole("button", { name: "차감 승인" }));
     const approved = await screen.findByRole("article", { name: "2026-07-14 차감 요청" });
     const waived = screen.getByRole("article", { name: "2026-07-15 차감 요청" });
 
@@ -825,7 +852,7 @@ describe("GuardianDashboard", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "차감 승인" }));
+    await user.click(screen.getByRole("button", { name: "차감 승인" }));
     const card = await screen.findByRole("article", { name: "2026-07-15 차감 요청" });
     await user.type(within(card).getByLabelText("승인 메모 (선택)"), "확인했어요");
     const approveButton = within(card).getByRole("button", { name: "차감 승인" });
@@ -879,7 +906,7 @@ describe("GuardianDashboard", () => {
     const api = createGuardianApi({ getStarAdjustments, waiveStarAdjustment });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "차감 승인" }));
+    await user.click(screen.getByRole("button", { name: "차감 승인" }));
     const card = await screen.findByRole("article", { name: "2026-07-15 차감 요청" });
     await user.type(within(card).getByLabelText("면제 사유"), "아파서 쉬었어요");
     const waiveButton = within(card).getByRole("button", { name: "아픈 날로 면제" });
@@ -935,7 +962,7 @@ describe("GuardianDashboard", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "차감 승인" }));
+    await user.click(screen.getByRole("button", { name: "차감 승인" }));
     const firstCard = await screen.findByRole("article", { name: "2026-07-14 차감 요청" });
     const secondCard = screen.getByRole("article", { name: "2026-07-15 차감 요청" });
     await user.type(within(secondCard).getByLabelText("면제 사유"), "두 번째 요청");
@@ -976,7 +1003,7 @@ describe("GuardianDashboard", () => {
     const api = createGuardianApi({ getGuardianStars });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "별 기록" }));
+    await user.click(screen.getByRole("button", { name: "별 기록" }));
     await user.type(await screen.findByLabelText("시작일"), "2026-07-01");
     await user.type(screen.getByLabelText("종료일"), "2026-07-16");
     await user.selectOptions(screen.getByLabelText("방향"), "deducted");
@@ -1069,7 +1096,7 @@ describe("GuardianDashboard", () => {
     const api = createGuardianApi({ getGuardianStars });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "별 기록" }));
+    await user.click(screen.getByRole("button", { name: "별 기록" }));
     expect(await screen.findByText("이전 필터 기록")).toBeVisible();
     const oldNext = screen.getByRole("button", { name: "다음 기록 100개" });
     await user.selectOptions(screen.getByLabelText("사유"), "GUARDIAN_BONUS");
@@ -1124,7 +1151,7 @@ describe("GuardianDashboard", () => {
     const api = createGuardianApi({ applyManualStars });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "별 기록" }));
+    await user.click(screen.getByRole("button", { name: "별 기록" }));
     await user.type(await screen.findByLabelText("별 수"), "2");
     await user.type(screen.getByLabelText("조정 사유"), "약속을 잘 지켰어요");
     await user.click(screen.getByRole("button", { name: "별 조정 저장" }));
@@ -1158,7 +1185,7 @@ describe("GuardianDashboard", () => {
     const api = createGuardianApi({ applyManualStars });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "별 기록" }));
+    await user.click(screen.getByRole("button", { name: "별 기록" }));
     await user.type(await screen.findByLabelText("별 수"), "-1");
     await user.type(screen.getByLabelText("조정 사유"), "보호자 조정");
     await user.click(screen.getByRole("button", { name: "별 조정 저장" }));
@@ -1199,7 +1226,7 @@ describe("GuardianDashboard", () => {
     const api = createGuardianApi({ applyManualStars });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "별 기록" }));
+    await user.click(screen.getByRole("button", { name: "별 기록" }));
     await user.type(await screen.findByLabelText("별 수"), "2");
     await user.type(screen.getByLabelText("조정 사유"), "약속 보너스");
     await user.click(screen.getByRole("button", { name: "별 조정 저장" }));
@@ -1258,7 +1285,7 @@ describe("GuardianDashboard", () => {
     const api = createGuardianApi({ getGuardianStars, applyManualStars });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "별 기록" }));
+    await user.click(screen.getByRole("button", { name: "별 기록" }));
     expect(await screen.findByText("필터 유지 5분 무반응")).toBeVisible();
     await user.selectOptions(screen.getByLabelText("사유"), "IDLE_TIMEOUT");
     await user.click(screen.getByRole("button", { name: "필터 적용" }));
@@ -1344,7 +1371,7 @@ describe("GuardianDashboard", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "별 기록" }));
+    await user.click(screen.getByRole("button", { name: "별 기록" }));
     expect(await screen.findByText("약속 보너스")).toBeVisible();
     const reason = screen.getByLabelText("되돌리기 사유");
     expect(reason).toBeRequired();
@@ -1393,7 +1420,7 @@ describe("GuardianDashboard", () => {
     });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "별 기록" }));
+    await user.click(screen.getByRole("button", { name: "별 기록" }));
     expect(await screen.findByText("필터된 원래 기록")).toBeVisible();
     expect(screen.queryByLabelText("되돌리기 사유")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "기록 되돌리기" })).not.toBeInTheDocument();
@@ -1435,7 +1462,7 @@ describe("GuardianDashboard", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "별 기록" }));
+    await user.click(screen.getByRole("button", { name: "별 기록" }));
     const reason = await screen.findByLabelText("되돌리기 사유");
     await user.type(reason, "동시에 취소했어요");
     const reverseButton = screen.getByRole("button", { name: "기록 되돌리기" });
@@ -1489,7 +1516,7 @@ describe("GuardianDashboard", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "별 기록" }));
+    await user.click(screen.getByRole("button", { name: "별 기록" }));
     await user.type(await screen.findByLabelText("되돌리기 사유"), "응답을 잃었어요");
     await user.click(screen.getByRole("button", { name: "기록 되돌리기" }));
     await user.selectOptions(screen.getByLabelText("사유"), "GUARDIAN_BONUS");
@@ -1543,7 +1570,7 @@ describe("GuardianDashboard", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "별 기록" }));
+    await user.click(screen.getByRole("button", { name: "별 기록" }));
     await user.type(await screen.findByLabelText("되돌리기 사유"), "성공 취소 기록");
     await user.click(screen.getByRole("button", { name: "기록 되돌리기" }));
     await user.selectOptions(screen.getByLabelText("사유"), "GUARDIAN_BONUS");
@@ -1600,7 +1627,7 @@ describe("GuardianDashboard", () => {
     });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "학습 계획" }));
+    await user.click(screen.getByRole("button", { name: "학습 계획" }));
     const date = await screen.findByLabelText("계획 날짜");
     await user.clear(date);
     await user.type(date, "2026-07-17");
@@ -1643,7 +1670,7 @@ describe("GuardianDashboard", () => {
     const api = createGuardianApi({ getGuardianDailyPlan, updateGuardianDailyPlan });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "학습 계획" }));
+    await user.click(screen.getByRole("button", { name: "학습 계획" }));
     const date = await screen.findByLabelText("계획 날짜");
     await user.clear(date);
     await user.type(date, "2026-07-17");
@@ -1679,7 +1706,7 @@ describe("GuardianDashboard", () => {
     const api = createGuardianApi({ getGuardianDailyPlan });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "학습 계획" }));
+    await user.click(screen.getByRole("button", { name: "학습 계획" }));
     const date = await screen.findByLabelText("계획 날짜");
     await user.clear(date);
     await user.type(date, "2026-07-17");
@@ -1720,7 +1747,7 @@ describe("GuardianDashboard", () => {
     });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "학습 계획" }));
+    await user.click(screen.getByRole("button", { name: "학습 계획" }));
     await user.click(await screen.findByRole("button", { name: "계획 불러오기" }));
     await screen.findByLabelText("국어 목표");
     await user.click(screen.getByRole("button", { name: "학습 계획 저장" }));
@@ -1746,7 +1773,7 @@ describe("GuardianDashboard", () => {
 
     await screen.findByText("별 잔액 12개");
     expect(getBackupStatus).not.toHaveBeenCalled();
-    await user.click(screen.getByRole("tab", { name: "백업" }));
+    await user.click(screen.getByRole("button", { name: "백업" }));
 
     expect(await screen.findByText("최근 백업이 정상적으로 완료되었어요.")).toBeVisible();
     expect(screen.getByText("sua-learning-2026-07-16.sqlite")).toBeVisible();
