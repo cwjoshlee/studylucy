@@ -12,7 +12,10 @@ import type {
   ProcessedStarAdjustment
 } from "../../src/shared/stars";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 function createGuardianApi(overrides: Record<string, unknown> = {}) {
   return {
@@ -267,6 +270,76 @@ describe("GuardianDashboard", () => {
     expect(await screen.findByText("발행을 완료했어요.")).toBeVisible();
   });
 
+  it("does not publish a draft while an accepted item save is still pending", async () => {
+    const user = userEvent.setup();
+    const acceptedPayload = {
+      id: "accepted-1",
+      kind: "math-story" as const,
+      subject: "math" as const,
+      unit: "받아올림과 받아내림",
+      title: "받아올림 더하기",
+      level: "4단계",
+      readLabel: "식을 읽고 계산하기",
+      text: "28에 7을 더해요.",
+      hint: "일의 자리부터 계산해요.",
+      tokens: ["28", "7"],
+      question: "28 + 7은 얼마일까요?",
+      answer: 35,
+      unitLabel: "",
+      checkHint: "받아올림을 확인해요.",
+      calculation: { operands: [28, 7] as [number, number], operators: ["+"] as ["+"], layout: "vertical" as const }
+    };
+    const draft = {
+      id: "draft-1",
+      subject: "math" as const,
+      step: "current" as const,
+      requestedCount: 8,
+      difficulty: 4,
+      weakTopics: [],
+      status: "draft" as const,
+      items: [{
+        id: "accepted-1",
+        sourceProvider: "gemini" as const,
+        payload: acceptedPayload,
+        review: { accepted: true, reasons: [] },
+        status: "accepted" as "accepted" | "edited"
+      }]
+    };
+    const itemSave = deferred<typeof draft>();
+    const updateAiDraftItem = vi.fn().mockReturnValue(itemSave.promise);
+    const publishAiDraft = vi.fn();
+    const api = createGuardianApi({
+      createAiDraft: vi.fn().mockResolvedValue(draft),
+      updateAiDraftItem,
+      publishAiDraft
+    });
+    render(<GuardianDashboard api={api} />);
+
+    await user.click(screen.getByRole("tab", { name: "AI 학습실" }));
+    await user.click(screen.getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+    const accepted = await screen.findByRole("article", { name: "받아올림 더하기 초안" });
+    const title = within(accepted).getByLabelText("문제 제목");
+    await user.clear(title);
+    await user.type(title, "저장 중인 새 제목");
+    await user.click(within(accepted).getByRole("button", { name: "수정 저장" }));
+
+    await waitFor(() => expect(updateAiDraftItem).toHaveBeenCalledWith(
+      "draft-1", "accepted-1", expect.objectContaining({ title: "저장 중인 새 제목" })
+    ));
+    const publish = screen.getByRole("button", { name: "초안 발행" });
+    expect(publish).toBeDisabled();
+    await user.click(publish);
+    expect(publishAiDraft).not.toHaveBeenCalled();
+
+    itemSave.resolve({
+      ...draft,
+      items: [{ ...draft.items[0]!, payload: { ...acceptedPayload, title: "저장 중인 새 제목" }, status: "edited" }]
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "초안 발행" })).toBeEnabled());
+  });
+
   it("restores the selected AI panel and exposes a keyboard-operable tree hierarchy", async () => {
     const user = userEvent.setup();
     render(<GuardianDashboard api={createGuardianApi()} />);
@@ -291,6 +364,75 @@ describe("GuardianDashboard", () => {
       .toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("treeitem", { name: "문제 생성" }))
       .toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("retains the selected settings leaf and expanded groups after AI studio re-entry", async () => {
+    const user = userEvent.setup();
+    render(<GuardianDashboard api={createGuardianApi()} />);
+
+    await user.click(screen.getByRole("tab", { name: "AI 학습실" }));
+    await user.click(screen.getByRole("treeitem", { name: "API 키 관리" }));
+    await user.click(screen.getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("tab", { name: "진도" }));
+    await user.click(screen.getByRole("tab", { name: "AI 학습실" }));
+
+    expect(screen.getByRole("treeitem", { name: "API 키 관리" }))
+      .toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("treeitem", { name: "AI 설정" }))
+      .toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("treeitem", { name: "문제 생성" }))
+      .toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("loads today and weekly reports with their KST date ranges and shows the source", async () => {
+    const user = userEvent.setup();
+    const now = new Date();
+    const formatDate = (date: Date) => new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit"
+    }).format(date);
+    const today = formatDate(now);
+    const weeklyStart = new Date(now);
+    weeklyStart.setDate(weeklyStart.getDate() - 6);
+    const getGuardianAiReport = vi.fn()
+      .mockResolvedValueOnce({
+        summary: "오늘은 로컬 요약이에요.", completionRate: 100, challengePerfect: true,
+        commonMistakes: [], source: "local" as const
+      })
+      .mockResolvedValueOnce({
+        summary: "이번 주는 AI 요약이에요.", completionRate: 80, challengePerfect: false,
+        commonMistakes: ["받침"], source: "llm" as const
+      });
+    render(<GuardianDashboard api={createGuardianApi({ getGuardianAiReport })} />);
+
+    await user.click(screen.getByRole("tab", { name: "AI 학습실" }));
+    await user.click(screen.getByRole("button", { name: "보고서" }));
+    await user.click(screen.getByRole("treeitem", { name: "오늘의 학습 요약" }));
+    await waitFor(() => expect(getGuardianAiReport).toHaveBeenCalledWith(today, today));
+    expect(await screen.findByText("오늘은 로컬 요약이에요.")).toBeVisible();
+    expect(screen.getByText("로컬 요약")).toBeVisible();
+
+    await user.click(screen.getByRole("treeitem", { name: "주간 변화" }));
+    await waitFor(() => expect(getGuardianAiReport).toHaveBeenLastCalledWith(formatDate(weeklyStart), today));
+    expect(await screen.findByText("이번 주는 AI 요약이에요.")).toBeVisible();
+    expect(screen.getByText("AI 요약")).toBeVisible();
+  });
+
+  it("shows a report error after the selected report range fails", async () => {
+    const user = userEvent.setup();
+    const now = new Date();
+    const formatDate = (date: Date) => new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit"
+    }).format(date);
+    const weeklyStart = new Date(now);
+    weeklyStart.setDate(weeklyStart.getDate() - 6);
+    const getGuardianAiReport = vi.fn().mockRejectedValue(new Error("offline"));
+    render(<GuardianDashboard api={createGuardianApi({ getGuardianAiReport })} />);
+
+    await user.click(screen.getByRole("tab", { name: "AI 학습실" }));
+    await user.click(screen.getByRole("button", { name: "보고서" }));
+    await user.click(screen.getByRole("treeitem", { name: "주간 변화" }));
+    await waitFor(() => expect(getGuardianAiReport).toHaveBeenCalledWith(formatDate(weeklyStart), formatDate(now)));
+    expect(await screen.findByRole("alert")).toHaveTextContent("학습 보고서를 불러오지 못했어요.");
   });
 
   it("shows guardian progress and star status without protected or internal data", async () => {
