@@ -240,6 +240,9 @@ export type ChanaPingEvent =
   | "lesson-open" | "speech-start" | "speech-finish" | "correct"
   | "retry" | "thinking" | "idle-confirm" | "idle-paused" | "next";
 
+// Define and export this shared event type from src/shared/learning.ts.
+// chanaping-cues.ts imports it; server coach DTOs never import client code.
+
 export function selectLocalChanaPingCue(input: {
   event: ChanaPingEvent;
   subject: "korean" | "math";
