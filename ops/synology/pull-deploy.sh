@@ -4,6 +4,8 @@ set -euo pipefail
 ROOT_DIR="$(cd -- "$(dirname -- "${BASH_SOURCE[0]}")/../.." && pwd)"
 LOCK_DIR="${DEPLOY_LOCK_DIR:-$ROOT_DIR/.pull-deploy.lock}"
 LOCK_MAX_AGE_MINUTES="${DEPLOY_LOCK_MAX_AGE_MINUTES:-30}"
+HEALTH_ATTEMPTS="${DEPLOY_HEALTH_ATTEMPTS:-12}"
+HEALTH_INTERVAL_SECONDS="${DEPLOY_HEALTH_INTERVAL_SECONDS:-5}"
 cd "$ROOT_DIR"
 
 cleanup() {
@@ -36,17 +38,17 @@ check_health_once() {
   container_id="$(docker compose ps -q app)"
   test -n "$container_id"
   docker_health="$(docker inspect --format '{{.State.Health.Status}}' "$container_id")"
-  test "$docker_health" = "healthy"
-  curl --fail --silent --show-error http://127.0.0.1:8787/api/health | grep -q '"status":"ok"'
+  test "$docker_health" = "healthy" \
+    && curl --fail --silent --show-error http://127.0.0.1:8787/api/health | grep -q '"status":"ok"'
 }
 
 check_health() {
   local attempt
-  for attempt in $(seq 1 12); do
+  for attempt in $(seq 1 "$HEALTH_ATTEMPTS"); do
     if check_health_once; then
       return 0
     fi
-    sleep 5
+    sleep "$HEALTH_INTERVAL_SECONDS"
   done
   return 1
 }
@@ -59,6 +61,11 @@ rollback() {
   else
     echo "rollback health check failed; manual investigation is required" >&2
   fi
+}
+
+diagnose_failure() {
+  echo "deployment failed; recent app logs follow" >&2
+  docker compose logs --tail=50 app >&2 || true
 }
 
 acquire_lock
@@ -81,6 +88,7 @@ fi
 
 docker compose exec -T app npm run backup
 if ! docker compose up -d --no-deps app || ! check_health; then
+  diagnose_failure
   rollback
   exit 1
 fi
