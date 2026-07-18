@@ -97,10 +97,7 @@ export function createSpeechController(
   recognition.addEventListener("end", () => {
     if (listening && !finishing && Date.now() < deadline) {
       commitSession();
-      restartTimer = setTimeout(() => {
-        restartTimer = null;
-        if (listening && !finishing) startEngine();
-      }, RESTART_DELAY_MS);
+      scheduleRestart();
       return;
     }
     complete();
@@ -114,10 +111,7 @@ export function createSpeechController(
     }
     if (listening && !finishing && Date.now() < deadline) {
       commitSession();
-      restartTimer = setTimeout(() => {
-        restartTimer = null;
-        if (listening && !finishing) startEngine();
-      }, RESTART_DELAY_MS);
+      scheduleRestart();
       return;
     }
     complete();
@@ -148,6 +142,14 @@ export function createSpeechController(
   function resetSilenceTimer(): void {
     clearTimer("silence");
     silenceTimer = setTimeout(finishCapture, SILENCE_FINISH_MS);
+  }
+
+  function scheduleRestart(): void {
+    if (restartTimer !== null) return;
+    restartTimer = setTimeout(() => {
+      restartTimer = null;
+      if (listening && !finishing) startEngine();
+    }, RESTART_DELAY_MS);
   }
 
   function startEngine(): void {

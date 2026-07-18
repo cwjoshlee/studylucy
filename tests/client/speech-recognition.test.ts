@@ -110,6 +110,36 @@ describe("speech controller", () => {
     expect(FakeRecognition.instance!.start).toHaveBeenCalledOnce();
   });
 
+  it("schedules one restart when a retryable error is followed by end", () => {
+    vi.useFakeTimers();
+    const onTranscript = vi.fn();
+    const onUnavailable = vi.fn();
+    const phases: SpeechPhase[] = [];
+    const controller = createSpeechController({
+      onTranscript,
+      onUnavailable,
+      onPhaseChange: (phase) => phases.push(phase),
+      recognitionConstructor: FakeRecognition
+    });
+
+    controller.start();
+    FakeRecognition.instance!.emit("error", { error: "network" });
+    FakeRecognition.instance!.emit("end");
+    vi.advanceTimersByTime(249);
+
+    expect(FakeRecognition.instance!.start).toHaveBeenCalledOnce();
+    expect(phases).toEqual(["listening"]);
+    expect(onUnavailable).not.toHaveBeenCalled();
+    expect(onTranscript).not.toHaveBeenCalled();
+
+    vi.advanceTimersByTime(1_000);
+
+    expect(FakeRecognition.instance!.start).toHaveBeenCalledTimes(2);
+    expect(phases).toEqual(["listening"]);
+    expect(onUnavailable).not.toHaveBeenCalled();
+    expect(onTranscript).not.toHaveBeenCalled();
+  });
+
   it("returns to manual input when the browser reports a permission error", () => {
     const onUnavailable = vi.fn();
     const controller = createSpeechController({
