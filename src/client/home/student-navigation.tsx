@@ -16,13 +16,15 @@ export function StudentNavigation({
   onExit,
   onToday,
   onHelp,
-  onPauseForBreak
+  onPauseForBreak,
+  getDrawerSelectionFocusTarget
 }: {
   activeId?: "back" | "today" | "help" | "break";
   onExit(): void;
   onToday(): void;
   onHelp(): void;
   onPauseForBreak(): void;
+  getDrawerSelectionFocusTarget?(id: "back" | "today"): HTMLElement | null;
 }): JSX.Element {
   return (
     <ResponsiveNavigation
@@ -30,6 +32,11 @@ export function StudentNavigation({
       entries={STUDENT_ENTRIES}
       expandedIds={[]}
       fabLabel="메뉴 열기"
+      getDrawerSelectionFocusTarget={(id) =>
+        id === "back" || id === "today"
+          ? getDrawerSelectionFocusTarget?.(id) ?? null
+          : null
+      }
       label="학생 메뉴"
       onSelect={(id) => {
         if (id === "back") onExit();

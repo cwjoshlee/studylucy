@@ -84,6 +84,7 @@ export function StudentHome({
   const [learningViewOpen, setLearningViewOpen] = useState(false);
   const [navigationHelpOpen, setNavigationHelpOpen] = useState(false);
   const authorityRequestGeneration = useRef(0);
+  const dashboardFocusTarget = useRef<HTMLButtonElement>(null);
   const showDashboardPreservingDraft = useCallback(() => {
     setLearningViewOpen(false);
   }, []);
@@ -304,6 +305,7 @@ export function StudentHome({
             onNext={finishLearning}
             onExit={discardLearningSession}
             onNavigateToday={showDashboardPreservingDraft}
+            getNavigationDestinationFocusTarget={() => dashboardFocusTarget.current}
           />
         </main>
       )}
@@ -325,6 +327,7 @@ export function StudentHome({
           <button
             className="button-secondary"
             onClick={() => void onEnterGuardianMode?.()}
+            ref={dashboardFocusTarget}
             type="button"
           >
             보호자 모드

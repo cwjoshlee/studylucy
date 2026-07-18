@@ -115,7 +115,11 @@ describe("가족 로그인과 학생 홈", () => {
     await user.click(screen.getByRole("button", { name: "5" }));
     expect(screen.getByLabelText("입력한 답")).toHaveTextContent("5");
 
-    await user.click(screen.getByRole("button", { name: "오늘 학습" }));
+    await user.click(screen.getByRole("button", { name: "메뉴 열기" }));
+    await user.click(within(screen.getByRole("dialog", { name: "학생 메뉴" }))
+      .getByRole("button", { name: "오늘 학습" }));
+    expect(screen.getByRole("button", { name: "보호자 모드" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "보호자 모드" })).toHaveFocus();
     await user.click(screen.getByRole("button", { name: /답을 간직해요 시작하기/ }));
     expect(screen.getByLabelText("입력한 답")).toHaveTextContent("5");
 

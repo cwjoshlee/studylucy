@@ -60,6 +60,7 @@ export type LearningSessionProps = {
   onNext?: () => void;
   onExit?: () => void;
   onNavigateToday?: () => void;
+  getNavigationDestinationFocusTarget?: (id: "back" | "today") => HTMLElement | null;
   onActivityCursor?: (activityCursor: number) => void;
   onProvisional?: () => void;
   offlineEligibility?: "validated";
@@ -132,6 +133,7 @@ function LearningSessionView({
   onNext,
   onExit,
   onNavigateToday,
+  getNavigationDestinationFocusTarget,
   onActivityCursor,
   onProvisional,
   offlineEligibility,
@@ -732,6 +734,7 @@ function LearningSessionView({
     <div className="responsive-shell learning-responsive-shell">
       <StudentNavigation
         activeId={breakPaused ? "break" : navigationHelpOpen ? "help" : "today"}
+        getDrawerSelectionFocusTarget={getNavigationDestinationFocusTarget}
         onExit={() => (onNavigateToday ?? onExit)?.()}
         onHelp={() => setNavigationHelpOpen((open) => !open)}
         onPauseForBreak={pauseForBreak}
