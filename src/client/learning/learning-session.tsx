@@ -34,7 +34,8 @@ import { ProblemBreakdown } from "./problem-breakdown-view";
 import {
   createSpeechController,
   isSpeechRecognitionSupported,
-  type SpeechController
+  type SpeechController,
+  type SpeechPhase
 } from "./speech-recognition";
 
 type LearningApi = Pick<
@@ -136,10 +137,16 @@ function LearningSessionView({
   const [difficultyFeedback, setDifficultyFeedback] = useState<AttemptInput["difficultyFeedback"]>(null);
   const [attemptReceipt, setAttemptReceipt] = useState<AttemptReceipt | null>(null);
   const [provisional, setProvisional] = useState(false);
-  const [speechListening, setSpeechListening] = useState(false);
+  const [speechPhase, setSpeechPhase] = useState<SpeechPhase>("ready");
+  const [speechStartedAt, setSpeechStartedAt] = useState<number | null>(null);
+  const [speechElapsedSeconds, setSpeechElapsedSeconds] = useState(0);
+  const [speechUnavailable, setSpeechUnavailable] = useState(false);
+  const [speechNotice, setSpeechNotice] = useState<string | null>(null);
   const controllerRef = useRef<InactivityController | null>(null);
   const speechRef = useRef<SpeechController | null>(null);
   const completionCueTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const automaticNextTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const automaticNextReceiptIdRef = useRef<string | null>(null);
   const attemptGenerationRef = useRef(0);
   const attemptReceiptRef = useRef<AttemptReceipt | null>(null);
   const learningControlsPaused =
@@ -300,6 +307,31 @@ function LearningSessionView({
     difficultyFeedback
   }), [contentVersion, difficultyFeedback, idFactory, item.id, planId, studyDate, viewStartedAt]);
 
+  const clearAutomaticNext = useCallback(() => {
+    if (automaticNextTimerRef.current !== null) {
+      clearTimeout(automaticNextTimerRef.current);
+      automaticNextTimerRef.current = null;
+    }
+    automaticNextReceiptIdRef.current = null;
+  }, []);
+
+  const scheduleAutomaticNext = useCallback((receiptId: string, generation: number) => {
+    clearAutomaticNext();
+    automaticNextReceiptIdRef.current = receiptId;
+    automaticNextTimerRef.current = setTimeout(() => {
+      automaticNextTimerRef.current = null;
+      if (
+        attemptGenerationRef.current === generation &&
+        automaticNextReceiptIdRef.current === receiptId
+      ) {
+        automaticNextReceiptIdRef.current = null;
+        onNext?.();
+      }
+    }, 1_500);
+  }, [clearAutomaticNext, onNext]);
+
+  useEffect(() => clearAutomaticNext, [clearAutomaticNext]);
+
   const beginAttempt = useCallback(() => {
     attemptGenerationRef.current += 1;
     attemptReceiptRef.current = null;
@@ -308,8 +340,9 @@ function LearningSessionView({
       clearTimeout(completionCueTimerRef.current);
       completionCueTimerRef.current = null;
     }
+    clearAutomaticNext();
     setShowNextCue(false);
-  }, []);
+  }, [clearAutomaticNext]);
 
   const saveReadingAttempt = useCallback(async (result: ReadingResult) => {
     controllerRef.current?.pause("server-wait");
@@ -322,7 +355,10 @@ function LearningSessionView({
       attemptReceiptRef.current = receipt;
       setAttemptReceipt(receipt);
       setSaveUiState("idle");
-      if (receipt.completed && !receipt.duplicate) setShowNextCue(false);
+      if (receipt.completed && !receipt.duplicate) {
+        setShowNextCue(false);
+        scheduleAutomaticNext(receipt.id, attemptGenerationRef.current);
+      }
       onActivityCursor?.(receipt.activityCursor);
       setNextUnlocked(receipt.completed);
       if (!receipt.readingPass) {
@@ -338,7 +374,10 @@ function LearningSessionView({
       setSaveUiState(queued ? "queued" : "failed");
       setNextUnlocked(queued);
       setProvisional(queued);
-      if (queued) onProvisional?.();
+      if (queued) {
+        onProvisional?.();
+        scheduleAutomaticNext(`queued:${input.clientAttemptId}`, attemptGenerationRef.current);
+      }
       setMathFeedback(queued
         ? "학습 기록이 아직 여행 중이에요. 연결되면 확인할게요."
         : "학습 기록을 저장하지 못했어요. 다시 시도해 주세요.");
@@ -346,7 +385,15 @@ function LearningSessionView({
       setWaiting(false);
       controllerRef.current?.resume("server-wait");
     }
-  }, [api, beginAttempt, buildAttempt, onActivityCursor, onExit, onProvisional]);
+  }, [
+    api,
+    beginAttempt,
+    buildAttempt,
+    onActivityCursor,
+    onExit,
+    onProvisional,
+    scheduleAutomaticNext
+  ]);
 
   useEffect(() => {
     if (!attemptReceipt?.completed || attemptReceipt.duplicate) return;
@@ -386,12 +433,36 @@ function LearningSessionView({
   }, [item, learningControlsPaused, recordActivity, saveReadingAttempt]);
 
   useEffect(() => {
+    if (speechPhase !== "listening" || speechStartedAt === null) return;
+    setSpeechElapsedSeconds(Math.max(0, Math.floor((Date.now() - speechStartedAt) / 1_000)));
+    const timer = setInterval(() => {
+      setSpeechElapsedSeconds(Math.max(0, Math.floor((Date.now() - speechStartedAt) / 1_000)));
+    }, 1_000);
+    return () => clearInterval(timer);
+  }, [speechPhase, speechStartedAt]);
+
+  useEffect(() => {
     const speech = createSpeechController({
       onTranscript: (transcript) => {
-        setSpeechListening(false);
         if (transcript) judgeTranscript(transcript);
       },
-      onActivity: () => recordActivity("speech-result")
+      onPhaseChange: (phase) => {
+        setSpeechPhase(phase);
+        if (phase === "listening") {
+          setSpeechStartedAt(Date.now());
+          setSpeechElapsedSeconds(0);
+        } else if (phase === "ready") {
+          setSpeechStartedAt(null);
+        }
+      },
+      onActivity: () => recordActivity("speech-result"),
+      onNoResult: () => {
+        setSpeechNotice("말한 내용이 들리지 않아요. 다시 읽어 볼까요?");
+      },
+      onUnavailable: () => {
+        setSpeechUnavailable(true);
+        setSpeechNotice("마이크를 사용할 수 없어요. 직접 입력으로 읽기를 확인해 주세요.");
+      }
     });
     speechRef.current = speech;
     return () => {
@@ -471,15 +542,14 @@ function LearningSessionView({
   }
 
   function toggleSpeech(): void {
-    if (learningControlsPaused) return;
+    if (learningControlsPaused || speechUnavailable || speechPhase === "finishing") return;
     recordActivity("touch");
-    if (speechListening) {
+    if (speechPhase === "listening") {
       speechRef.current?.finish();
-      setSpeechListening(false);
       return;
     }
+    setSpeechNotice(null);
     speechRef.current?.start();
-    setSpeechListening(true);
   }
 
   if (authority.phase === "issuing" || authority.phase === "unavailable") {
@@ -584,11 +654,22 @@ function LearningSessionView({
         <button
           type="button"
           onClick={toggleSpeech}
-          disabled={!isSpeechRecognitionSupported() || learningControlsPaused}
+          disabled={!isSpeechRecognitionSupported() || speechUnavailable || learningControlsPaused || speechPhase === "finishing"}
         >
-          {speechListening ? "읽기 완료" : "읽기 시작"}
+          {speechPhase === "listening"
+            ? "읽기 멈추기"
+            : speechPhase === "finishing"
+              ? "읽은 내용을 확인하고 있어요"
+              : "읽기 시작"}
         </button>
-        {!isSpeechRecognitionSupported() ? (
+        {speechPhase === "listening" ? (
+          <p role="status" aria-live="polite" style={{ color: "#b42318", fontWeight: 800 }}>
+            ● 듣고 있어요 · {speechElapsedSeconds}초
+          </p>
+        ) : null}
+        {speechPhase === "finishing" ? <p role="status">읽은 내용을 확인하고 있어요</p> : null}
+        {speechNotice ? <p role="status">{speechNotice}</p> : null}
+        {!isSpeechRecognitionSupported() || speechUnavailable ? (
           <p>이 브라우저에서는 수동 입력으로 읽기를 확인해 주세요.</p>
         ) : null}
         <details className="manual-reading-check">
@@ -680,6 +761,7 @@ function LearningSessionView({
         disabled={!nextUnlocked || learningControlsPaused}
         onClick={() => {
           recordActivity("continue");
+          clearAutomaticNext();
           onNext?.();
         }}
       >

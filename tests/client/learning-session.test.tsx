@@ -177,7 +177,8 @@ async function flushLearningSessionIssue(): Promise<void> {
   });
 }
 
-function supportSpeechRecognition(): void {
+function supportSpeechRecognition(): { emit(type: string, event?: unknown): void } {
+  const listeners = new Map<string, Array<(event?: unknown) => void>>();
   class FakeRecognition {
     lang = "";
     interimResults = false;
@@ -185,12 +186,21 @@ function supportSpeechRecognition(): void {
     start = vi.fn();
     stop = vi.fn();
     abort = vi.fn();
-    addEventListener = vi.fn();
+    addEventListener(type: string, listener: (event?: unknown) => void) {
+      const current = listeners.get(type) ?? [];
+      current.push(listener);
+      listeners.set(type, current);
+    }
   }
   Object.defineProperty(window, "SpeechRecognition", {
     configurable: true,
     value: FakeRecognition
   });
+  return {
+    emit(type: string, event?: unknown) {
+      listeners.get(type)?.forEach((listener) => listener(event));
+    }
+  };
 }
 
 async function submitManualTranscript(transcript: string): Promise<void> {
@@ -513,6 +523,100 @@ describe("LearningSession", () => {
     );
   });
 
+  it("automatically advances once 1.5 seconds after an authoritative reading completion", async () => {
+    vi.useFakeTimers();
+    const onNext = vi.fn();
+    render(<LearningSession
+      item={readingPlanItem}
+      api={createLearningApi()}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      onNext={onNext}
+    />);
+    await flushLearningSessionIssue();
+    fireEvent.click(screen.getByText("직접 입력으로 확인하기"));
+    fireEvent.change(screen.getByLabelText("읽은 내용 직접 입력"), {
+      target: { value: readingItem.text }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "읽기 판정하기" }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    act(() => vi.advanceTimersByTime(1_499));
+    expect(onNext).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(1));
+    expect(onNext).toHaveBeenCalledOnce();
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(onNext).toHaveBeenCalledOnce();
+  });
+
+  it("automatically advances once after a locally queued passing reading", async () => {
+    const api = createLearningApi();
+    const onNext = vi.fn();
+    api.saveAttempt.mockRejectedValue(new TypeError("offline"));
+    render(<LearningSession
+      item={readingPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      idFactory={offlineId}
+      onNext={onNext}
+    />);
+    await flushLearningSessionIssue();
+    fireEvent.click(screen.getByText("직접 입력으로 확인하기"));
+    fireEvent.change(screen.getByLabelText("읽은 내용 직접 입력"), {
+      target: { value: readingItem.text }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "읽기 판정하기" }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    await waitFor(() => expect(onNext).toHaveBeenCalledOnce(), { timeout: 2_000 });
+  });
+
+  it("cancels a stale automatic next when a repeat reading submission supersedes it", async () => {
+    vi.useFakeTimers();
+    const api = createLearningApi();
+    const onNext = vi.fn();
+    api.saveAttempt
+      .mockResolvedValueOnce(receipt({ id: "attempt-auto-next-first" }))
+      .mockResolvedValueOnce(receipt({
+        id: "attempt-auto-next-duplicate",
+        completed: true,
+        duplicate: true
+      }));
+    render(<LearningSession
+      item={readingPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      onNext={onNext}
+    />);
+    await flushLearningSessionIssue();
+    fireEvent.click(screen.getByText("직접 입력으로 확인하기"));
+    fireEvent.change(screen.getByLabelText("읽은 내용 직접 입력"), {
+      target: { value: readingItem.text }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "읽기 판정하기" }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    act(() => vi.advanceTimersByTime(750));
+    fireEvent.click(screen.getByRole("button", { name: "읽기 판정하기" }));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(onNext).not.toHaveBeenCalled();
+  });
+
   it("removes both companion and awarded star status when a resubmit exits on 4xx", async () => {
     vi.useFakeTimers();
     const api = createLearningApi();
@@ -695,6 +799,50 @@ describe("LearningSession", () => {
     const details = summary.closest("details");
     expect(details).not.toBeNull();
     expect(details).not.toHaveAttribute("open");
+  });
+
+  it("shows the timed listening and finishing states while keeping direct input available", async () => {
+    vi.useFakeTimers();
+    const speech = supportSpeechRecognition();
+    render(<LearningSession
+      item={readingPlanItem}
+      api={createLearningApi()}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+    />);
+    await flushLearningSessionIssue();
+
+    fireEvent.click(screen.getByRole("button", { name: "읽기 시작" }));
+    expect(screen.getByRole("button", { name: "읽기 멈추기" })).toBeEnabled();
+    expect(screen.getByText("● 듣고 있어요 · 0초")).toBeVisible();
+    expect(screen.getByText("직접 입력으로 확인하기")).toBeVisible();
+    act(() => vi.advanceTimersByTime(1_000));
+    expect(screen.getByText("● 듣고 있어요 · 1초")).toBeVisible();
+
+    fireEvent.click(screen.getByRole("button", { name: "읽기 멈추기" }));
+    expect(screen.getByRole("button", { name: "읽은 내용을 확인하고 있어요" })).toBeDisabled();
+    expect(screen.getAllByText("읽은 내용을 확인하고 있어요")).toHaveLength(2);
+    act(() => speech.emit("end"));
+    expect(screen.getByRole("button", { name: "읽기 시작" })).toBeEnabled();
+  });
+
+  it("keeps direct input available after microphone permission is denied", async () => {
+    const speech = supportSpeechRecognition();
+    render(<LearningSession
+      item={readingPlanItem}
+      api={createLearningApi()}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+    />);
+    await flushLearningSessionIssue();
+
+    fireEvent.click(screen.getByRole("button", { name: "읽기 시작" }));
+    act(() => speech.emit("error", { error: "not-allowed" }));
+
+    expect(screen.getByText("마이크를 사용할 수 없어요. 직접 입력으로 읽기를 확인해 주세요."))
+      .toBeVisible();
+    expect(screen.getByText("직접 입력으로 확인하기")).toBeVisible();
+    expect(screen.getByRole("button", { name: "읽기 시작" })).toBeDisabled();
   });
 
   it("reveals the existing word hint and token chips immediately without revealing the answer", async () => {
@@ -1514,7 +1662,7 @@ describe("StarCelebration", () => {
 });
 
 describe("SpeechController", () => {
-  it("finishes a capture at 60 seconds without relying on method this binding", () => {
+  it("finishes a capture at 45 seconds without relying on method this binding", () => {
     vi.useFakeTimers();
     const listeners = new Map<string, Array<(...args: any[]) => void>>();
     const stop = vi.fn(() => {
@@ -1528,7 +1676,8 @@ describe("SpeechController", () => {
       stop = stop;
       abort = vi.fn();
       addEventListener(type: "result", listener: (event: any) => void): void;
-      addEventListener(type: "end" | "error", listener: () => void): void;
+      addEventListener(type: "end", listener: () => void): void;
+      addEventListener(type: "error", listener: (event: any) => void): void;
       addEventListener(type: string, listener: (...args: any[]) => void) {
         const current = listeners.get(type) ?? [];
         current.push(listener);
@@ -1543,7 +1692,7 @@ describe("SpeechController", () => {
     const start = controller.start;
 
     start();
-    expect(() => vi.advanceTimersByTime(60_000)).not.toThrow();
+    expect(() => vi.advanceTimersByTime(45_000)).not.toThrow();
     expect(stop).toHaveBeenCalledOnce();
     expect(onTranscript).toHaveBeenCalledWith("");
   });

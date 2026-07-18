@@ -1,4 +1,6 @@
-const LISTENING_LIMIT_MS = 60_000;
+const NO_RESULT_NOTICE_MS = 15_000;
+const SILENCE_FINISH_MS = 3_000;
+const LISTENING_LIMIT_MS = 45_000;
 const RESTART_DELAY_MS = 250;
 
 type SpeechAlternativeLike = { transcript?: string };
@@ -10,6 +12,7 @@ type SpeechResultEventLike = {
   resultIndex?: number;
   results: ArrayLike<SpeechResultLike>;
 };
+type SpeechErrorEventLike = { error?: string };
 type BrowserSpeechRecognition = {
   lang: string;
   interimResults: boolean;
@@ -18,9 +21,12 @@ type BrowserSpeechRecognition = {
   stop(): void;
   abort(): void;
   addEventListener(type: "result", listener: (event: SpeechResultEventLike) => void): void;
-  addEventListener(type: "end" | "error", listener: () => void): void;
+  addEventListener(type: "end", listener: () => void): void;
+  addEventListener(type: "error", listener: (event: SpeechErrorEventLike) => void): void;
 };
 type BrowserSpeechRecognitionConstructor = new () => BrowserSpeechRecognition;
+
+export type SpeechPhase = "ready" | "listening" | "finishing";
 
 export type SpeechController = {
   readonly supported: boolean;
@@ -31,7 +37,9 @@ export type SpeechController = {
 
 export type SpeechControllerOptions = {
   onTranscript: (transcript: string) => void;
+  onPhaseChange?: (phase: SpeechPhase) => void;
   onActivity?: () => void;
+  onNoResult?: () => void;
   onUnavailable?: () => void;
   recognitionConstructor?: BrowserSpeechRecognitionConstructor | null;
 };
@@ -61,7 +69,9 @@ export function createSpeechController(
   let listening = false;
   let finishing = false;
   let deadline = 0;
-  let stopTimer: ReturnType<typeof setTimeout> | null = null;
+  let noResultTimer: ReturnType<typeof setTimeout> | null = null;
+  let silenceTimer: ReturnType<typeof setTimeout> | null = null;
+  let listeningLimitTimer: ReturnType<typeof setTimeout> | null = null;
   let restartTimer: ReturnType<typeof setTimeout> | null = null;
   let committedParts: string[] = [];
   let sessionResults: string[] = [];
@@ -78,6 +88,9 @@ export function createSpeechController(
       else interim = `${interim} ${transcript}`.trim();
     }
     interimTranscript = interim;
+    if (!listening || finishing) return;
+    clearTimer("no-result");
+    resetSilenceTimer();
     options.onActivity?.();
   });
 
@@ -93,7 +106,12 @@ export function createSpeechController(
     complete();
   });
 
-  recognition.addEventListener("error", () => {
+  recognition.addEventListener("error", (event) => {
+    if (isPermissionError(event)) {
+      options.onUnavailable?.();
+      complete();
+      return;
+    }
     if (listening && !finishing && Date.now() < deadline) {
       commitSession();
       restartTimer = setTimeout(() => {
@@ -106,10 +124,30 @@ export function createSpeechController(
   });
 
   function clearTimers(): void {
-    if (stopTimer !== null) clearTimeout(stopTimer);
+    if (noResultTimer !== null) clearTimeout(noResultTimer);
+    if (silenceTimer !== null) clearTimeout(silenceTimer);
+    if (listeningLimitTimer !== null) clearTimeout(listeningLimitTimer);
     if (restartTimer !== null) clearTimeout(restartTimer);
-    stopTimer = null;
+    noResultTimer = null;
+    silenceTimer = null;
+    listeningLimitTimer = null;
     restartTimer = null;
+  }
+
+  function clearTimer(timer: "no-result" | "silence"): void {
+    if (timer === "no-result" && noResultTimer !== null) {
+      clearTimeout(noResultTimer);
+      noResultTimer = null;
+    }
+    if (timer === "silence" && silenceTimer !== null) {
+      clearTimeout(silenceTimer);
+      silenceTimer = null;
+    }
+  }
+
+  function resetSilenceTimer(): void {
+    clearTimer("silence");
+    silenceTimer = setTimeout(finishCapture, SILENCE_FINISH_MS);
   }
 
   function startEngine(): void {
@@ -134,6 +172,7 @@ export function createSpeechController(
     listening = false;
     finishing = false;
     clearTimers();
+    options.onPhaseChange?.("ready");
     const transcript = collapseSpeechSegments(committedParts);
     options.onTranscript(transcript);
   }
@@ -142,6 +181,7 @@ export function createSpeechController(
     if (!listening) return;
     finishing = true;
     clearTimers();
+    options.onPhaseChange?.("finishing");
     try {
       recognition.stop();
     } catch {
@@ -160,7 +200,9 @@ export function createSpeechController(
       listening = true;
       finishing = false;
       deadline = Date.now() + LISTENING_LIMIT_MS;
-      stopTimer = setTimeout(finishCapture, LISTENING_LIMIT_MS);
+      options.onPhaseChange?.("listening");
+      noResultTimer = setTimeout(() => options.onNoResult?.(), NO_RESULT_NOTICE_MS);
+      listeningLimitTimer = setTimeout(finishCapture, LISTENING_LIMIT_MS);
       startEngine();
     },
 
@@ -183,6 +225,10 @@ export function createSpeechController(
       }
     }
   };
+}
+
+function isPermissionError(event: SpeechErrorEventLike): boolean {
+  return event.error === "not-allowed" || event.error === "service-not-allowed";
 }
 
 export function collapseSpeechSegments(segments: string[]): string {
