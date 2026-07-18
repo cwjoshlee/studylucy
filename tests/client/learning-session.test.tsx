@@ -798,6 +798,25 @@ describe("LearningSession", () => {
     expectNoProtectedHumor(companionBubble());
   });
 
+  it("hides the floating coach while the inactivity confirmation dialog is open", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-16T01:00:00.000Z"));
+    render(<LearningSession
+      item={readingPlanItem}
+      api={createLearningApi()}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+    />);
+    await flushLearningSessionIssue();
+
+    await act(async () => {
+      vi.advanceTimersByTime(240_000);
+    });
+
+    expect(screen.getByRole("alertdialog", { name: "학습 계속 확인" })).toBeVisible();
+    expect(screen.queryByRole("status", { name: "차나핑 코치" })).not.toBeInTheDocument();
+  });
+
   it("keeps manual reading as a collapsed details fallback", async () => {
     render(<LearningSession
       item={readingPlanItem}

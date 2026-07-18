@@ -636,7 +636,7 @@ function LearningSessionView({
         subject={item.subject}
         retryCount={mathRetryCount + (readingResult !== null && !readingResult.passed ? 1 : 0)}
         cueKey={`${planId}:${item.id}:${contentVersion}`}
-        hidden={chanaPingHidden}
+        hidden={chanaPingHidden || idleUi?.phase === "confirm"}
         onHide={() => setChanaPingHidden(true)}
       />
       <p className="subject-chip">{item.subject === "korean" ? "국어" : "수학"} · {item.unit}</p>
