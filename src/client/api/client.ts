@@ -7,9 +7,13 @@ import type {
 import type {
   AiCoachProvider,
   AiCoachSettingsView,
+  AiBatchRequest,
+  AiDraftView,
+  AiProviderSettingsView,
   AttemptInput,
   AttemptReceipt,
   GuardianOfflineRejections,
+  GuardianAiReport,
   GuardianProgress,
   CoachMessageRequest,
   CoachMessageResponse,
@@ -81,6 +85,13 @@ export type AiCoachSettingsInput = {
   enabled?: boolean;
   provider?: AiCoachProvider;
   monthlyBudgetWon?: number;
+  apiKey?: string;
+  deleteApiKey?: true;
+};
+
+export type AiStudioProviderInput = {
+  enabled?: boolean;
+  model?: string;
   apiKey?: string;
   deleteApiKey?: true;
 };
@@ -329,6 +340,57 @@ export class ApiClient {
     return this.request("PUT", "/api/guardian/ai-coach-settings", input);
   }
 
+  getAiStudioSettings(): Promise<AiProviderSettingsView[]> {
+    return this.request("GET", "/api/guardian/ai-studio/settings");
+  }
+
+  updateAiStudioProvider(
+    provider: AiCoachProvider,
+    input: AiStudioProviderInput
+  ): Promise<AiProviderSettingsView> {
+    return this.request(
+      "PUT",
+      `/api/guardian/ai-studio/settings/${encodeURIComponent(provider)}`,
+      input
+    );
+  }
+
+  createAiDraft(input: AiBatchRequest): Promise<AiDraftView> {
+    return this.request("POST", "/api/guardian/ai-studio/drafts", input);
+  }
+
+  getAiDraft(draftId: string): Promise<AiDraftView> {
+    return this.request(
+      "GET",
+      `/api/guardian/ai-studio/drafts/${encodeURIComponent(draftId)}`
+    );
+  }
+
+  updateAiDraftItem(
+    draftId: string,
+    itemId: string,
+    payload: AiDraftView["items"][number]["payload"]
+  ): Promise<AiDraftView> {
+    return this.request(
+      "PATCH",
+      `/api/guardian/ai-studio/drafts/${encodeURIComponent(draftId)}` +
+        `/items/${encodeURIComponent(itemId)}`,
+      { payload }
+    );
+  }
+
+  publishAiDraft(draftId: string): Promise<AiDraftView> {
+    return this.request(
+      "POST",
+      `/api/guardian/ai-studio/drafts/${encodeURIComponent(draftId)}/publish`
+    );
+  }
+
+  getGuardianAiReport(from: string, to: string): Promise<GuardianAiReport> {
+    const query = new URLSearchParams({ from, to });
+    return this.request("GET", `/api/guardian/ai-studio/report?${query}`);
+  }
+
   coachMessage(
     input: CoachMessageRequest,
     signal?: AbortSignal
@@ -371,4 +433,11 @@ export type ClientApi = Pick<ApiClient,
   | "getAiCoachSettings"
   | "updateAiCoachSettings"
   | "coachMessage"
+  | "getAiStudioSettings"
+  | "updateAiStudioProvider"
+  | "createAiDraft"
+  | "getAiDraft"
+  | "updateAiDraftItem"
+  | "publishAiDraft"
+  | "getGuardianAiReport"
 >>;
