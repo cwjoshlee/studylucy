@@ -30,6 +30,10 @@ export type AiLearningStudioApi = Pick<ApiClient,
 >;
 
 type TreeGroupId = "settings" | "generation" | "reports";
+export type AiStudioTreeState = {
+  selectedLeaf: string;
+  openGroups: TreeGroupId[];
+};
 type TreeLeaf = {
   id: string;
   label: string;
@@ -92,6 +96,11 @@ function treeSelection(panel: AiStudioPanel): {
   return { groupId: "settings", leafId: "provider-model" };
 }
 
+export function initialAiStudioTreeState(panel: AiStudioPanel): AiStudioTreeState {
+  const selection = treeSelection(panel);
+  return { selectedLeaf: selection.leafId, openGroups: [selection.groupId] };
+}
+
 function groupForLeaf(leafId: string): TreeGroupId | null {
   return TREE_GROUPS.find((group) => group.leaves.some((leaf) => leaf.id === leafId))
     ?.id ?? null;
@@ -100,32 +109,23 @@ function groupForLeaf(leafId: string): TreeGroupId | null {
 export function AiLearningStudio({
   api,
   panel,
-  onPanelChange
+  onPanelChange,
+  treeState,
+  onTreeStateChange
 }: {
   api: AiLearningStudioApi;
   panel: AiStudioPanel;
   onPanelChange(panel: AiStudioPanel): void;
+  treeState: AiStudioTreeState;
+  onTreeStateChange(state: AiStudioTreeState): void;
 }): JSX.Element {
-  const initialSelection = treeSelection(panel);
-  const [openGroups, setOpenGroups] = useState<Set<TreeGroupId>>(
-    () => new Set([initialSelection.groupId])
-  );
-  const [selectedLeaf, setSelectedLeaf] = useState(initialSelection.leafId);
-  const [focusedItem, setFocusedItem] = useState(initialSelection.leafId);
+  const openGroups = new Set(treeState.openGroups);
+  const selectedLeaf = treeState.selectedLeaf;
+  const [focusedItem, setFocusedItem] = useState(treeState.selectedLeaf);
   const treeItemRefs = useRef(new Map<string, HTMLElement>());
   const focusRequested = useRef(false);
   const [settings, setSettings] = useState<AiProviderSettingsView[] | null>(null);
   const [settingsFailed, setSettingsFailed] = useState(false);
-
-  useEffect(() => {
-    const selection = treeSelection(panel);
-    setSelectedLeaf(selection.leafId);
-    setFocusedItem(selection.leafId);
-    setOpenGroups((current) => {
-      if (current.has(selection.groupId)) return current;
-      return new Set([...current, selection.groupId]);
-    });
-  }, [panel]);
 
   useEffect(() => {
     if (!focusRequested.current) return;
@@ -148,19 +148,21 @@ export function AiLearningStudio({
   }, [api]);
 
   const selectLeaf = (leaf: TreeLeaf) => {
-    setSelectedLeaf(leaf.id);
     setFocusedItem(leaf.id);
+    onTreeStateChange({
+      ...treeState,
+      selectedLeaf: leaf.id,
+      openGroups: Array.from(new Set([...treeState.openGroups, groupForLeaf(leaf.id)!]))
+    });
     onPanelChange(leaf.panel);
   };
 
   const toggleGroup = (groupId: TreeGroupId, forceOpen?: boolean) => {
-    setOpenGroups((current) => {
-      const next = new Set(current);
-      const open = forceOpen ?? !next.has(groupId);
-      if (open) next.add(groupId);
-      else next.delete(groupId);
-      return next;
-    });
+    const next = new Set(openGroups);
+    const open = forceOpen ?? !next.has(groupId);
+    if (open) next.add(groupId);
+    else next.delete(groupId);
+    onTreeStateChange({ ...treeState, openGroups: Array.from(next) });
   };
 
   const requestTreeFocus = (itemId: string) => {
@@ -484,6 +486,7 @@ function DraftPanel({
   const [weakTopics, setWeakTopics] = useState("");
   const [draft, setDraft] = useState<AiDraftView | null>(null);
   const [saving, setSaving] = useState(false);
+  const [savingItemIds, setSavingItemIds] = useState<Set<string>>(() => new Set());
   const [message, setMessage] = useState("");
   const providersReady = settings !== null &&
     (["gemini", "openai"] as const).every((provider) => settings.some((item) =>
@@ -512,7 +515,7 @@ function DraftPanel({
   };
 
   const publish = async () => {
-    if (draft === null || draft.status !== "draft" || saving) return;
+    if (draft === null || draft.status !== "draft" || saving || savingItemIds.size > 0) return;
     setSaving(true);
     setMessage("");
     try {
@@ -585,11 +588,17 @@ function DraftPanel({
               draftId={draft.id}
               item={item}
               key={item.id}
+              onSavingChange={(itemId, isSaving) => setSavingItemIds((current) => {
+                const next = new Set(current);
+                if (isSaving) next.add(itemId);
+                else next.delete(itemId);
+                return next;
+              })}
               onUpdated={setDraft}
             />
           ))}
           <button
-            disabled={saving || draft.status !== "draft" ||
+            disabled={saving || savingItemIds.size > 0 || draft.status !== "draft" ||
               !draft.items.some((item) => item.status === "accepted" || item.status === "edited")}
             onClick={() => void publish()}
             type="button"
@@ -607,11 +616,13 @@ function DraftItemEditor({
   api,
   draftId,
   item,
+  onSavingChange,
   onUpdated
 }: {
   api: Pick<ApiClient, "updateAiDraftItem">;
   draftId: string;
   item: AiDraftItemView;
+  onSavingChange(itemId: string, isSaving: boolean): void;
   onUpdated(draft: AiDraftView): void;
 }) {
   const [payload, setPayload] = useState<LearningItemPayload>(item.payload);
@@ -627,6 +638,7 @@ function DraftItemEditor({
       setMessage("문제 형식을 다시 확인해 주세요.");
       return;
     }
+    onSavingChange(item.id, true);
     setSaving(true);
     setMessage("");
     try {
@@ -635,6 +647,7 @@ function DraftItemEditor({
     } catch {
       setMessage("수정한 문제를 저장하지 못했어요.");
     } finally {
+      onSavingChange(item.id, false);
       setSaving(false);
     }
   };

@@ -25,6 +25,7 @@ import { listGuardianOfflineRejections } from "../offline/db";
 import {
   AiLearningStudio,
   type AiLearningStudioApi,
+  initialAiStudioTreeState,
   type AiStudioPanel
 } from "./ai-learning-studio";
 
@@ -124,6 +125,7 @@ export function GuardianDashboard({
   const [failed, setFailed] = useState(false);
   const [activeTab, setActiveTab] = useState<GuardianTab>("진도");
   const [aiPanel, setAiPanel] = useState<AiStudioPanel>("settings");
+  const [aiTreeState, setAiTreeState] = useState(() => initialAiStudioTreeState("settings"));
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [deviceManagementOpen, setDeviceManagementOpen] = useState(false);
 
@@ -234,7 +236,9 @@ export function GuardianDashboard({
             <AiLearningStudio
               api={api}
               onPanelChange={setAiPanel}
+              onTreeStateChange={setAiTreeState}
               panel={aiPanel}
+              treeState={aiTreeState}
             />
           ) : <p role="alert">AI 학습실을 사용할 수 없어요.</p>
         ) : null}
