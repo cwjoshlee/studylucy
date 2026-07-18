@@ -11,7 +11,7 @@ import { ApiError } from "../../src/client/api/client";
 import { createProductionApi } from "../../src/client/api/production";
 import type { ActivityEvent, TodayPlan } from "../../src/shared/learning";
 import { TodayStars } from "../../src/client/delight/today-stars";
-import { stepStatus } from "../../src/client/home/student-home";
+import { StudentHome, stepStatus } from "../../src/client/home/student-home";
 import {
   OFFLINE_DB_NAME,
   cacheIssuedPlan,
@@ -47,6 +47,92 @@ beforeEach(async () => {
 });
 
 describe("가족 로그인과 학생 홈", () => {
+  it("keeps math and dictation drafts mounted across student navigation while explicit exit resets them", async () => {
+    const user = userEvent.setup();
+    const seeded = createFakeApi();
+    const original = await seeded.getToday();
+    const mathItem: TodayPlan["items"][number] = {
+      id: "math-draft",
+      version: 1,
+      step: "foundation",
+      payload: {
+        id: "math-draft",
+        kind: "math-story",
+        subject: "math",
+        unit: "받아올림과 받아내림",
+        title: "답을 간직해요",
+        level: "1단계",
+        readLabel: "읽기",
+        text: "2와 3을 더해요.",
+        hint: "차근차근 더해 봐요.",
+        tokens: ["2", "3"],
+        question: "답은 얼마일까요?",
+        answer: 5,
+        unitLabel: "",
+        checkHint: "2와 3을 더해 봐요.",
+        calculation: {
+          operands: [2, 3],
+          operators: ["+"],
+          layout: "horizontal"
+        }
+      }
+    };
+    const dictationItem: TodayPlan["items"][number] = {
+      id: "dictation-draft",
+      version: 1,
+      step: "foundation",
+      payload: {
+        id: "dictation-draft",
+        kind: "korean-dictation",
+        subject: "korean",
+        unit: "받아쓰기",
+        title: "봄비를 간직해요",
+        level: "1단계",
+        readLabel: "다시 듣기",
+        text: "들은 내용을 써 보세요.",
+        hint: "천천히 다시 들어 봐요.",
+        tokens: ["봄비"],
+        promptText: "봄비",
+        answerText: "봄비",
+        mode: "word"
+      }
+    };
+    const plan: TodayPlan = {
+      ...original,
+      items: [mathItem, dictationItem],
+      requiredItemIds: [mathItem.id, dictationItem.id],
+      completedItemIds: []
+    };
+    const api = createFakeApi({ getToday: vi.fn().mockResolvedValue(plan) });
+    await markStudentAuthenticated();
+
+    render(<StudentHome api={api} />);
+
+    await user.click(await screen.findByRole("button", {
+      name: /답을 간직해요 시작하기/
+    }));
+    await screen.findByRole("heading", { name: "답을 간직해요" });
+    await user.click(screen.getByRole("button", { name: "5" }));
+    expect(screen.getByLabelText("입력한 답")).toHaveTextContent("5");
+
+    await user.click(screen.getByRole("button", { name: "오늘 학습" }));
+    await user.click(screen.getByRole("button", { name: /답을 간직해요 시작하기/ }));
+    expect(screen.getByLabelText("입력한 답")).toHaveTextContent("5");
+
+    await user.click(screen.getByRole("button", { name: "대시보드로 돌아가기" }));
+    await user.click(screen.getByRole("button", { name: /답을 간직해요 시작하기/ }));
+    expect(screen.getByLabelText("입력한 답")).not.toHaveTextContent("5");
+    await user.click(screen.getByRole("button", { name: "대시보드로 돌아가기" }));
+
+    await user.click(screen.getByRole("button", { name: /봄비를 간직해요 시작하기/ }));
+    const dictation = await screen.findByLabelText("받아쓰기 답");
+    await user.type(dictation, "봄 비");
+    await user.click(screen.getByRole("button", { name: "뒤로" }));
+    await user.click(screen.getByRole("button", { name: /봄비를 간직해요 시작하기/ }));
+    expect(screen.getByLabelText("받아쓰기 답")).toHaveValue("봄 비");
+    await expect(listQueuedAttempts()).resolves.toHaveLength(0);
+  });
+
   it("groups six daily steps and unlocks only from canonical completed item receipts", async () => {
     const seeded = createFakeApi();
     const original = await seeded.getToday();
@@ -1201,7 +1287,8 @@ describe("가족 로그인과 학생 홈", () => {
     expect(await screen.findByText("학습 기록이 아직 여행 중이에요. 연결되면 확인할게요.")).toBeVisible();
     await expect(listQueuedAttempts()).resolves.toHaveLength(1);
     expect(screen.getByRole("button", { name: "다음 문제" })).toBeEnabled();
-    expect(screen.getByText("동기화 대기")).toBeVisible();
+    expect(within(screen.getByRole("region", { name: "바람과 꽃 학습" }))
+      .getByText("동기화 대기")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "다음 문제" }));
 
     expect(await screen.findByRole("heading", { name: "오늘의 학습" })).toBeVisible();

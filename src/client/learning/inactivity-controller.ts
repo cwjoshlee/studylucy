@@ -16,7 +16,8 @@ export type InactivityPauseReason =
   | "screen-lock"
   | "server-wait"
   | "celebration"
-  | "guardian-break";
+  | "guardian-break"
+  | "navigation-away";
 
 export type InactivityEvent =
   | { type: "hint" }

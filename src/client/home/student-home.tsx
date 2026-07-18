@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import type { CompanionId } from "../../shared/companions";
 import type { PlanItem, TodayPlan } from "../../shared/learning";
 import type { StudentStarSummary } from "../../shared/stars";
@@ -81,8 +81,16 @@ export function StudentHome({
     () => new Set()
   );
   const [selectedItem, setSelectedItem] = useState<TodayPlan["items"][number] | null>(null);
+  const [learningViewOpen, setLearningViewOpen] = useState(false);
   const [navigationHelpOpen, setNavigationHelpOpen] = useState(false);
   const authorityRequestGeneration = useRef(0);
+  const showDashboardPreservingDraft = useCallback(() => {
+    setLearningViewOpen(false);
+  }, []);
+  const discardLearningSession = useCallback(() => {
+    setLearningViewOpen(false);
+    setSelectedItem(null);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -176,6 +184,7 @@ export function StudentHome({
   async function finishLearning(): Promise<void> {
     if (selectedItem !== null && provisionalItemIds.has(selectedItem.id)) {
       setSelectedItem(null);
+      setLearningViewOpen(false);
       return;
     }
     const requestGeneration = ++authorityRequestGeneration.current;
@@ -193,46 +202,10 @@ export function StudentHome({
       setData({ plan, stars });
       setOfflineMode(false);
       setSelectedItem(null);
+      setLearningViewOpen(false);
     } catch {
       setFailed(true);
     }
-  }
-
-  if (selectedItem !== null) {
-    return (
-      <main className="student-learning-view">
-        <LearningSession
-          item={selectedItem}
-          api={api}
-          planId={data.plan.planId}
-          studyDate={data.plan.date}
-          offlineEligibility={offlineMode ? "validated" : undefined}
-          onProvisional={() => {
-            setProvisionalItemIds((current) => new Set(current).add(selectedItem.id));
-          }}
-          onActivityCursor={(activityCursor) => {
-            void updateCachedPlanActivityCursor(
-              data.plan.planId,
-              activityCursor
-            );
-            setData((current) => current === null
-              ? current
-              : {
-                  ...current,
-                  plan: {
-                    ...current.plan,
-                    activityCursor: Math.max(
-                      current.plan.activityCursor,
-                      activityCursor
-                    )
-                  }
-                });
-          }}
-          onNext={finishLearning}
-          onExit={() => setSelectedItem(null)}
-        />
-      </main>
-    );
   }
 
   const requiredIds = new Set(data.plan.requiredItemIds);
@@ -285,7 +258,10 @@ export function StudentHome({
         <button
           type="button"
           disabled={status === "locked"}
-          onClick={() => setSelectedItem(item)}
+          onClick={() => {
+            setSelectedItem(item);
+            setLearningViewOpen(true);
+          }}
         >
           {stageLabel === null ? "" : `${stageLabel} · `}{item.payload.title} 시작하기
         </button>
@@ -294,7 +270,47 @@ export function StudentHome({
   };
 
   return (
-    <div className="responsive-shell student-responsive-shell">
+    <>
+      {selectedItem === null ? null : (
+        <main className="student-learning-view" hidden={!learningViewOpen}>
+          <LearningSession
+            active={learningViewOpen}
+            item={selectedItem}
+            api={api}
+            planId={data.plan.planId}
+            studyDate={data.plan.date}
+            offlineEligibility={offlineMode ? "validated" : undefined}
+            onProvisional={() => {
+              setProvisionalItemIds((current) => new Set(current).add(selectedItem.id));
+            }}
+            onActivityCursor={(activityCursor) => {
+              void updateCachedPlanActivityCursor(
+                data.plan.planId,
+                activityCursor
+              );
+              setData((current) => current === null
+                ? current
+                : {
+                    ...current,
+                    plan: {
+                      ...current.plan,
+                      activityCursor: Math.max(
+                        current.plan.activityCursor,
+                        activityCursor
+                      )
+                    }
+                  });
+            }}
+            onNext={finishLearning}
+            onExit={discardLearningSession}
+            onNavigateToday={showDashboardPreservingDraft}
+          />
+        </main>
+      )}
+      <div
+        className="responsive-shell student-responsive-shell"
+        hidden={learningViewOpen}
+      >
       <StudentNavigation
         activeId={navigationHelpOpen ? "help" : "today"}
         onExit={() => window.history.back()}
@@ -386,6 +402,7 @@ export function StudentHome({
         </section>
       </main>
       </div>
-    </div>
+      </div>
+    </>
   );
 }

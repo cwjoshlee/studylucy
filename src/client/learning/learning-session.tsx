@@ -55,9 +55,11 @@ export type LearningSessionProps = {
   api: LearningApi;
   planId: string;
   studyDate: string;
+  active?: boolean;
   reducedMotion?: boolean;
   onNext?: () => void;
   onExit?: () => void;
+  onNavigateToday?: () => void;
   onActivityCursor?: (activityCursor: number) => void;
   onProvisional?: () => void;
   offlineEligibility?: "validated";
@@ -124,10 +126,12 @@ function LearningSessionView({
   api,
   planId,
   studyDate,
+  active = true,
   contentVersion,
   reducedMotion,
   onNext,
   onExit,
+  onNavigateToday,
   onActivityCursor,
   onProvisional,
   offlineEligibility,
@@ -314,6 +318,15 @@ function LearningSessionView({
       controllerRef.current = null;
     };
   }, [authority.phase, handleInactivityEvent]);
+
+  useEffect(() => {
+    if (
+      authority.phase !== "online-issued" &&
+      authority.phase !== "offline-unissued"
+    ) return;
+    if (active) controllerRef.current?.resume("navigation-away");
+    else controllerRef.current?.pause("navigation-away");
+  }, [active, authority.phase]);
 
   const buildAttempt = useCallback((
     result: ReadingResult,
@@ -719,10 +732,10 @@ function LearningSessionView({
     <div className="responsive-shell learning-responsive-shell">
       <StudentNavigation
         activeId={breakPaused ? "break" : navigationHelpOpen ? "help" : "today"}
-        onExit={() => onExit?.()}
+        onExit={() => (onNavigateToday ?? onExit)?.()}
         onHelp={() => setNavigationHelpOpen((open) => !open)}
         onPauseForBreak={pauseForBreak}
-        onToday={() => onExit?.()}
+        onToday={() => (onNavigateToday ?? onExit)?.()}
       />
       <div className="responsive-shell__content">
         <section

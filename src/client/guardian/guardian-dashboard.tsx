@@ -318,7 +318,6 @@ export function GuardianDashboard({
         />
         <main
           className="guardian-panel responsive-shell__content"
-          role="tabpanel"
           aria-label={deviceManagementOpen ? "기기 관리" : activeTab}
         >
           {deviceManagementOpen ? (
