@@ -5,7 +5,6 @@ import type {
   StudentLoginResult,
   TrustedDeviceView
 } from "../../shared/auth";
-import { DEVICE_TYPE_LIMITS } from "../../shared/auth";
 import { kstDayBounds, kstStudyDate } from "../../shared/study-date";
 import type { AppConfig } from "../config";
 import { hashPassword, verifyPassword } from "./password";
@@ -118,16 +117,9 @@ export class AuthService {
       return { device, rawToken: null, created: false };
     }
 
-    if (this.repository.hasActiveUnclassifiedDevice()) {
-      throw new AuthError(409, "DEVICE_TYPE_CLASSIFICATION_REQUIRED");
-    }
-    if (this.repository.countActiveDevicesByType(deviceType) >= DEVICE_TYPE_LIMITS[deviceType]) {
-      throw new AuthError(409, "DEVICE_TYPE_LIMIT_REACHED");
-    }
-
     const rawToken = this.deps.randomToken();
     const id = randomUUID();
-    this.repository.createTrustedDevice({
+    const registration = this.repository.createTrustedDeviceWithCapacity({
       id,
       publicId: randomUUID(),
       name,
@@ -135,7 +127,13 @@ export class AuthService {
       createdAt: this.deps.now().toISOString(),
       deviceType
     });
-    const device = this.repository.findTrustedDeviceView(id, id);
+    if (registration.status === "classification_required") {
+      throw new AuthError(409, "DEVICE_TYPE_CLASSIFICATION_REQUIRED");
+    }
+    if (registration.status === "limit_reached") {
+      throw new AuthError(409, "DEVICE_TYPE_LIMIT_REACHED");
+    }
+    const device = registration.device;
     if (device === null) throw new AuthError(404, "DEVICE_NOT_FOUND");
     return { device, rawToken, created: true };
   }
@@ -145,17 +143,18 @@ export class AuthService {
     deviceType: DeviceType,
     currentTrustedDeviceId: string | null
   ): TrustedDeviceView {
-    const device = this.repository.findTrustedDeviceByPublicId(publicId);
-    if (device === null) throw new AuthError(404, "DEVICE_NOT_FOUND");
-    if (
-      device.status === "active" &&
-      device.deviceType !== deviceType &&
-      this.repository.countActiveDevicesByType(deviceType) >= DEVICE_TYPE_LIMITS[deviceType]
-    ) {
+    const update = this.repository.setTrustedDeviceTypeWithCapacity(
+      publicId,
+      deviceType,
+      currentTrustedDeviceId
+    );
+    if (update.status === "not_found") {
+      throw new AuthError(404, "DEVICE_NOT_FOUND");
+    }
+    if (update.status === "limit_reached") {
       throw new AuthError(409, "DEVICE_TYPE_LIMIT_REACHED");
     }
-    this.repository.setTrustedDeviceType(device.id, deviceType);
-    const view = this.repository.findTrustedDeviceView(device.id, currentTrustedDeviceId);
+    const view = update.device;
     if (view === null) throw new AuthError(404, "DEVICE_NOT_FOUND");
     return view;
   }

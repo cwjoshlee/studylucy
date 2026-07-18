@@ -4,6 +4,7 @@ import type {
   DeviceType,
   TrustedDeviceView
 } from "../../shared/auth";
+import { DEVICE_TYPE_LIMITS } from "../../shared/auth";
 
 type UserRecord = CurrentUser & {
   credentialHash: string | null;
@@ -16,6 +17,16 @@ export type TrustedDeviceRecord = {
   status: "active" | "revoked";
   deviceType: DeviceType | null;
 };
+
+export type CreateTrustedDeviceWithCapacityResult =
+  | { status: "created"; device: TrustedDeviceView | null }
+  | { status: "classification_required" }
+  | { status: "limit_reached" };
+
+export type UpdateTrustedDeviceTypeWithCapacityResult =
+  | { status: "updated"; device: TrustedDeviceView | null }
+  | { status: "not_found" }
+  | { status: "limit_reached" };
 
 export type RequestAuthContext = {
   user: CurrentUser | null;
@@ -123,6 +134,31 @@ export class AuthRepository {
     );
   }
 
+  createTrustedDeviceWithCapacity(input: {
+    id: string;
+    publicId?: string;
+    name: string;
+    tokenHash: string;
+    deviceType: DeviceType;
+    createdAt: string;
+  }): CreateTrustedDeviceWithCapacityResult {
+    const create = this.db.transaction(() => {
+      if (this.hasActiveUnclassifiedDevice()) {
+        return { status: "classification_required" } as const;
+      }
+      if (this.countActiveDevicesByType(input.deviceType) >= DEVICE_TYPE_LIMITS[input.deviceType]) {
+        return { status: "limit_reached" } as const;
+      }
+
+      this.createTrustedDevice(input);
+      return {
+        status: "created",
+        device: this.findTrustedDeviceView(input.id, input.id)
+      } as const;
+    });
+    return create.immediate();
+  }
+
   findTrustedDevice(tokenHash: string): TrustedDeviceRecord | null {
     const row = this.db.prepare(`
       SELECT id, name, public_id AS publicId, device_type AS deviceType,
@@ -164,6 +200,33 @@ export class AuthRepository {
     this.db.prepare(`
       UPDATE trusted_devices SET device_type = ? WHERE id = ?
     `).run(deviceType, id);
+  }
+
+  setTrustedDeviceTypeWithCapacity(
+    publicId: string,
+    deviceType: DeviceType,
+    currentTrustedDeviceId: string | null
+  ): UpdateTrustedDeviceTypeWithCapacityResult {
+    const update = this.db.transaction(() => {
+      const device = this.findTrustedDeviceByPublicId(publicId);
+      if (device === null) {
+        return { status: "not_found" } as const;
+      }
+      if (
+        device.status === "active" &&
+        device.deviceType !== deviceType &&
+        this.countActiveDevicesByType(deviceType) >= DEVICE_TYPE_LIMITS[deviceType]
+      ) {
+        return { status: "limit_reached" } as const;
+      }
+
+      this.setTrustedDeviceType(device.id, deviceType);
+      return {
+        status: "updated",
+        device: this.findTrustedDeviceView(device.id, currentTrustedDeviceId)
+      } as const;
+    });
+    return update.immediate();
   }
 
   listTrustedDevices(currentTrustedDeviceId: string | null): TrustedDeviceView[] {

@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { afterEach, beforeEach, describe, expect, expectTypeOf, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, expectTypeOf, it, vi } from "vitest";
 import {
   DEVICE_TYPE_LIMITS,
   DeviceTypeSchema,
@@ -115,6 +115,22 @@ describe("shared auth and study-date contracts", () => {
       count: number;
     }).count).toBe(9);
 
+    const tabletToKeep = harness.db.prepare(`
+      SELECT public_id AS publicId FROM trusted_devices
+      WHERE device_type = 'tablet' AND revoked_at IS NULL
+      LIMIT 1
+    `).get() as { publicId: string };
+    const reclassificationOverflow = await guardian.request(
+      "PUT",
+      `/api/guardian/devices/${tabletToKeep.publicId}/type`,
+      { deviceType: "phone" }
+    );
+    expect(reclassificationOverflow.statusCode).toBe(409);
+    expect(reclassificationOverflow.json()).toEqual({ code: "DEVICE_TYPE_LIMIT_REACHED" });
+    expect((harness.db.prepare(`
+      SELECT device_type AS deviceType FROM trusted_devices WHERE public_id = ?
+    `).get(tabletToKeep.publicId) as { deviceType: string }).deviceType).toBe("tablet");
+
     expect(existingDeviceClient).not.toBeNull();
     const existingToken = existingDeviceClient!.cookie("sua_device")!;
     const repeat = await existingDeviceClient!.request("POST", "/api/guardian/devices/current", {
@@ -182,6 +198,49 @@ describe("shared auth and study-date contracts", () => {
       deviceType: "mac"
     });
     expect(afterClassification.statusCode).toBe(201);
+    } finally {
+      await harness.close();
+    }
+  });
+
+  it("serializes device capacity changes with immediate transactions", async () => {
+    const harness = await createTestHarness();
+    try {
+      const guardian = harness.client();
+      await bootstrapFamily(harness, guardian);
+      await loginGuardian(guardian);
+
+      const immediate = vi.fn();
+      const originalTransaction = harness.db.transaction.bind(harness.db);
+      vi.spyOn(harness.db, "transaction").mockImplementation((fn) => {
+        const transaction = originalTransaction(fn);
+        const wrapped = (...args: Parameters<typeof transaction>) => transaction(...args);
+        return Object.assign(wrapped, {
+          default: transaction.default,
+          deferred: transaction.deferred,
+          immediate: (...args: Parameters<typeof transaction.immediate>) => {
+            immediate();
+            return transaction.immediate(...args);
+          },
+          exclusive: transaction.exclusive
+        }) as typeof transaction;
+      });
+
+      const registered = await guardian.request(
+        "POST",
+        "/api/guardian/devices/current",
+        { name: "수아 태블릿", deviceType: "tablet" }
+      );
+      expect(registered.statusCode).toBe(201);
+
+      const updated = await guardian.request(
+        "PUT",
+        `/api/guardian/devices/${registered.json().publicId}/type`,
+        { deviceType: "phone" }
+      );
+      expect(updated.statusCode).toBe(200);
+      expect(updated.json()).toMatchObject({ deviceType: "phone" });
+      expect(immediate).toHaveBeenCalledTimes(2);
     } finally {
       await harness.close();
     }
