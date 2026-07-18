@@ -116,12 +116,19 @@ export function AiLearningStudio({
   api: AiLearningStudioApi;
   panel: AiStudioPanel;
   onPanelChange(panel: AiStudioPanel): void;
-  treeState: AiStudioTreeState;
-  onTreeStateChange(state: AiStudioTreeState): void;
+  treeState?: AiStudioTreeState;
+  onTreeStateChange?(state: AiStudioTreeState): void;
 }): JSX.Element {
-  const openGroups = new Set(treeState.openGroups);
-  const selectedLeaf = treeState.selectedLeaf;
-  const [focusedItem, setFocusedItem] = useState(treeState.selectedLeaf);
+  const [localTreeState, setLocalTreeState] = useState(() => initialAiStudioTreeState(panel));
+  const usesControlledTreeState = treeState !== undefined && onTreeStateChange !== undefined;
+  const currentTreeState = usesControlledTreeState ? treeState : localTreeState;
+  const updateTreeState = (next: AiStudioTreeState) => {
+    if (usesControlledTreeState) onTreeStateChange(next);
+    else setLocalTreeState(next);
+  };
+  const openGroups = new Set(currentTreeState.openGroups);
+  const selectedLeaf = currentTreeState.selectedLeaf;
+  const [focusedItem, setFocusedItem] = useState(currentTreeState.selectedLeaf);
   const treeItemRefs = useRef(new Map<string, HTMLElement>());
   const focusRequested = useRef(false);
   const [settings, setSettings] = useState<AiProviderSettingsView[] | null>(null);
@@ -149,10 +156,10 @@ export function AiLearningStudio({
 
   const selectLeaf = (leaf: TreeLeaf) => {
     setFocusedItem(leaf.id);
-    onTreeStateChange({
-      ...treeState,
+    updateTreeState({
+      ...currentTreeState,
       selectedLeaf: leaf.id,
-      openGroups: Array.from(new Set([...treeState.openGroups, groupForLeaf(leaf.id)!]))
+      openGroups: Array.from(new Set([...currentTreeState.openGroups, groupForLeaf(leaf.id)!]))
     });
     onPanelChange(leaf.panel);
   };
@@ -162,7 +169,7 @@ export function AiLearningStudio({
     const open = forceOpen ?? !next.has(groupId);
     if (open) next.add(groupId);
     else next.delete(groupId);
-    onTreeStateChange({ ...treeState, openGroups: Array.from(next) });
+    updateTreeState({ ...currentTreeState, openGroups: Array.from(next) });
   };
 
   const requestTreeFocus = (itemId: string) => {
