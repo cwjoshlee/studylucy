@@ -28,7 +28,8 @@ describe("Fastify application shell", () => {
     "/api/health",
     "/api/auth/me",
     "/api/student/today",
-    "/api/guardian/progress?from=2026-07-01&to=2026-07-16"
+    "/api/guardian/progress?from=2026-07-01&to=2026-07-16",
+    "/api/guardian/ai-studio/settings"
   ])("prevents API responses from being stored for %s", async (url) => {
     const response = await harness.app.inject({ method: "GET", url });
 
