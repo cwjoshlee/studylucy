@@ -1,3 +1,5 @@
+import type { JSX } from "react";
+
 const KEYS = ["1", "2", "3", "4", "5", "6", "7", "8", "9", "지우기", "0"] as const;
 
 export function CalculationKeypad({
