@@ -7,6 +7,7 @@ import Fastify, { type FastifyInstance } from "fastify";
 import { existsSync } from "node:fs";
 import { join, resolve } from "node:path";
 import { registerAuthRoutes } from "./auth/routes";
+import { registerAiCoachRoutes } from "./coach/routes";
 import { registerBackupRoutes } from "./backup/routes";
 import type { AppConfig } from "./config";
 import { registerLearningRoutes } from "./learning/routes";
@@ -75,6 +76,7 @@ export async function buildApp(deps: AppDeps): Promise<FastifyInstance> {
 
   app.addHook("preHandler", createOriginGuard(deps.config.appOrigin));
   registerAuthRoutes(app, deps);
+  registerAiCoachRoutes(app, deps);
   registerBackupRoutes(app, deps);
   registerLearningRoutes(app, deps);
   registerStarRoutes(app, deps);

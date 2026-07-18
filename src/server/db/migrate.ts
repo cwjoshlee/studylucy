@@ -4,13 +4,15 @@ import { starLedgerMigration } from "./migrations/002-star-ledger";
 import { authorityOfflineMigration } from "./migrations/003-authority-offline";
 import { offlineReceiptMetadataMigration } from "./migrations/004-offline-receipt-metadata";
 import { trustedDeviceTypesMigration } from "./migrations/005-trusted-device-types";
+import { aiCoachMigration } from "./migrations/006-ai-coach";
 
 const migrations = [
   initialMigration,
   starLedgerMigration,
   authorityOfflineMigration,
   offlineReceiptMetadataMigration,
-  trustedDeviceTypesMigration
+  trustedDeviceTypesMigration,
+  aiCoachMigration
 ];
 
 function hasMigrationTable(db: Database.Database): boolean {

@@ -5,10 +5,14 @@ import type {
   TrustedDeviceView
 } from "../../shared/auth";
 import type {
+  AiCoachProvider,
+  AiCoachSettingsView,
   AttemptInput,
   AttemptReceipt,
   GuardianOfflineRejections,
   GuardianProgress,
+  CoachMessageRequest,
+  CoachMessageResponse,
   LearningSessionReceipt,
   LearningSessionRequest,
   OfflineBatchInput,
@@ -73,6 +77,14 @@ export type GuardianLedgerFilters = {
   cursor?: string;
 };
 
+export type AiCoachSettingsInput = {
+  enabled?: boolean;
+  provider?: AiCoachProvider;
+  monthlyBudgetWon?: number;
+  apiKey?: string;
+  deleteApiKey?: true;
+};
+
 export class ApiClient {
   constructor(
     private fetcher: Fetcher = fetch,
@@ -82,7 +94,8 @@ export class ApiClient {
   private async request<T>(
     method: string,
     path: string,
-    body?: unknown
+    body?: unknown,
+    signal?: AbortSignal
   ): Promise<T> {
     const response = await this.fetcher.call(globalThis, path, {
       method,
@@ -91,7 +104,8 @@ export class ApiClient {
         accept: "application/json",
         ...(body === undefined ? {} : { "content-type": "application/json" })
       },
-      ...(body === undefined ? {} : { body: JSON.stringify(body) })
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+      ...(signal === undefined ? {} : { signal })
     });
 
     if (!response.ok) {
@@ -306,6 +320,21 @@ export class ApiClient {
   getBackupStatus(): Promise<BackupStatus> {
     return this.request("GET", "/api/guardian/backup-status");
   }
+
+  getAiCoachSettings(): Promise<AiCoachSettingsView> {
+    return this.request("GET", "/api/guardian/ai-coach-settings");
+  }
+
+  updateAiCoachSettings(input: AiCoachSettingsInput): Promise<AiCoachSettingsView> {
+    return this.request("PUT", "/api/guardian/ai-coach-settings", input);
+  }
+
+  coachMessage(
+    input: CoachMessageRequest,
+    signal?: AbortSignal
+  ): Promise<CoachMessageResponse> {
+    return this.request("POST", "/api/student/coach-message", input, signal);
+  }
 }
 
 export type ClientApi = Pick<ApiClient,
@@ -338,4 +367,8 @@ export type ClientApi = Pick<ApiClient,
   | "getGuardianDailyPlan"
   | "updateGuardianDailyPlan"
   | "getBackupStatus"
->;
+> & Partial<Pick<ApiClient,
+  | "getAiCoachSettings"
+  | "updateAiCoachSettings"
+  | "coachMessage"
+>>;

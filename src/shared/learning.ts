@@ -12,6 +12,24 @@ export type ChanaPingEvent =
   | "lesson-open" | "speech-start" | "speech-finish" | "correct"
   | "retry" | "thinking" | "idle-confirm" | "idle-paused" | "next";
 
+export type AiCoachProvider = "gemini" | "openai";
+export type AiCoachSettingsView = {
+  enabled: boolean;
+  provider: AiCoachProvider;
+  model: string;
+  monthlyBudgetWon: number;
+  monthSpentWon: number;
+  hasApiKey: boolean;
+};
+export const CoachMessageRequestSchema = z.object({
+  event: z.enum(["lesson-open", "speech-start", "speech-finish", "correct", "retry", "thinking", "idle-confirm", "idle-paused", "next"]),
+  subject: z.enum(["korean", "math"]),
+  retryCount: z.number().int().min(0).max(20),
+  hintStage: z.enum(["none", "first", "step"])
+}).strict();
+export type CoachMessageRequest = z.infer<typeof CoachMessageRequestSchema>;
+export type CoachMessageResponse = { message: string; source: "llm" | "local" };
+
 const BaseItem = z.object({
   id: z.string().min(1),
   subject: z.enum(["korean", "math"]),

@@ -166,7 +166,11 @@ function createLearningApi() {
       submitUntil: "2026-07-17T14:59:59.999Z"
     }),
     saveAttempt: vi.fn().mockResolvedValue(receipt()),
-    sendIdleEvent: vi.fn().mockResolvedValue(idleResult("applied"))
+    sendIdleEvent: vi.fn().mockResolvedValue(idleResult("applied")),
+    coachMessage: vi.fn().mockResolvedValue({
+      message: "천천히 다시 해 보자!",
+      source: "local" as const
+    })
   };
 }
 
@@ -253,6 +257,28 @@ afterEach(() => {
 });
 
 describe("LearningSession", () => {
+  it("asks the optional coach with only the shared event contract after a retry", async () => {
+    const api = createLearningApi();
+    api.saveAttempt.mockResolvedValue(receipt({ completed: false, mathPass: false }));
+    const user = userEvent.setup();
+    render(<LearningSession
+      item={calculationPlanItem}
+      api={api}
+      planId="plan-private-1"
+      studyDate="2026-07-16"
+    />);
+
+    await screen.findByRole("status", { name: "차나핑 코치" });
+    api.coachMessage.mockClear();
+    await user.click(screen.getByRole("button", { name: "1" }));
+    await user.click(screen.getByRole("button", { name: "답 확인" }));
+
+    await waitFor(() => expect(api.coachMessage).toHaveBeenCalledWith({
+      event: "retry", subject: "math", retryCount: 1, hintStage: "first"
+    }, expect.any(AbortSignal)));
+    expect(JSON.stringify(api.coachMessage.mock.calls)).not.toMatch(/plan-private|answer|transcript|cookie|device/i);
+  });
+
   it.each([
     [readingPlanItem, "읽기 판정하기", readingItem.delight!.openingCue],
     [mathPlanItem, "답 확인", mathItem.delight!.openingCue]

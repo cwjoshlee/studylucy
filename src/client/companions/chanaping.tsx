@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import type { ChanaPingEvent } from "../../shared/learning";
+import type {
+  ChanaPingEvent,
+  CoachMessageRequest,
+  CoachMessageResponse
+} from "../../shared/learning";
 import {
   getChanaPingArt,
   getChanaPingMood,
@@ -13,6 +17,8 @@ export function ChanaPingCoach({
   subject,
   retryCount,
   cueKey,
+  hintStage = "none",
+  requestMessage,
   hidden,
   onHide
 }: {
@@ -20,6 +26,8 @@ export function ChanaPingCoach({
   subject: "korean" | "math";
   retryCount: number;
   cueKey: string;
+  hintStage?: CoachMessageRequest["hintStage"];
+  requestMessage?: (input: CoachMessageRequest, signal?: AbortSignal) => Promise<CoachMessageResponse>;
   hidden: boolean;
   onHide: () => void;
 }) {
@@ -27,7 +35,11 @@ export function ChanaPingCoach({
   const art = getChanaPingArt(mood);
   const initialCue = selectLocalChanaPingCue({ event, subject, retryCount, key: cueKey });
   const [cue, setCue] = useState(initialCue);
+  const [remoteCue, setRemoteCue] = useState<string | null>(null);
   const lastCueRef = useRef({ text: initialCue, at: Date.now() });
+  const abortRef = useRef<AbortController | null>(null);
+  const generationRef = useRef(0);
+  const lastRequestRef = useRef<{ key: string; at: number } | null>(null);
 
   useEffect(() => {
     const nextCue = selectLocalChanaPingCue({ event, subject, retryCount, key: cueKey });
@@ -39,6 +51,26 @@ export function ChanaPingCoach({
     lastCueRef.current = { text: nextCue, at: now };
     setCue(nextCue);
   }, [cueKey, event, retryCount, subject]);
+
+  useEffect(() => {
+    if (requestMessage === undefined) return;
+    const input = { event, subject, retryCount, hintStage };
+    const key = JSON.stringify(input);
+    const now = Date.now();
+    if (lastRequestRef.current?.key === key && now - lastRequestRef.current.at < REPEAT_WINDOW_MS) return;
+    lastRequestRef.current = { key, at: now };
+    abortRef.current?.abort();
+    const controller = new AbortController();
+    abortRef.current = controller;
+    const generation = ++generationRef.current;
+    setRemoteCue(null);
+    void requestMessage(input, controller.signal).then((response) => {
+      if (!controller.signal.aborted && generation === generationRef.current && response.source === "llm") {
+        setRemoteCue(response.message);
+      }
+    }).catch(() => undefined);
+    return () => controller.abort();
+  }, [event, hintStage, requestMessage, retryCount, subject]);
 
   if (hidden) return null;
 
@@ -55,7 +87,7 @@ export function ChanaPingCoach({
       />
       <p className="chanaping-coach__cue" role="status" aria-live="polite" aria-label="차나핑 코치">
         <strong>차나핑</strong>
-        <span>{cue}</span>
+        <span>{remoteCue ?? cue}</span>
       </p>
       <button
         type="button"

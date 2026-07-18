@@ -61,6 +61,15 @@ function createGuardianApi(overrides: Record<string, unknown> = {}) {
     }),
     updateGuardianDailyPlan: vi.fn(),
     getBackupStatus: vi.fn().mockResolvedValue({ status: "never-run" as const }),
+    getAiCoachSettings: vi.fn().mockResolvedValue({
+      enabled: false,
+      provider: "gemini" as const,
+      model: "gemini-2.5-flash-lite",
+      monthlyBudgetWon: 1000,
+      monthSpentWon: 0,
+      hasApiKey: false
+    }),
+    updateAiCoachSettings: vi.fn(),
     registerDevice: vi.fn().mockResolvedValue({
       publicId: "public-current",
       name: "현재 태블릿",
@@ -88,6 +97,47 @@ function deferred<T>() {
 }
 
 describe("GuardianDashboard", () => {
+  it("saves AI coach settings without rendering the provider key", async () => {
+    const user = userEvent.setup();
+    const updateAiCoachSettings = vi.fn().mockResolvedValue({
+      enabled: true,
+      provider: "openai",
+      model: "gpt-5-nano",
+      monthlyBudgetWon: 300,
+      monthSpentWon: 1,
+      hasApiKey: true
+    });
+    const api = createGuardianApi({
+      getAiCoachSettings: vi.fn().mockResolvedValue({
+        enabled: false,
+        provider: "gemini",
+        model: "gemini-2.5-flash-lite",
+        monthlyBudgetWon: 1000,
+        monthSpentWon: 0,
+        hasApiKey: false
+      }),
+      updateAiCoachSettings
+    });
+    render(<GuardianDashboard api={api} />);
+
+    await user.click(screen.getByRole("tab", { name: "AI 코치" }));
+    const key = await screen.findByLabelText("API 키");
+    await user.type(key, "provider-secret-never-rendered");
+    await user.selectOptions(screen.getByLabelText("제공자"), "openai");
+    await user.clear(screen.getByLabelText("월 예산"));
+    await user.type(screen.getByLabelText("월 예산"), "300");
+    await user.click(screen.getByRole("button", { name: "AI 코치 저장" }));
+
+    await waitFor(() => expect(updateAiCoachSettings).toHaveBeenCalledWith({
+      enabled: false,
+      provider: "openai",
+      monthlyBudgetWon: 300,
+      apiKey: "provider-secret-never-rendered"
+    }));
+    expect(screen.getByLabelText("API 키")).toHaveValue("");
+    expect(document.body.textContent).not.toContain("provider-secret-never-rendered");
+  });
+
   it("shows guardian progress and star status without protected or internal data", async () => {
     const api = createGuardianApi();
 

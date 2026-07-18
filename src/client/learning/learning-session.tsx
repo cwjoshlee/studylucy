@@ -13,6 +13,7 @@ import type {
   LearningSessionReceipt,
   TodayPlan
 } from "../../shared/learning";
+import type { CoachMessageRequest, CoachMessageResponse } from "../../shared/learning";
 import type { ReadingResult } from "../../shared/reading";
 import type { IdleEventInput, IdleEventResult } from "../../shared/stars";
 import type { ApiClient } from "../api/client";
@@ -43,7 +44,7 @@ import {
 type LearningApi = Pick<
   ApiClient,
   "createLearningSession" | "saveAttempt" | "sendIdleEvent"
->;
+> & Partial<Pick<ApiClient, "coachMessage">>;
 type PlanItem = TodayPlan["items"][number];
 
 export type LearningSessionProps = {
@@ -613,6 +614,13 @@ function LearningSessionView({
     mathRetryCount > 0 && !nextUnlocked ? "retry" :
     "lesson-open";
 
+  const coachHintStage = mathRetryCount > 1
+    ? "step" as const
+    : (showHint || chanaPingEvent === "retry")
+      ? "first" as const
+      : "none" as const;
+  const coachRetryCount = mathRetryCount + (readingResult !== null && !readingResult.passed ? 1 : 0);
+
   return (
     <section
       className="learning-session"
@@ -636,6 +644,11 @@ function LearningSessionView({
         subject={item.subject}
         retryCount={mathRetryCount + (readingResult !== null && !readingResult.passed ? 1 : 0)}
         cueKey={`${planId}:${item.id}:${contentVersion}`}
+        hintStage={coachHintStage}
+        requestMessage={api.coachMessage === undefined ? undefined : (
+          input: CoachMessageRequest,
+          signal?: AbortSignal
+        ) => api.coachMessage!(input, signal) as Promise<CoachMessageResponse>}
         hidden={chanaPingHidden || idleUi?.phase === "confirm"}
         onHide={() => setChanaPingHidden(true)}
       />

@@ -24,6 +24,15 @@ describe("parseConfig", () => {
     });
   });
 
+  it("accepts an optional base64 32-byte AI coach encryption key only", () => {
+    const key = Buffer.alloc(32, 3).toString("base64");
+    expect(parseConfig({ ...validEnv, LLM_ENCRYPTION_KEY: key }).llmEncryptionKey)
+      .toEqual(Buffer.alloc(32, 3));
+    expect(parseConfig(validEnv).llmEncryptionKey).toBeNull();
+    expect(() => parseConfig({ ...validEnv, LLM_ENCRYPTION_KEY: "not-a-key" }))
+      .toThrow("LLM_ENCRYPTION_KEY");
+  });
+
   it("rejects short security secrets", () => {
     expect(() => parseConfig({ ...validEnv, SETUP_SECRET: "short" }))
       .toThrow("SETUP_SECRET");
