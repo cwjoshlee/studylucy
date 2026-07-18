@@ -401,9 +401,8 @@ describe("LearningSession", () => {
     expectNoProtectedHumor(bubble);
   });
 
-  it("advances through all four existing math retry scaffolds without humor", async () => {
+  it("keeps speech and manual reading controls out of a math story while submitting its answer", async () => {
     const api = createLearningApi();
-    api.saveAttempt.mockResolvedValue(receipt({ mathPass: false, completed: false }));
     const user = userEvent.setup();
     render(<LearningSession
       item={mathPlanItem}
@@ -411,25 +410,20 @@ describe("LearningSession", () => {
       planId="plan-daily-1"
       studyDate="2026-07-16"
     />);
-    await submitManualTranscript(`${mathItem.text} ${mathItem.question}`);
 
-    const expectedScaffolds = [
-      mathItem.checkHint,
-      "두 수 3과 2를 찾아 표시해 봐요.",
-      "어떤 계산을 할지 말해 봐요.",
-      "말한 방법으로 차근차근 계산해 봐요."
-    ];
-    for (const expected of expectedScaffolds) {
-      await user.clear(screen.getByLabelText("답 쓰기"));
-      await user.type(screen.getByLabelText("답 쓰기"), "4");
-      await user.click(screen.getByRole("button", { name: "답 확인" }));
-      const scaffold = await screen.findByRole("status", { name: "수학 도움" });
-      await waitFor(() => expect(scaffold).toHaveTextContent(expected));
-      expectNoProtectedHumor(scaffold);
-      const bubble = companionBubble();
-      expect(bubble).toHaveAttribute("data-cue-tone", "support");
-      expectNoProtectedHumor(bubble);
-    }
+    expect(await screen.findByLabelText("답 쓰기")).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "읽기 시작" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "읽기 멈추기" })).not.toBeInTheDocument();
+    expect(screen.queryByText("직접 입력으로 확인하기")).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("읽은 내용 직접 입력")).not.toBeInTheDocument();
+
+    await user.type(screen.getByLabelText("답 쓰기"), "5");
+    await user.click(screen.getByRole("button", { name: "답 확인" }));
+    expect(api.saveAttempt).toHaveBeenCalledWith(expect.objectContaining({
+      readingScore: 100,
+      missedTokens: [],
+      mathAnswer: 5
+    }));
   });
 
   it("shows one authoritative Bongbong celebration cue then the exact next cue at one second", async () => {
@@ -705,25 +699,18 @@ describe("LearningSession", () => {
     expect(screen.queryByText(/별 1개를 모았어요/)).not.toBeInTheDocument();
   });
 
-  it.each([
-    ["locally complete Korean", readingPlanItem, readingItem.text, null],
-    ["incorrect math", mathPlanItem, `${mathItem.text} ${mathItem.question}`, "4"]
-  ] as const)("keeps queued %s work in a non-humorous save state", async (_label, item, transcript, answer) => {
+  it("keeps queued Korean work in a non-humorous save state", async () => {
     const api = createLearningApi();
     api.saveAttempt.mockRejectedValue(new TypeError("offline"));
     const user = userEvent.setup();
     render(<LearningSession
-      item={item}
+      item={readingPlanItem}
       api={api}
       planId="plan-daily-1"
       studyDate="2026-07-16"
       idFactory={offlineId}
     />);
-    await submitManualTranscript(transcript);
-    if (answer !== null) {
-      await user.type(screen.getByLabelText("답 쓰기"), answer);
-      await user.click(screen.getByRole("button", { name: "답 확인" }));
-    }
+    await submitManualTranscript(readingItem.text);
 
     await waitFor(() => {
       expect(companionBubble()).toHaveTextContent(
@@ -1050,13 +1037,11 @@ describe("LearningSession", () => {
     }));
   });
 
-  it("keeps math locked until the full reading passes", async () => {
+  it("keeps the math answer control available without reading controls", async () => {
     render(<LearningSession item={mathPlanItem} api={createLearningApi()} planId="plan-daily-1" studyDate="2026-07-16" />);
 
-    expect(await screen.findByLabelText("답 쓰기")).toBeDisabled();
-    await submitManualTranscript(`${mathItem.text} ${mathItem.question}`);
-    expect(screen.getByText("읽기가 잘 도착했어요")).toBeVisible();
-    expect(screen.getByLabelText("답 쓰기")).toBeEnabled();
+    expect(await screen.findByLabelText("답 쓰기")).toBeEnabled();
+    expect(screen.queryByLabelText("읽은 내용 직접 입력")).not.toBeInTheDocument();
   });
 
   it("uses the keypad-only calculation screen and submits its answer without a reading result", async () => {
@@ -1117,31 +1102,32 @@ describe("LearningSession", () => {
 
   it("keeps Next locked for a server-rejected math answer and unlocks it after a correct attempt", async () => {
     const api = createLearningApi();
-    api.saveAttempt.mockImplementation(async (input) => input.mathAnswer === 5
+    api.saveAttempt.mockImplementation(async (input) => input.mathAnswer === 26
       ? receipt()
       : receipt({ mathPass: false, completed: false }));
     const user = userEvent.setup();
-    render(<LearningSession item={mathPlanItem} api={api} planId="plan-daily-1" studyDate="2026-07-16" />);
-    await submitManualTranscript(`${mathItem.text} ${mathItem.question}`);
+    render(<LearningSession item={calculationPlanItem} api={api} planId="plan-daily-1" studyDate="2026-07-16" />);
 
-    await user.type(screen.getByLabelText("답 쓰기"), "4");
+    await screen.findByLabelText("13 + 9 + 4 = ?");
+    await user.click(screen.getByRole("button", { name: "4" }));
     await user.click(screen.getByRole("button", { name: "답 확인" }));
     expect(await screen.findByText("답을 다시 생각해 봐요.")).toBeVisible();
     expect(screen.getByRole("button", { name: "다음 문제" })).toBeDisabled();
 
-    await user.clear(screen.getByLabelText("답 쓰기"));
-    await user.type(screen.getByLabelText("답 쓰기"), "5");
+    await user.click(screen.getByRole("button", { name: "지우기" }));
+    await user.click(screen.getByRole("button", { name: "2" }));
+    await user.click(screen.getByRole("button", { name: "6" }));
     await user.click(screen.getByRole("button", { name: "답 확인" }));
     expect(await screen.findByText("정답이에요.")).toBeVisible();
     expect(screen.getByRole("button", { name: "다음 문제" })).toBeEnabled();
     expect(api.saveAttempt).toHaveBeenLastCalledWith(expect.objectContaining({
       planId: "plan-daily-1",
-      itemId: "math-01",
-      contentVersion: 1,
+      itemId: "calculation-01",
+      contentVersion: 3,
       studyDate: "2026-07-16",
       readingScore: 100,
       missedTokens: [],
-      mathAnswer: 5,
+      mathAnswer: 26,
       occurredAt: expect.any(String)
     }));
   });
@@ -1279,8 +1265,7 @@ describe("LearningSession", () => {
       studyDate="2026-07-16"
       idFactory={offlineId}
     />);
-    await submitManualTranscript(`${mathItem.text} ${mathItem.question}`);
-
+    await screen.findByLabelText("답 쓰기");
     await user.type(screen.getByLabelText("답 쓰기"), "5");
     await user.click(screen.getByRole("button", { name: "답 확인" }));
 
@@ -1481,16 +1466,10 @@ describe("LearningSession", () => {
   it("disables every learning control after deduction until explicit resume", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-16T01:00:00.000Z"));
-    supportSpeechRecognition();
     const api = createLearningApi();
     render(<LearningSession item={mathPlanItem} api={api} planId="plan-daily-1" studyDate="2026-07-16" />);
     await flushLearningSessionIssue();
 
-    fireEvent.click(screen.getByText("직접 입력으로 확인하기"));
-    fireEvent.change(screen.getByLabelText("읽은 내용 직접 입력"), {
-      target: { value: `${mathItem.text} ${mathItem.question}` }
-    });
-    fireEvent.click(screen.getByRole("button", { name: "읽기 판정하기" }));
     expect(screen.getByLabelText("답 쓰기")).toBeEnabled();
     fireEvent.change(screen.getByLabelText("답 쓰기"), {
       target: { value: "5" }
@@ -1501,9 +1480,6 @@ describe("LearningSession", () => {
       await Promise.resolve();
     });
     expect(screen.getByRole("button", { name: "학습 계속하기" })).toBeVisible();
-    expect(screen.getByRole("button", { name: "읽기 시작" })).toBeDisabled();
-    expect(screen.getByLabelText("읽은 내용 직접 입력")).toBeDisabled();
-    expect(screen.getByRole("button", { name: "읽기 판정하기" })).toBeDisabled();
     expect(screen.getByLabelText("답 쓰기")).toBeDisabled();
     expect(screen.getByRole("button", { name: "답 확인" })).toBeDisabled();
     expect(screen.getByRole("button", { name: "다음 문제" })).toBeDisabled();
@@ -1514,8 +1490,6 @@ describe("LearningSession", () => {
     expect(api.saveAttempt).not.toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("button", { name: "학습 계속하기" }));
-    expect(screen.getByRole("button", { name: "읽기 시작" })).toBeEnabled();
-    expect(screen.getByLabelText("읽은 내용 직접 입력")).toBeEnabled();
     expect(screen.getByLabelText("답 쓰기")).toBeEnabled();
     expect(screen.getByRole("button", { name: "답 확인" })).toBeEnabled();
   });

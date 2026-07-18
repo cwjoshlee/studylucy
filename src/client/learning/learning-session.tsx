@@ -442,6 +442,7 @@ function LearningSessionView({
   }, [speechPhase, speechStartedAt]);
 
   useEffect(() => {
+    if (item.kind !== "korean-reading") return;
     const speech = createSpeechController({
       onTranscript: (transcript) => {
         if (transcript) judgeTranscript(transcript);
@@ -469,20 +470,23 @@ function LearningSessionView({
       speech.cancel();
       speechRef.current = null;
     };
-  }, [judgeTranscript, recordActivity]);
+  }, [item.kind, judgeTranscript, recordActivity]);
 
   async function checkMathAnswer(event: FormEvent): Promise<void> {
     event.preventDefault();
     if (
       item.kind !== "math-story" ||
-      readingResult?.passed !== true ||
       learningControlsPaused
     ) return;
     if (!/^-?\d+$/.test(mathAnswer.trim())) {
       setMathFeedback("숫자로 답을 써 보세요.");
       return;
     }
-    await saveMathAnswer(readingResult, Number(mathAnswer), item.answer);
+    await saveMathAnswer(
+      { score: 100, passed: true, missedTokens: [] },
+      Number(mathAnswer),
+      item.answer
+    );
   }
 
   async function checkCalculationAnswer(): Promise<void> {
@@ -658,6 +662,8 @@ function LearningSessionView({
         </section>
           ) : null}
 
+          {item.kind === "korean-reading" ? (
+          <>
           <div aria-label="읽기 연습">
         <button
           type="button"
@@ -710,6 +716,8 @@ function LearningSessionView({
           ) : null}
         </div>
           ) : null}
+          </>
+          ) : null}
 
           {item.kind === "math-story" ? (
         <form onSubmit={(event) => void checkMathAnswer(event)}>
@@ -722,11 +730,11 @@ function LearningSessionView({
                 setMathAnswer(event.target.value);
                 recordActivity("answer");
               }}
-              disabled={readingResult?.passed !== true || learningControlsPaused}
+              disabled={learningControlsPaused}
             />
           </label>
           <span>{item.unitLabel}</span>
-          <button type="submit" disabled={readingResult?.passed !== true || learningControlsPaused}>답 확인</button>
+          <button type="submit" disabled={learningControlsPaused}>답 확인</button>
         </form>
           ) : null}
         </>
