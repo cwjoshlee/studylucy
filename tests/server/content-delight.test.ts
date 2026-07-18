@@ -677,6 +677,27 @@ describe("approved magical companion seed content", () => {
     }
   });
 
+  it("documents speech restart and provisional calculation authority faithfully", () => {
+    const design = readFileSync(resolve(
+      "docs/superpowers/specs/2026-07-18-responsive-learning-coach-and-delivery-design.md"
+    ), "utf8");
+    const browserGuide = readFileSync(resolve("docs/browser-speech-reading-judge.md"), "utf8");
+
+    for (const document of [design, browserGuide]) {
+      expect(document).toContain("250ms");
+      expect(document).toContain("듣는 중 상태");
+      expect(document).toContain("명시적 중지");
+      expect(document).toContain("권한 거부");
+      expect(document).not.toContain("조기에 끝나면 안전하게 준비 상태");
+    }
+
+    expect(browserGuide).toContain("TypeError 또는 5xx");
+    expect(browserGuide).toContain("provisional");
+    expect(browserGuide).toContain("서버 확인 전에는 별을");
+    expect(browserGuide).toContain("401·기기·계획 권한 거부");
+    expect(browserGuide).toContain("terminal batch 거부");
+  });
+
   it("gives every item distinct Korean delight copy and no commercial names", () => {
     const delight = INITIAL_ITEMS.map((item) => item.delight);
     expect(delight.every(Boolean)).toBe(true);

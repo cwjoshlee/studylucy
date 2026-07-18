@@ -89,21 +89,24 @@ function parseJsonMessage(value: unknown): string | null {
 function parseOpenAiOutputText(value: unknown): string | null {
   if (value === null || typeof value !== "object" || !("output" in value)) return null;
   const output = (value as { output?: unknown }).output;
-  if (!Array.isArray(output)) return null;
-  const texts: string[] = [];
-  for (const item of output) {
-    if (item === null || typeof item !== "object" || !("content" in item)) continue;
-    const content = (item as { content?: unknown }).content;
-    if (!Array.isArray(content)) return null;
-    for (const entry of content) {
-      if (entry === null || typeof entry !== "object" || !("type" in entry)) return null;
-      const candidate = entry as { type?: unknown; text?: unknown };
-      if (candidate.type !== "output_text") continue;
-      if (typeof candidate.text !== "string") return null;
-      texts.push(candidate.text);
-    }
+  if (!Array.isArray(output) || output.length !== 1) return null;
+  const item = output[0];
+  if (item === null || typeof item !== "object") return null;
+  const message = item as { type?: unknown; content?: unknown };
+  if (message.type !== "message" || !Array.isArray(message.content) || message.content.length !== 1) {
+    return null;
   }
-  return texts.length === 1 ? texts[0]! : null;
+  const entry = message.content[0];
+  if (entry === null || typeof entry !== "object") return null;
+  const candidate = entry as { type?: unknown; text?: unknown };
+  if (
+    candidate.type !== "output_text" ||
+    typeof candidate.text !== "string" ||
+    candidate.text.trim().length === 0
+  ) {
+    return null;
+  }
+  return candidate.text;
 }
 
 export class AiCoachService {
@@ -281,6 +284,7 @@ export class AiCoachService {
           { role: "user", content: coachInput }
         ],
         max_output_tokens: PROVIDER_OUTPUT_TOKEN_CAP,
+        store: false,
         text: { format: { type: "json_object" } }
       }),
       signal

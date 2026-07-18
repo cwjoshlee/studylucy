@@ -137,14 +137,50 @@ describe("AI coach privacy and budget boundaries", () => {
     expect(fetcher.mock.calls[0]?.[0]).toBe("https://api.openai.com/v1/responses");
     expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toMatchObject({
       model: "gpt-5-nano",
-      max_output_tokens: 64
+      max_output_tokens: 64,
+      store: false
     });
+    const persisted = JSON.stringify({
+      settings: db.prepare("SELECT * FROM ai_coach_settings").all(),
+      usage: db.prepare("SELECT * FROM ai_coach_usage").all()
+    });
+    expect(persisted).not.toContain("provider-secret");
+    expect(persisted).not.toContain("한 걸음씩 해 보자");
     expect(fallback.source).toBe("local");
     db.close();
   });
 
   it.each([
     { output: [{ type: "message", content: [{ type: "output_text" }] }] },
+    {
+      output: [
+        null,
+        openAiResponse("한 걸음씩 해 보자").output[0]
+      ]
+    },
+    {
+      output: [{
+        content: openAiResponse("한 걸음씩 해 보자").output[0]!.content
+      }]
+    },
+    {
+      output: [{
+        type: "reasoning",
+        content: openAiResponse("한 걸음씩 해 보자").output[0]!.content
+      }]
+    },
+    {
+      output: [{
+        type: "message",
+        content: [
+          { type: "refusal", refusal: "not available" },
+          openAiResponse("한 걸음씩 해 보자").output[0]!.content[0]
+        ]
+      }]
+    },
+    { output: [{ type: "message", content: null }] },
+    { output: [{ type: "message", content: [null] }] },
+    { output: [{ type: "message", content: [{ type: "output_text", text: "" }] }] },
     {
       output: [{
         type: "message",
@@ -153,6 +189,12 @@ describe("AI coach privacy and budget boundaries", () => {
           { type: "output_text", text: JSON.stringify({ message: "차근차근 다시 해 보자" }) }
         ]
       }]
+    },
+    {
+      output: [
+        openAiResponse("한 걸음씩 해 보자").output[0],
+        { type: "reasoning" }
+      ]
     }
   ])("falls back locally for malformed or ambiguous OpenAI raw output", async (providerBody) => {
     const db = openDatabase(":memory:");
