@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import {
+  isCalculationItem,
   LearningItemPayloadSchema,
   type LearningItemPayload,
   type LearningStep
@@ -58,15 +59,20 @@ function learningKey(payload: LearningItemPayload): string {
     : payload.unit;
 }
 
-function stepAffinity(payload: LearningItemPayload, step: LearningStep): number {
-  if (payload.subject !== "korean") return 0;
-  if (step === "challenge") {
-    return payload.kind === "korean-dictation" && payload.mode === "sentence"
-      ? 0
-      : 1;
+function isStageCompatible(
+  payload: LearningItemPayload,
+  subject: "korean" | "math",
+  step: LearningStep
+): boolean {
+  if (subject === "korean") {
+    return payload.kind === "korean-dictation" && payload.mode === (
+      step === "challenge" ? "sentence" : "word"
+    );
   }
-  if (payload.kind === "korean-dictation" && payload.mode === "word") return 0;
-  return payload.kind === "korean-reading" ? 1 : 2;
+  return isCalculationItem(payload) &&
+    payload.calculation.operators.every((operator) =>
+      operator === "+" || operator === "-"
+    );
 }
 
 function stableDateRank(value: string): number {
@@ -342,6 +348,7 @@ export class DailyPlanService {
     const candidates = input.items
       .filter((item) =>
         item.payload.subject === input.subject &&
+        isStageCompatible(item.payload, input.subject, input.step) &&
         !input.excludedIds.has(item.id)
       )
       .sort((left, right) => {
@@ -351,9 +358,6 @@ export class DailyPlanService {
         const weak = (weakIndex.get(learningKey(left.payload)) ?? 1_000) -
           (weakIndex.get(learningKey(right.payload)) ?? 1_000);
         if (weak !== 0) return weak;
-        const affinity = stepAffinity(left.payload, input.step) -
-          stepAffinity(right.payload, input.step);
-        if (affinity !== 0) return affinity;
         const shuffled = stableDateRank(
           `${input.studyDate}:${input.subject}:${input.step}:${left.id}`
         ) - stableDateRank(

@@ -344,6 +344,50 @@ describe("authoritative learning API", () => {
     expect(changedOutcome.json()).toEqual({ code: "INVALID_REQUEST" });
   });
 
+  it("binds wrong dictation duplicates to the normalized non-raw input fingerprint", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    const plan = await getToday(student);
+    const item = plan.items.find((candidate) =>
+      candidate.payload.kind === "korean-dictation"
+    )!;
+    const clientAttemptId = "attempt-wrong-dictation-fingerprint-0001";
+    const decomposedWrong = "틀린   답";
+    const accepted = await student.request("POST", "/api/student/attempts", {
+      ...passingAttempt(plan, item, clientAttemptId),
+      dictationText: decomposedWrong
+    });
+    expect(accepted.statusCode).toBe(201);
+    expect(accepted.json()).toMatchObject({ dictationPass: false });
+
+    const equivalent = await student.request("POST", "/api/student/attempts", {
+      ...passingAttempt(plan, item, clientAttemptId),
+      dictationText: "틀린\n답"
+    });
+    expect(equivalent.statusCode).toBe(200);
+    expect(equivalent.json()).toEqual({ ...accepted.json(), duplicate: true });
+
+    const differentWrong = await student.request("POST", "/api/student/attempts", {
+      ...passingAttempt(plan, item, clientAttemptId),
+      dictationText: "아주 다른 오답"
+    });
+    expect(differentWrong.statusCode).toBe(400);
+    expect(differentWrong.json()).toEqual({ code: "INVALID_REQUEST" });
+
+    const stored = harness.db.prepare(`
+      SELECT dictation_input_fingerprint AS dictationInputFingerprint
+      FROM attempts WHERE client_attempt_id = ?
+    `).get(clientAttemptId) as { dictationInputFingerprint: string };
+    expect(stored.dictationInputFingerprint).toMatch(/^[a-f0-9]{64}$/u);
+    expect(stored.dictationInputFingerprint).not.toContain("틀린답");
+    expect(JSON.stringify(harness.db.prepare(`
+      SELECT * FROM attempts WHERE client_attempt_id = ?
+    `).get(clientAttemptId))).not.toContain(decomposedWrong);
+    expect(JSON.stringify(harness.db.prepare(`
+      SELECT * FROM attempts WHERE client_attempt_id = ?
+    `).get(clientAttemptId))).not.toContain("틀린답");
+  });
+
   it("rejects every legacy date query before materializing an arbitrary daily plan", async () => {
     const student = harness.client();
     await authenticateStudent(harness, student);

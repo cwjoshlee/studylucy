@@ -1,5 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import type { TodayPlan } from "../../src/shared/learning";
+import {
+  isCalculationItem,
+  type TodayPlan
+} from "../../src/shared/learning";
+import { DailyPlanService } from "../../src/server/stars/daily-plan";
 import { StarRepository } from "../../src/server/stars/repository";
 import {
   createTestHarness,
@@ -251,6 +255,112 @@ describe("issued-plan required learning star awards", () => {
       { subject: "math", step: "current" },
       { subject: "math", step: "challenge" }
     ]);
+  });
+
+  it("hard-filters difficulty-five Korean stages by dictation mode", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    const studentId = (harness.db.prepare(`
+      SELECT id FROM users WHERE role = 'student'
+    `).get() as { id: string }).id;
+    harness.db.prepare(`
+      INSERT INTO daily_step_settings (
+        student_id, study_date, subject, difficulty, challenge_bonus_stars
+      ) VALUES (?, '2026-07-15', 'korean', 5, 2)
+    `).run(studentId);
+
+    const today = await getToday(student);
+    const korean = today.items.filter((item) =>
+      item.payload.subject === "korean"
+    );
+
+    expect(korean.map((item) => [
+      item.step,
+      item.payload.kind,
+      item.payload.kind === "korean-dictation" ? item.payload.mode : null
+    ])).toEqual([
+      ["foundation", "korean-dictation", "word"],
+      ["current", "korean-dictation", "word"],
+      ["challenge", "korean-dictation", "sentence"]
+    ]);
+  });
+
+  it("fails with an explicit stage error when required Korean content is unavailable", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    const studentId = (harness.db.prepare(`
+      SELECT id FROM users WHERE role = 'student'
+    `).get() as { id: string }).id;
+    harness.db.prepare(`
+      UPDATE content_items
+      SET status = 'archived'
+      WHERE id IN (
+        SELECT ci.id
+        FROM content_items AS ci
+        JOIN content_versions AS cv
+          ON cv.item_id = ci.id AND cv.version = ci.active_version
+        WHERE json_extract(cv.payload_json, '$.kind') = 'korean-dictation'
+          AND json_extract(cv.payload_json, '$.mode') = 'sentence'
+      )
+    `).run();
+
+    const dailyPlan = new DailyPlanService(
+      harness.db,
+      () => new Date("2026-07-15T03:00:00.000Z")
+    );
+    expect(() => dailyPlan.ensure(studentId, "2026-07-15"))
+      .toThrow("DAILY_STEP_ITEM_MISSING:korean:challenge");
+    expect(harness.db.prepare(`
+      SELECT COUNT(*) AS count FROM daily_requirements
+    `).get()).toEqual({ count: 0 });
+  });
+
+  it("never issues a guardian-authored multiplication story at difficulty five", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    const studentId = (harness.db.prepare(`
+      SELECT id FROM users WHERE role = 'student'
+    `).get() as { id: string }).id;
+    const multiplication = {
+      id: "guardian-multiplication-story",
+      kind: "math-story",
+      subject: "math",
+      unit: "곱셈 이야기",
+      title: "다섯 묶음",
+      level: "5단계",
+      readLabel: "문제 읽기",
+      text: "사탕이 다섯 개씩 세 묶음 있어요.",
+      hint: "같은 수를 여러 번 더해 보세요.",
+      tokens: ["다섯 개씩", "세 묶음"],
+      question: "사탕은 모두 몇 개인가요?",
+      answer: 15,
+      unitLabel: "개",
+      checkHint: "5가 세 번 있어요."
+    };
+    harness.db.prepare(`
+      INSERT INTO content_items (
+        id, skill_id, subject, status, active_version, created_at
+      ) VALUES (?, 'skill-math-story', 'math', 'published', 5, ?)
+    `).run(multiplication.id, "2026-07-15T02:00:00.000Z");
+    harness.db.prepare(`
+      INSERT INTO content_versions (item_id, version, payload_json, created_at)
+      VALUES (?, 5, ?, ?)
+    `).run(
+      multiplication.id,
+      JSON.stringify(multiplication),
+      "2026-07-15T02:00:00.000Z"
+    );
+    harness.db.prepare(`
+      INSERT INTO daily_step_settings (
+        student_id, study_date, subject, difficulty, challenge_bonus_stars
+      ) VALUES (?, '2026-07-15', 'math', 5, 2)
+    `).run(studentId);
+
+    const today = await getToday(student);
+    const math = today.items.filter((item) => item.payload.subject === "math");
+    expect(math).toHaveLength(3);
+    expect(math.every((item) => isCalculationItem(item.payload))).toBe(true);
+    expect(math.map((item) => item.id)).not.toContain(multiplication.id);
   });
 
   it("awards one required-item source and keeps retry receipts idempotent", async () => {
