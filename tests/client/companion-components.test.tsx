@@ -18,10 +18,75 @@ import {
   FriendTrail
 } from "../../src/client/companions/friend-stage";
 import { ChanaPingCoach } from "../../src/client/companions/chanaping";
+import { LearningCompanion } from "../../src/client/companions/learning-companion";
+import type { CalculationItem, KoreanDictationItem } from "../../src/shared/learning";
 
 afterEach(cleanup);
 
 describe("magical companion components", () => {
+  it("reserves Bunny for guidance and makes Milky the calculation and dictation helper", () => {
+    expect(COMPANION_CAST.lumi.role).toBe("버니 별빛 길 안내자");
+    expect(COMPANION_CAST.bongbong.role).toBe("밀키 계산·받아쓰기 공부 조수");
+
+    const calculation: CalculationItem = {
+      id: "calculation-helper",
+      kind: "math-story" as const,
+      subject: "math" as const,
+      unit: "받아올림과 받아내림",
+      title: "계산 도움",
+      level: "1단계",
+      readLabel: "계산",
+      text: "12 + 9",
+      hint: "10을 먼저 만들어요.",
+      tokens: ["12", "9"],
+      question: "12 + 9 = ?",
+      answer: 21,
+      unitLabel: "",
+      checkHint: "2와 9를 먼저 더해요.",
+      calculation: { operands: [12, 9], operators: ["+"], layout: "vertical" },
+      delight: {
+        companion: "momo",
+        mishap: "모모의 주판이 흔들렸어요.",
+        openingCue: "모모가 계산판을 펼쳤어요.",
+        celebrationCue: "계산을 끝냈어요."
+      }
+    };
+    const dictation: KoreanDictationItem = {
+      id: "dictation-helper",
+      kind: "korean-dictation",
+      subject: "korean",
+      unit: "받아쓰기",
+      title: "받아쓰기 도움",
+      level: "1단계",
+      readLabel: "다시 듣기",
+      text: "들은 내용을 써요.",
+      hint: "천천히 들어요.",
+      tokens: ["봄비"],
+      promptText: "봄비",
+      answerText: "봄비",
+      mode: "word"
+    };
+
+    const calculationView = render(<LearningCompanion
+      moment="lesson-open"
+      studyDate="2026-07-19"
+      item={calculation}
+    />);
+    expect(screen.getByRole("status", { name: "마법 친구 말풍선" }))
+      .toHaveTextContent("아기용 밀키");
+    expect(screen.queryByText("차나핑")).not.toBeInTheDocument();
+    calculationView.unmount();
+
+    render(<LearningCompanion
+      moment="retry"
+      studyDate="2026-07-19"
+      item={dictation}
+    />);
+    expect(screen.getByRole("status", { name: "마법 친구 말풍선" }))
+      .toHaveTextContent("아기용 밀키");
+    expect(screen.queryByText("별토끼 버니")).not.toBeInTheDocument();
+    expect(screen.queryByText("차나핑")).not.toBeInTheDocument();
+  });
   it.each(["lumi", "toto", "momo", "bongbong"] as const)(
     "renders accessible original art and a text fallback for %s",
     async (id) => {

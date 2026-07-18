@@ -1,4 +1,4 @@
-import type { LearningItemPayload } from "../../shared/learning";
+import { isCalculationItem, type LearningItemPayload } from "../../shared/learning";
 import { CompanionAvatar } from "./companion-avatar";
 import { COMPANION_CAST } from "./cast";
 import {
@@ -27,7 +27,10 @@ export function LearningCompanion({
     moment,
     key: `${studyDate}:${item.id}:${moment}`,
     subject: item.subject,
-    delight: item.delight
+    delight: item.delight,
+    preferredCompanion: item.kind === "korean-dictation" || isCalculationItem(item)
+      ? "bongbong"
+      : undefined
   });
   const text = moment === "save-wait" && saveState !== undefined
     ? SAVE_STATUS_TEXT[saveState]

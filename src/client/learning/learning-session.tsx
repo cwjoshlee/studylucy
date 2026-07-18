@@ -33,6 +33,7 @@ import {
   type InactivityEvent
 } from "./inactivity-controller";
 import { CalculationKeypad } from "./calculation-keypad";
+import { DictationPanel } from "./dictation-panel";
 import { judgeReading } from "./reading-judge";
 import { ProblemBreakdown } from "./problem-breakdown-view";
 import {
@@ -91,12 +92,25 @@ function isExplicitClientError(error: unknown): boolean {
     error.status < 500;
 }
 
+function receiptExercisePassed(
+  item: LearningItemPayload,
+  receipt: AttemptReceipt | null
+): boolean {
+  if (receipt === null || receipt.duplicate || !receipt.completed) return false;
+  if (item.kind === "korean-dictation") return receipt.dictationPass === true;
+  if (item.kind === "math-story") {
+    return receipt.readingPass && receipt.mathPass === true;
+  }
+  return receipt.readingPass;
+}
+
 export function LearningSession(props: LearningSessionProps) {
   return (
     <LearningSessionView
       {...props}
       key={`${props.planId}:${props.item.id}:${props.item.version}`}
       item={props.item.payload}
+      itemStep={props.item.step}
       contentVersion={props.item.version}
       studyDate={props.studyDate}
     />
@@ -105,6 +119,7 @@ export function LearningSession(props: LearningSessionProps) {
 
 function LearningSessionView({
   item,
+  itemStep,
   api,
   planId,
   studyDate,
@@ -118,6 +133,7 @@ function LearningSessionView({
   idFactory = createClientId
 }: Omit<LearningSessionProps, "item"> & {
   item: LearningItemPayload;
+  itemStep: PlanItem["step"];
   studyDate: string;
   contentVersion: number;
 }) {
@@ -297,7 +313,8 @@ function LearningSessionView({
 
   const buildAttempt = useCallback((
     result: ReadingResult,
-    answer: number | null
+    answer: number | null,
+    dictationText?: string
   ): AttemptInput => ({
     clientAttemptId: idFactory("attempt"),
     planId,
@@ -308,6 +325,7 @@ function LearningSessionView({
     readingScore: result.score,
     missedTokens: result.missedTokens,
     mathAnswer: answer,
+    ...(dictationText === undefined ? {} : { dictationText }),
     durationMs: Math.min(3_600_000, Math.max(0, Date.now() - viewStartedAt)),
     difficultyFeedback
   }), [contentVersion, difficultyFeedback, idFactory, item.id, planId, studyDate, viewStartedAt]);
@@ -527,9 +545,19 @@ function LearningSessionView({
       if (receipt.completed && !receipt.duplicate) setShowNextCue(false);
       onActivityCursor?.(receipt.activityCursor);
       const passed = receipt.readingPass && receipt.mathPass === true;
-      setNextUnlocked(receipt.completed && passed);
-      if (!passed) setMathRetryCount((count) => count + 1);
-      setMathFeedback(passed ? "정답이에요." : "답을 다시 생각해 봐요.");
+      const challengeAttemptCompleted = itemStep === "challenge" && receipt.completed;
+      setNextUnlocked(receipt.completed && (passed || challengeAttemptCompleted));
+      if (!passed && !challengeAttemptCompleted) {
+        setMathRetryCount((count) => count + 1);
+      }
+      setMathFeedback(passed
+        ? "정답이에요."
+        : challengeAttemptCompleted
+          ? "도전 시도 완료"
+          : "답을 다시 생각해 봐요.");
+      if (receipt.completed && !receipt.duplicate) {
+        scheduleAutomaticNext(receipt.id, attemptGenerationRef.current);
+      }
     } catch (error) {
       if (isExplicitClientError(error)) {
         setAuthority({ phase: "unavailable" });
@@ -546,6 +574,55 @@ function LearningSessionView({
       setMathFeedback(queued
         ? "학습 기록이 아직 여행 중이에요. 연결되면 확인할게요."
         : "답을 확인하지 못했어요. 다시 시도해 주세요.");
+    } finally {
+      setWaiting(false);
+      controllerRef.current?.resume("server-wait");
+    }
+  }
+
+  async function saveDictationAnswer(text: string): Promise<void> {
+    if (item.kind !== "korean-dictation" || learningControlsPaused) return;
+    recordActivity("answer");
+    controllerRef.current?.pause("server-wait");
+    setSaveUiState("saving");
+    beginAttempt();
+    setWaiting(true);
+    const input = buildAttempt(
+      { score: 100, passed: true, missedTokens: [] },
+      null,
+      text
+    );
+    try {
+      const receipt = await api.saveAttempt(input);
+      attemptReceiptRef.current = receipt;
+      setAttemptReceipt(receipt);
+      setSaveUiState("idle");
+      onActivityCursor?.(receipt.activityCursor);
+      const passed = receipt.dictationPass === true;
+      const challengeAttemptCompleted = itemStep === "challenge" && receipt.completed;
+      setNextUnlocked(receipt.completed && (passed || challengeAttemptCompleted));
+      setMathFeedback(passed
+        ? "정답이에요."
+        : challengeAttemptCompleted
+          ? "도전 시도 완료"
+          : "다시 써 볼까요?");
+      if (receipt.completed && !receipt.duplicate) {
+        setShowNextCue(false);
+        scheduleAutomaticNext(receipt.id, attemptGenerationRef.current);
+      }
+    } catch (error) {
+      if (isExplicitClientError(error)) {
+        setAuthority({ phase: "unavailable" });
+        onExit?.();
+        return;
+      }
+      const queued = await preserveFailedAttempt(error, input).catch(() => false);
+      setSaveUiState(queued ? "queued" : "failed");
+      setNextUnlocked(false);
+      setProvisional(false);
+      setMathFeedback(queued
+        ? "학습 기록이 아직 여행 중이에요. 연결되면 확인할게요."
+        : "받아쓰기는 연결된 상태에서 다시 확인해 주세요.");
     } finally {
       setWaiting(false);
       controllerRef.current?.resume("server-wait");
@@ -597,7 +674,7 @@ function LearningSessionView({
     idleUi?.phase === "confirm" ? "idle-confirm" :
     idleUi?.phase === "hint" ? "thinking" :
     waiting || saveUiState !== "idle" ? "save-wait" :
-    attemptReceipt?.completed && !attemptReceipt.duplicate && !showNextCue ? "correct" :
+    receiptExercisePassed(item, attemptReceipt) && !showNextCue ? "correct" :
     nextUnlocked && showNextCue ? "next" :
     readingResult !== null && !readingResult.passed ? "retry" :
     mathRetryCount > 0 && !nextUnlocked ? "retry" :
@@ -610,7 +687,7 @@ function LearningSessionView({
     idleUi?.phase === "hint" ? "thinking" :
     speechPhase === "listening" ? "speech-start" :
     speechPhase === "finishing" ? "speech-finish" :
-    attemptReceipt?.completed && !attemptReceipt.duplicate ? "correct" :
+    receiptExercisePassed(item, attemptReceipt) ? "correct" :
     nextUnlocked && showNextCue ? "next" :
     readingResult !== null && !readingResult.passed ? "retry" :
     mathRetryCount > 0 && !nextUnlocked ? "retry" :
@@ -673,6 +750,13 @@ function LearningSessionView({
             onSubmit={() => void checkCalculationAnswer()}
           />
         </div>
+      ) : item.kind === "korean-dictation" ? (
+        <DictationPanel
+          item={item}
+          disabled={learningControlsPaused}
+          onReplay={() => recordActivity("touch")}
+          onSubmit={(text) => void saveDictationAnswer(text)}
+        />
       ) : (
         <>
           <ProblemBreakdown
@@ -778,6 +862,11 @@ function LearningSessionView({
         </>
       )}
       {mathFeedback && saveUiState === "idle" ? <p role="status">{mathFeedback}</p> : null}
+      {attemptReceipt?.challengeBonus?.awarded ? (
+        <p className="challenge-bonus" role="status">
+          도전 만점 보너스 별 {attemptReceipt.challengeBonus.amount}개
+        </p>
+      ) : null}
       {provisional ? <p className="provisional-label" role="status">동기화 대기</p> : null}
 
       {idleUi?.phase === "hint" ? (

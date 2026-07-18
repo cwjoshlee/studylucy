@@ -34,34 +34,37 @@ const CUES: Record<CompanionMoment, readonly CompanionCue[]> = {
   ],
   "lesson-open": [
     { companion: "toto", text: "또또가 낱말과 생선 간식에 이름표를 붙였대요. 이번에는 안 바뀌었을까요?", tone: "humor" },
-    { companion: "momo", text: "모모의 주판에 포도알 하나가 슬쩍 앉았어요. 숫자만 찾아볼까요?", tone: "humor" }
+    { companion: "momo", text: "모모의 주판에 포도알 하나가 슬쩍 앉았어요. 숫자만 찾아볼까요?", tone: "humor" },
+    { companion: "bongbong", text: "밀키가 계산판과 받아쓰기 수첩을 펼쳤어요. 한 걸음씩 해 봐요.", tone: "support" }
   ],
   thinking: [
     { companion: "toto", text: "또또도 낱말 수첩을 천천히 넘기는 중이에요. 힌트를 살짝 열어도 괜찮아요.", tone: "humor" },
-    { companion: "momo", text: "모모가 꼬리 줄무늬를 다시 세는 중이에요. 우리도 천천히 단서를 찾아봐요.", tone: "humor" }
+    { companion: "momo", text: "모모가 꼬리 줄무늬를 다시 세는 중이에요. 우리도 천천히 단서를 찾아봐요.", tone: "humor" },
+    { companion: "bongbong", text: "밀키가 다시 듣기와 계산 단서를 준비했어요. 필요한 것부터 보아요.", tone: "support" }
   ],
   correct: [
-    { companion: "bongbong", text: "정답이에요! 밀키의 축하 불꽃이 비눗방울로 변했어요.", tone: "humor" },
-    { companion: "bongbong", text: "함께 해결했어요! 밀키의 왕관이 기뻐서 한 바퀴 돌았대요.", tone: "humor" }
+    { companion: "lumi", text: "정답이에요! 버니의 별빛 지팡이가 반짝여요.", tone: "humor" },
+    { companion: "lumi", text: "함께 해결했어요! 버니가 보상 별빛을 안내할게요.", tone: "humor" }
   ],
   next: [
-    { companion: "lumi", text: "다음 마법 걸음으로 가요. 버니가 도망간 양말을 잡아 둘게요.", tone: "humor" }
+    { companion: "bongbong", text: "다음 걸음으로 가요. 밀키가 공부 도구를 챙길게요.", tone: "support" }
   ],
   offline: [
-    { companion: "lumi", text: "지금은 오프라인이에요. 기록은 이 기기에 안전하게 기다리고 있어요.", tone: "status" }
+    { companion: "bongbong", text: "지금은 오프라인이에요. 기록은 이 기기에 안전하게 기다리고 있어요.", tone: "status" }
   ],
   retry: [
     { companion: "toto", text: "괜찮아요. 놓친 낱말부터 한 번 더 천천히 읽어 봐요.", tone: "support" },
-    { companion: "momo", text: "괜찮아요. 숫자 단서와 무엇을 구하는지부터 다시 살펴봐요.", tone: "support" }
+    { companion: "momo", text: "괜찮아요. 숫자 단서와 무엇을 구하는지부터 다시 살펴봐요.", tone: "support" },
+    { companion: "bongbong", text: "밀키가 다시 듣기와 계산 단서를 하나씩 챙겨 줄게요.", tone: "support" }
   ],
   "save-wait": [
-    { companion: "lumi", text: "학습 기록을 확인하고 있어요. 결과가 올 때까지 잠깐 기다려 주세요.", tone: "status" }
+    { companion: "bongbong", text: "학습 기록을 확인하고 있어요. 결과가 올 때까지 잠깐 기다려 주세요.", tone: "status" }
   ],
   "idle-confirm": [
-    { companion: "lumi", text: "계속할 수 있을까요? 생각 중이라면 그렇게 알려 주세요.", tone: "support" }
+    { companion: "bongbong", text: "계속할 수 있을까요? 생각 중이라면 그렇게 알려 주세요.", tone: "support" }
   ],
   "idle-paused": [
-    { companion: "lumi", text: "학습을 잠시 멈췄어요. 준비되면 다시 시작할 수 있어요.", tone: "support" }
+    { companion: "bongbong", text: "학습을 잠시 멈췄어요. 준비되면 다시 시작할 수 있어요.", tone: "support" }
   ]
 };
 
@@ -75,11 +78,15 @@ function stableIndex(key: string, length: number): number {
 }
 
 export function selectCompanionCue(input: CueInput): CompanionCue {
-  if (input.moment === "lesson-open" && input.delight !== undefined) {
+  if (
+    input.moment === "lesson-open" &&
+    input.delight !== undefined &&
+    input.preferredCompanion === undefined
+  ) {
     return { companion: input.delight.companion, text: input.delight.openingCue, tone: "humor" };
   }
   if (input.moment === "correct" && input.delight !== undefined) {
-    return { companion: "bongbong", text: input.delight.celebrationCue, tone: "humor" };
+    return { companion: "lumi", text: input.delight.celebrationCue, tone: "humor" };
   }
   const subjectCompanion = input.subject === "korean" ? "toto" : "momo";
   const requiredCompanion = input.preferredCompanion ?? (

@@ -16,6 +16,7 @@ import { ApiClient, ApiError } from "../../src/client/api/client";
 import type {
   AttemptReceipt,
   CalculationItem,
+  KoreanDictationItem,
   LearningItemPayload,
   LearningSessionReceipt,
   TodayPlan
@@ -126,6 +127,39 @@ const readingPlanItem: TodayPlan["items"][number] = {
   version: 1,
   step: "current",
   payload: readingItem
+};
+
+const dictationItem: KoreanDictationItem = {
+  id: "dictation-01",
+  kind: "korean-dictation",
+  subject: "korean",
+  unit: "받아쓰기",
+  title: "봄비를 써요",
+  level: "2단계",
+  readLabel: "다시 듣기",
+  text: "들은 내용을 써 보세요.",
+  hint: "천천히 다시 들어 봐요.",
+  tokens: ["봄비"],
+  promptText: "봄비",
+  answerText: "봄비",
+  mode: "word"
+};
+
+const currentDictationPlanItem: TodayPlan["items"][number] = {
+  id: dictationItem.id,
+  version: 4,
+  step: "current",
+  payload: dictationItem
+};
+
+const challengeDictationPlanItem: TodayPlan["items"][number] = {
+  ...currentDictationPlanItem,
+  step: "challenge"
+};
+
+const challengeCalculationPlanItem: TodayPlan["items"][number] = {
+  ...calculationPlanItem,
+  step: "challenge"
 };
 
 function receipt(overrides: Partial<AttemptReceipt> = {}): AttemptReceipt {
@@ -556,7 +590,7 @@ describe("LearningSession", () => {
     }));
   });
 
-  it("shows one authoritative Bongbong celebration cue then the exact next cue at one second", async () => {
+  it("shows one authoritative Bunny reward cue then the Milky next cue at one second", async () => {
     vi.useFakeTimers();
     const api = createLearningApi();
     api.saveAttempt.mockResolvedValue(receipt({
@@ -586,14 +620,14 @@ describe("LearningSession", () => {
     });
 
     expect(companionBubble()).toHaveTextContent(readingItem.delight!.celebrationCue);
-    expect(companionBubble()).toHaveTextContent("아기용 밀키");
+    expect(companionBubble()).toHaveTextContent("별토끼 버니");
     expect(screen.getAllByText("별 1개를 모았어요")).toHaveLength(1);
 
     act(() => vi.advanceTimersByTime(999));
     expect(companionBubble()).toHaveTextContent(readingItem.delight!.celebrationCue);
     act(() => vi.advanceTimersByTime(1));
     expect(companionBubble()).toHaveTextContent(
-      "다음 마법 걸음으로 가요. 버니가 도망간 양말을 잡아 둘게요."
+      "다음 걸음으로 가요. 밀키가 공부 도구를 챙길게요."
     );
     expect(screen.queryByText("별 1개를 모았어요")).not.toBeInTheDocument();
   });
@@ -1279,6 +1313,139 @@ describe("LearningSession", () => {
       mathAnswer: 26,
       occurredAt: expect.any(String)
     }));
+  });
+
+  it("keeps dictation keyboard-only, replays only on a direct click, and sends raw text only to the online request", async () => {
+    const api = createLearningApi();
+    const speak = vi.fn();
+    const utterances: Array<{ lang: string; text: string }> = [];
+    vi.stubGlobal("SpeechSynthesisUtterance", class {
+      lang = "";
+      constructor(readonly text: string) {
+        utterances.push(this);
+      }
+    });
+    vi.stubGlobal("speechSynthesis", { speak });
+    const user = userEvent.setup();
+
+    render(<LearningSession
+      item={currentDictationPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+    />);
+
+    const input = await screen.findByLabelText("받아쓰기 답");
+    expect(input).toHaveAttribute("lang", "ko");
+    expect(input).toHaveAttribute("maxlength", "200");
+    expect(input).toHaveAttribute("autocorrect", "off");
+    expect(input).toHaveAttribute("autocomplete", "off");
+    expect(input).toHaveClass("dictation-panel__input");
+    expect(screen.queryByRole("button", { name: /마이크|녹음|말하기/ })).not.toBeInTheDocument();
+    expect(speak).not.toHaveBeenCalled();
+
+    await user.click(screen.getByRole("button", { name: "다시 듣기" }));
+    expect(utterances).toEqual([expect.objectContaining({ text: "봄비", lang: "ko-KR" })]);
+    expect(speak).toHaveBeenCalledOnce();
+
+    await user.type(input, "봄 비");
+    await user.click(screen.getByRole("button", { name: "받아쓰기 확인" }));
+    expect(api.saveAttempt).toHaveBeenCalledWith(expect.objectContaining({
+      dictationText: "봄 비",
+      mathAnswer: null,
+      readingScore: 100,
+      missedTokens: []
+    }));
+    await expect(listQueuedAttempts()).resolves.toEqual([]);
+  });
+
+  it("advances a receipt-completed wrong challenge but leaves an ordinary wrong dictation retryable", async () => {
+    const challengeApi = createLearningApi();
+    challengeApi.saveAttempt.mockResolvedValue(receipt({
+      dictationPass: false,
+      completed: true,
+      challengeBonus: { eligible: false, awarded: false, amount: 0 }
+    }));
+    const onNext = vi.fn();
+    const user = userEvent.setup();
+    const challenge = render(<LearningSession
+      item={challengeDictationPlanItem}
+      api={challengeApi}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      onNext={onNext}
+    />);
+
+    await screen.findByLabelText("받아쓰기 답");
+    await user.type(screen.getByLabelText("받아쓰기 답"), "틀린 답");
+    await user.click(screen.getByRole("button", { name: "받아쓰기 확인" }));
+    expect(await screen.findByText("도전 시도 완료")).toBeVisible();
+    expect(screen.getByRole("button", { name: "다음 문제" })).toBeEnabled();
+    expect(screen.queryByText(/도전 만점 보너스/)).not.toBeInTheDocument();
+    await user.click(screen.getByRole("button", { name: "다음 문제" }));
+    expect(onNext).toHaveBeenCalledOnce();
+    challenge.unmount();
+
+    const ordinaryApi = createLearningApi();
+    ordinaryApi.saveAttempt.mockResolvedValue(receipt({
+      dictationPass: false,
+      completed: false
+    }));
+    render(<LearningSession
+      item={currentDictationPlanItem}
+      api={ordinaryApi}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+    />);
+    await userEvent.type(await screen.findByLabelText("받아쓰기 답"), "틀린 답");
+    await userEvent.click(screen.getByRole("button", { name: "받아쓰기 확인" }));
+    expect(await screen.findByText("다시 써 볼까요?")).toBeVisible();
+    expect(screen.getByRole("button", { name: "다음 문제" })).toBeDisabled();
+  });
+
+  it("shows challenge bonus only when the canonical receipt awards it", async () => {
+    const api = createLearningApi();
+    api.saveAttempt.mockResolvedValue(receipt({
+      challengeBonus: { eligible: true, awarded: true, amount: 2 }
+    }));
+    const user = userEvent.setup();
+    render(<LearningSession
+      item={challengeCalculationPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+    />);
+    await screen.findByLabelText("13 + 9 + 4 = ?");
+    await user.click(screen.getByRole("button", { name: "2" }));
+    await user.click(screen.getByRole("button", { name: "6" }));
+    await user.click(screen.getByRole("button", { name: "답 확인" }));
+    expect(await screen.findByText("도전 만점 보너스 별 2개")).toBeVisible();
+  });
+
+  it("never fabricates completion for a wrong challenge while its receipt is offline", async () => {
+    const api = createLearningApi();
+    api.saveAttempt.mockRejectedValue(new TypeError("offline"));
+    const onNext = vi.fn();
+    const onProvisional = vi.fn();
+    const user = userEvent.setup();
+    render(<LearningSession
+      item={challengeCalculationPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      idFactory={offlineId}
+      onNext={onNext}
+      onProvisional={onProvisional}
+    />);
+    await screen.findByLabelText("13 + 9 + 4 = ?");
+    await user.click(screen.getByRole("button", { name: "1" }));
+    await user.click(screen.getByRole("button", { name: "답 확인" }));
+
+    await waitFor(() => expect(api.saveAttempt).toHaveBeenCalledOnce());
+    expect(screen.queryByText("도전 시도 완료")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "다음 문제" })).toBeDisabled();
+    expect(onProvisional).not.toHaveBeenCalled();
+    expect(onNext).not.toHaveBeenCalled();
   });
 
   it("saves a passing reading attempt without retaining the transcript", async () => {
