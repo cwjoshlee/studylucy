@@ -40,6 +40,31 @@ describe("AiLearningStudio", () => {
       .toHaveAttribute("aria-expanded", "true");
   });
 
+  it("synchronizes its local tree selection when a direct consumer changes panels", () => {
+    const api = createApi();
+    const onPanelChange = vi.fn();
+    const { rerender } = render(
+      <AiLearningStudio
+        api={api}
+        onPanelChange={onPanelChange}
+        panel="settings"
+      />
+    );
+
+    rerender(
+      <AiLearningStudio
+        api={api}
+        onPanelChange={onPanelChange}
+        panel="generate-math"
+      />
+    );
+
+    expect(screen.getByRole("treeitem", { name: "문제 생성" }))
+      .toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("treeitem", { name: "수학 문제 배치" }))
+      .toHaveAttribute("aria-selected", "true");
+  });
+
   it("uses caller-provided tree state when persistence props are supplied", async () => {
     const user = userEvent.setup();
     const onPanelChange = vi.fn();
