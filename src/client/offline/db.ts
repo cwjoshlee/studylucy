@@ -24,7 +24,7 @@ import {
 } from "../../shared/stars";
 
 export const OFFLINE_DB_NAME = "sua-learning-v1";
-export const OFFLINE_DB_VERSION = 2;
+export const OFFLINE_DB_VERSION = 3;
 
 export type DeviceState = "ready" | "auth-required" | "device-action-required";
 export type QueueCounts = {
@@ -275,6 +275,38 @@ function migrateV1(
   });
 }
 
+function containsDictationText(value: unknown): boolean {
+  if (value === null || typeof value !== "object") return false;
+  if (Object.prototype.hasOwnProperty.call(value, "dictationText")) return true;
+  return Object.values(value).some(containsDictationText);
+}
+
+function migrateV2(
+  transaction: IDBPTransaction<OfflineDatabase, any, "versionchange">
+): void {
+  const activityStore = transaction.objectStore("activityQueue");
+  const batchStore = transaction.objectStore("pendingBatches");
+  void Promise.all([activityStore.getAll(), batchStore.getAll()]).then(
+    async ([activityRecords, batchRecords]) => {
+      const activities = activityRecords as PersistedActivity[];
+      const batches = batchRecords as PendingBatch[];
+      const removedClientIds = new Set(
+        activities
+          .filter((activity) => containsDictationText(activity))
+          .map((activity) => activity.clientId)
+      );
+      await Promise.all([...removedClientIds]
+        .map((clientId) => activityStore.delete(clientId)));
+      await Promise.all(batches
+        .filter((batch) =>
+          containsDictationText(batch) ||
+          batch.orderedClientIds.some((clientId) => removedClientIds.has(clientId))
+        )
+        .map((batch) => batchStore.delete(batch.clientBatchId)));
+    }
+  );
+}
+
 async function withDatabase<T>(
   operation: (database: IDBPDatabase<OfflineDatabase>) => Promise<T>
 ): Promise<T> {
@@ -288,6 +320,7 @@ async function withDatabase<T>(
           installV2Stores(db);
           migrateV1(transaction);
         }
+        if (oldVersion < 3) migrateV2(transaction);
       }
     }
   );
