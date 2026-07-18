@@ -75,6 +75,15 @@ npx --yes -p node@22 -p npm@11.11.0 -- npm test
 - 실제 외부 Gemini/OpenAI 호출은 이 클라이언트 Task에서 수행하지 않았다. 생성·감리·발행 안전성은 Task 3 서버가 계속 권위 있게 검증한다.
 - 기존 untracked `.DS_Store`는 수정·stage·commit하지 않았다.
 
+## P1 후속 수정 — 비제어 직접 소비자 트리 동기화
+
+- 기준 커밋: `05e3d70`
+- 원인: `treeState`/`onTreeStateChange` 없이 직접 렌더할 때 로컬 트리 상태는 최초 `panel`만으로 초기화되어, 외부 소비자가 `panel`을 `settings`에서 `generate-math`로 바꾸면 본문은 바뀌지만 선택 잎과 열린 그룹은 이전 상태로 남았다.
+- TDD RED: 직접 소비자의 `rerender`로 패널을 변경한 회귀가 `문제 생성`의 `aria-expanded="false"`로 실패했다.
+- GREEN: 제어 props가 모두 없는 경우에만 `panel` 변경 시 로컬 트리 상태를 다시 계산한다. 제어 모드의 caller-owned `treeState`는 건드리지 않으며, 기존 제어 상태 회귀도 유지한다.
+- 검증: `npm test -- tests/client/ai-learning-studio.test.tsx` 3/3 통과, `npm run typecheck` 통과, `git diff --check` 통과.
+- 기존 untracked `.DS_Store`는 수정·stage·commit하지 않았다.
+
 ## 후속 보강 — 발행 경합, 트리 재진입, 보고서 동작
 
 - 기준 커밋: `46df768677d1b2d8b84ce505d25cfe30dbd0fb39`

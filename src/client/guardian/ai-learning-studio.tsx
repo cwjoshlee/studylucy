@@ -122,6 +122,11 @@ export function AiLearningStudio({
   const [localTreeState, setLocalTreeState] = useState(() => initialAiStudioTreeState(panel));
   const usesControlledTreeState = treeState !== undefined && onTreeStateChange !== undefined;
   const currentTreeState = usesControlledTreeState ? treeState : localTreeState;
+
+  useEffect(() => {
+    if (!usesControlledTreeState) setLocalTreeState(initialAiStudioTreeState(panel));
+  }, [panel, usesControlledTreeState]);
+
   const updateTreeState = (next: AiStudioTreeState) => {
     if (usesControlledTreeState) onTreeStateChange(next);
     else setLocalTreeState(next);
