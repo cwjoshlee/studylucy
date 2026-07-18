@@ -70,10 +70,10 @@ export class LearningService {
         .filter((item) => item.isRequired)
         .map((item) => item.id),
       stars: getStudentStarSummary(this.deps.db, userId, issued.studyDate),
-      items: issued.items.map(({ id, version, payload }) => ({
+      items: issued.items.map(({ id, version, step, payload }) => ({
         id,
         version,
-        step: "current",
+        step,
         payload
       }))
     };
@@ -161,9 +161,7 @@ export class LearningService {
     }
     const completedItems = new Set(
       attempts
-        .filter(
-          (attempt) => attempt.readingPass && (attempt.mathPass ?? true)
-        )
+        .filter((attempt) => attempt.completed)
         .map((attempt) => `${attempt.studyDate}\0${attempt.itemId}`)
     ).size;
 

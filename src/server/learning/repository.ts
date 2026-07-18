@@ -22,6 +22,7 @@ export type ProgressAttempt = {
   subject: "korean" | "math";
   readingPass: boolean;
   mathPass: boolean | null;
+  completed: boolean;
   missedTokens: string[];
 };
 
@@ -29,6 +30,8 @@ type AttemptRow = {
   id: string;
   readingPass: number;
   mathPass: number | null;
+  dictationPass: number | null;
+  completed: number;
   starAwarded: number;
   starAmount: number;
   starBalance: number;
@@ -79,12 +82,16 @@ function receiptFromRow(
 ): AttemptReceiptCore {
   const readingPass = row.readingPass === 1;
   const mathPass = row.mathPass === null ? null : row.mathPass === 1;
+  const dictationPass = row.dictationPass === null
+    ? null
+    : row.dictationPass === 1;
   return {
     id: row.id,
     duplicate,
     readingPass,
     mathPass,
-    completed: readingPass && (mathPass ?? true),
+    dictationPass,
+    completed: row.completed === 1,
     starAward: {
       awarded: row.starAwarded === 1,
       amount: row.starAmount,
@@ -147,6 +154,8 @@ export class LearningRepository {
              a.difficulty_feedback AS difficultyFeedback,
              a.reading_pass AS readingPass,
              a.math_pass AS mathPass,
+             a.dictation_pass AS dictationPass,
+             a.completed AS completed,
              r.awarded AS starAwarded,
              r.amount AS starAmount,
              r.balance AS starBalance,
@@ -185,6 +194,8 @@ export class LearningRepository {
       SELECT a.id,
              a.reading_pass AS readingPass,
              a.math_pass AS mathPass,
+             a.dictation_pass AS dictationPass,
+             a.completed AS completed,
              r.awarded AS starAwarded,
              r.amount AS starAmount,
              r.balance AS starBalance,
@@ -226,8 +237,7 @@ export class LearningRepository {
             AND a.study_date = requested.study_date
             AND a.item_id = ipi.item_id
             AND a.content_version = ipi.content_version
-            AND a.reading_pass = 1
-            AND (a.math_pass IS NULL OR a.math_pass = 1)
+            AND a.completed = 1
         )
       ORDER BY ipi.sort_order, ipi.item_id
     `).all(requestedPlanId, userId) as Array<{ itemId: string }>)
@@ -265,7 +275,7 @@ export class LearningRepository {
     }
 
     const payload = input.snapshot.payload;
-    const { readingPass, mathPass, completed } = evaluateAttemptCompletion(
+    const { readingPass, mathPass, dictationPass, completed } = evaluateAttemptCompletion(
       payload,
       input
     );
@@ -274,9 +284,10 @@ export class LearningRepository {
         INSERT INTO attempts (
           id, client_attempt_id, user_id, item_id, content_version,
           study_date, reading_score, reading_pass, missed_tokens_json,
-          math_answer_json, math_pass, duration_ms, difficulty_feedback,
+          math_answer_json, math_pass, completed, dictation_pass,
+          duration_ms, difficulty_feedback,
           created_at, issued_plan_id, occurred_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
         input.id,
         input.clientAttemptId,
@@ -289,6 +300,8 @@ export class LearningRepository {
         JSON.stringify(input.missedTokens),
         input.mathAnswer === null ? null : JSON.stringify(input.mathAnswer),
         mathPass === null ? null : mathPass ? 1 : 0,
+        completed ? 1 : 0,
+        dictationPass === null ? null : dictationPass ? 1 : 0,
         input.durationMs,
         input.difficultyFeedback,
         input.createdAt,
@@ -322,6 +335,8 @@ export class LearningRepository {
         id: input.id,
         readingPass: readingPass ? 1 : 0,
         mathPass: mathPass === null ? null : mathPass ? 1 : 0,
+        dictationPass: dictationPass === null ? null : dictationPass ? 1 : 0,
+        completed: completed ? 1 : 0,
         starAwarded: starAward.awarded ? 1 : 0,
         starAmount: starAward.amount,
         starBalance: starAward.balance,
@@ -395,6 +410,7 @@ export class LearningRepository {
              ci.subject AS subject,
              a.reading_pass AS readingPass,
              a.math_pass AS mathPass,
+             a.completed AS completed,
              a.missed_tokens_json AS missedTokensJson
       FROM attempts AS a
       JOIN users AS u ON u.id = a.user_id
@@ -407,6 +423,7 @@ export class LearningRepository {
       subject: "korean" | "math";
       readingPass: number;
       mathPass: number | null;
+      completed: number;
       missedTokensJson: string;
     }>;
 
@@ -416,6 +433,7 @@ export class LearningRepository {
       subject: row.subject,
       readingPass: row.readingPass === 1,
       mathPass: row.mathPass === null ? null : row.mathPass === 1,
+      completed: row.completed === 1,
       missedTokens: JSON.parse(row.missedTokensJson) as string[]
     }));
   }

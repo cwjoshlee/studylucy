@@ -134,6 +134,7 @@ function receipt(overrides: Partial<AttemptReceipt> = {}): AttemptReceipt {
     duplicate: false,
     readingPass: true,
     mathPass: true,
+    dictationPass: null,
     completed: true,
     activityCursor: 1,
     starAward: {

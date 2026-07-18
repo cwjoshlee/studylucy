@@ -181,8 +181,12 @@ export function isCalculationItem(payload: LearningItemPayload): payload is Calc
 
 export function evaluateAttemptCompletion(
   payload: LearningItemPayload,
-  input: Pick<AttemptInput, "readingScore" | "missedTokens" | "mathAnswer">
-): Pick<AttemptReceipt, "readingPass" | "mathPass" | "completed"> {
+  input: Pick<AttemptInput,
+    "readingScore" | "missedTokens" | "mathAnswer" | "dictationText"
+  >
+): Pick<AttemptReceipt,
+  "readingPass" | "mathPass" | "dictationPass" | "completed"
+> {
   const isCalculation = isCalculationItem(payload);
   const readingPass = isCalculation
     ? true
@@ -190,11 +194,21 @@ export function evaluateAttemptCompletion(
   const mathPass = payload.kind === "math-story" || isCalculation
     ? input.mathAnswer !== null && input.mathAnswer === payload.answer
     : null;
+  const dictationPass = payload.kind === "korean-dictation"
+    ? normalizeDictationText(input.dictationText ?? "") ===
+      normalizeDictationText(payload.answerText)
+    : null;
   return {
     readingPass,
     mathPass,
-    completed: isCalculation ? mathPass === true : readingPass && (mathPass ?? true)
+    dictationPass,
+    completed: dictationPass ??
+      (isCalculation ? mathPass === true : readingPass && (mathPass ?? true))
   };
+}
+
+function normalizeDictationText(value: string): string {
+  return value.normalize("NFC").replace(/\s+/gu, "").trim();
 }
 
 export const AttemptInputSchema = z.object({
@@ -296,6 +310,7 @@ export const AttemptReceiptSchema = z.object({
   duplicate: z.boolean(),
   readingPass: z.boolean(),
   mathPass: z.boolean().nullable(),
+  dictationPass: z.boolean().nullable(),
   completed: z.boolean(),
   starAward: StarAwardReceiptSchema,
   activityCursor: z.number().int().nonnegative()

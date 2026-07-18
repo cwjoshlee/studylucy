@@ -122,6 +122,7 @@ function receipt(
         duplicate: false,
         readingPass: true,
         mathPass: null,
+        dictationPass: null,
         completed: true,
         starAward: {
           awarded: true,

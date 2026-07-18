@@ -4,6 +4,7 @@ import { getDailyItems } from "../../shared/daily-order";
 import {
   LearningItemPayloadSchema,
   type AttemptInput,
+  type LearningStep,
   type LearningItemPayload
 } from "../../shared/learning";
 import { kstDayBounds, kstStudyDate } from "../../shared/study-date";
@@ -25,6 +26,7 @@ export class IssuedPlanError extends Error {
 export type IssuedPlanItemSnapshot = {
   id: string;
   version: number;
+  step: LearningStep;
   payload: LearningItemPayload;
   isRequired: boolean;
   sortOrder: number;
@@ -268,9 +270,9 @@ export class IssuedPlanRepository {
       );
       this.db.prepare(`
         INSERT INTO issued_plan_items (
-          plan_id, item_id, content_version, is_required, sort_order
+          plan_id, item_id, content_version, is_required, sort_order, step
         )
-        SELECT ?, item_id, content_version, is_required, sort_order
+        SELECT ?, item_id, content_version, is_required, sort_order, step
         FROM issued_plan_items WHERE plan_id = ?
       `).run(recoveryPlanId, source.id);
       this.db.prepare(`
@@ -376,6 +378,7 @@ export class IssuedPlanRepository {
     const items = this.db.prepare(`
       SELECT ipi.item_id AS id, ipi.content_version AS version,
              ipi.is_required AS isRequired, ipi.sort_order AS sortOrder,
+             ipi.step AS step,
              cv.payload_json AS payloadJson
       FROM issued_plan_items AS ipi
       JOIN content_versions AS cv
@@ -388,6 +391,7 @@ export class IssuedPlanRepository {
       version: number;
       isRequired: number;
       sortOrder: number;
+      step: LearningStep;
       payloadJson: string;
     }>;
     return {
@@ -403,6 +407,7 @@ export class IssuedPlanRepository {
       items: items.map((item) => ({
         id: item.id,
         version: item.version,
+        step: item.step,
         isRequired: item.isRequired === 1,
         sortOrder: item.sortOrder,
         payload: LearningItemPayloadSchema.parse(JSON.parse(item.payloadJson))

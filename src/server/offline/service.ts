@@ -559,10 +559,10 @@ export class OfflineBatchService {
         studentId,
         snapshot.studyDate
       ),
-      items: snapshot.items.map(({ id, version, payload }) => ({
+      items: snapshot.items.map(({ id, version, step, payload }) => ({
         id,
         version,
-        step: "current",
+        step,
         payload
       }))
     };

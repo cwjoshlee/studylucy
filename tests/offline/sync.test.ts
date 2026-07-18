@@ -232,6 +232,7 @@ function receiptFor(
         duplicate: false,
         readingPass: true,
         mathPass: null,
+        dictationPass: null,
         completed: true,
         activityCursor: 999,
         starAward: {

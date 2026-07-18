@@ -156,6 +156,91 @@ describe("authoritative learning API", () => {
     `).get()).toEqual({ nextEpoch: 3, currentCursor: 0 });
   });
 
+  it("preserves issued steps in online and recovery plan views", async () => {
+    const firstDevice = harness.client();
+    await authenticateStudent(harness, firstDevice);
+    const sourcePlan = await getToday(firstDevice);
+    const item = sourcePlan.items[0]!;
+    harness.db.prepare(`
+      UPDATE issued_plan_items SET step = 'foundation'
+      WHERE plan_id = ? AND item_id = ?
+    `).run(sourcePlan.planId, item.id);
+
+    const online = await getToday(firstDevice);
+    expect(online.items.find((candidate) => candidate.id === item.id)?.step)
+      .toBe("foundation");
+
+    const recoveryDevice = harness.client();
+    await loginStudentOnNewDevice(recoveryDevice, "수아 복구 태블릿");
+    harness.db.prepare(`
+      UPDATE trusted_devices SET revoked_at = ?
+      WHERE id = (SELECT trusted_device_id FROM issued_daily_plans WHERE id = ?)
+    `).run("2026-07-15T03:01:00.000Z", sourcePlan.planId);
+
+    const recovery = await recoveryDevice.request(
+      "POST",
+      "/api/student/recovery-plans",
+      { sourcePlanId: sourcePlan.planId }
+    );
+    expect(recovery.statusCode).toBe(200);
+    expect(recovery.json().items.find((candidate: { id: string }) =>
+      candidate.id === item.id
+    )?.step).toBe("foundation");
+    expect(harness.db.prepare(`
+      SELECT step FROM issued_plan_items
+      WHERE plan_id = ? AND item_id = ?
+    `).get(recovery.json().planId, item.id)).toEqual({ step: "foundation" });
+  });
+
+  it("persists normalized dictation completion without storing the typed text", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    const plan = await getToday(student);
+    const item = plan.items.find((candidate) =>
+      candidate.payload.subject === "korean"
+    )!;
+    harness.db.prepare(`
+      UPDATE content_versions SET payload_json = ?
+      WHERE item_id = ? AND version = ?
+    `).run(JSON.stringify({
+      id: item.id,
+      kind: "korean-dictation",
+      subject: "korean",
+      unit: "받아쓰기",
+      title: "바람이 분다",
+      level: "1단계",
+      readLabel: "들어 보기",
+      text: "바람이 분다",
+      hint: "천천히 적어요.",
+      tokens: ["바람이", "분다"],
+      promptText: "바람이 분다",
+      answerText: "바람이 분다",
+      mode: "sentence"
+    }), item.id, item.version);
+    const typedText = "바람   이\n분다";
+
+    const response = await student.request("POST", "/api/student/attempts", {
+      ...passingAttempt(plan, item, "attempt-dictation-normalized-0001"),
+      dictationText: typedText
+    });
+
+    expect(response.statusCode).toBe(201);
+    expect(response.json()).toMatchObject({
+      dictationPass: true,
+      completed: true
+    });
+    expect(harness.db.prepare(`
+      SELECT completed, dictation_pass AS dictationPass FROM attempts
+      WHERE client_attempt_id = ?
+    `).get("attempt-dictation-normalized-0001")).toEqual({
+      completed: 1,
+      dictationPass: 1
+    });
+    expect(JSON.stringify(harness.db.prepare(`
+      SELECT * FROM attempts WHERE client_attempt_id = ?
+    `).get("attempt-dictation-normalized-0001"))).not.toContain(typedText);
+  });
+
   it("rejects every legacy date query before materializing an arbitrary daily plan", async () => {
     const student = harness.client();
     await authenticateStudent(harness, student);
