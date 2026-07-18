@@ -4,6 +4,7 @@ import {
   type TodayPlan
 } from "../../src/shared/learning";
 import { DailyPlanService } from "../../src/server/stars/daily-plan";
+import { INITIAL_ITEMS } from "../../src/server/db/seed";
 import { StarRepository } from "../../src/server/stars/repository";
 import {
   createTestHarness,
@@ -361,6 +362,74 @@ describe("issued-plan required learning star awards", () => {
     expect(math).toHaveLength(3);
     expect(math.every((item) => isCalculationItem(item.payload))).toBe(true);
     expect(math.map((item) => item.id)).not.toContain(multiplication.id);
+  });
+
+  it("prefers a recent failed calculation at a farther allowed level", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    const studentId = (harness.db.prepare(`
+      SELECT id FROM users WHERE role = 'student'
+    `).get() as { id: string }).id;
+    const calculation = INITIAL_ITEMS.find((item) =>
+      item.kind === "math-story" && isCalculationItem(item)
+    )!;
+    const candidates = [
+      {
+        ...calculation,
+        id: "ranking-close",
+        level: "2단계",
+        unit: "받아올림과 받아내림"
+      },
+      {
+        ...calculation,
+        id: "ranking-current",
+        level: "3단계",
+        unit: "받아올림과 받아내림"
+      },
+      {
+        ...calculation,
+        id: "ranking-recent-failed",
+        level: "4단계",
+        unit: "세 수의 혼합 계산"
+      }
+    ];
+    harness.db.prepare("UPDATE content_items SET status = 'archived' WHERE subject = 'math'")
+      .run();
+    const insertItem = harness.db.prepare(`
+      INSERT INTO content_items (
+        id, skill_id, subject, status, active_version, created_at
+      ) VALUES (?, 'skill-math-calculation', 'math', 'published', 4, ?)
+    `);
+    const insertVersion = harness.db.prepare(`
+      INSERT INTO content_versions (item_id, version, payload_json, created_at)
+      VALUES (?, 4, ?, ?)
+    `);
+    for (const candidate of candidates) {
+      insertItem.run(candidate.id, "2026-07-14T00:00:00.000Z");
+      insertVersion.run(
+        candidate.id,
+        JSON.stringify(candidate),
+        "2026-07-14T00:00:00.000Z"
+      );
+    }
+    harness.db.prepare(`
+      INSERT INTO attempts (
+        id, client_attempt_id, user_id, item_id, content_version, study_date,
+        reading_score, reading_pass, missed_tokens_json, math_answer_json,
+        math_pass, duration_ms, difficulty_feedback, created_at
+      ) VALUES (
+        'ranking-recent-failure', 'ranking-recent-failure-client', ?,
+        'ranking-recent-failed', 4, '2026-07-14', 100, 1, '[]', '0', 0,
+        12000, NULL, '2026-07-14T03:00:00.000Z'
+      )
+    `).run(studentId);
+
+    const today = await getToday(student);
+    const foundation = today.items.find((item) =>
+      item.payload.subject === "math" && item.step === "foundation"
+    );
+
+    expect(foundation?.id).toBe("ranking-recent-failed");
   });
 
   it("awards one required-item source and keeps retry receipts idempotent", async () => {

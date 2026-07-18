@@ -344,7 +344,7 @@ export class DailyPlanService {
     excludedIds: Set<string>;
   }): PublishedItem {
     const target = targetLevel(input.difficulty, input.step);
-    const weakIndex = new Map(input.weakKeys.map((key, index) => [key, index]));
+    const weakKeys = new Set(input.weakKeys);
     const candidates = input.items
       .filter((item) =>
         item.payload.subject === input.subject &&
@@ -352,12 +352,12 @@ export class DailyPlanService {
         !input.excludedIds.has(item.id)
       )
       .sort((left, right) => {
+        const weak = Number(weakKeys.has(learningKey(right.payload))) -
+          Number(weakKeys.has(learningKey(left.payload)));
+        if (weak !== 0) return weak;
         const distance = Math.abs(numericLevel(left.payload) - target) -
           Math.abs(numericLevel(right.payload) - target);
         if (distance !== 0) return distance;
-        const weak = (weakIndex.get(learningKey(left.payload)) ?? 1_000) -
-          (weakIndex.get(learningKey(right.payload)) ?? 1_000);
-        if (weak !== 0) return weak;
         const shuffled = stableDateRank(
           `${input.studyDate}:${input.subject}:${input.step}:${left.id}`
         ) - stableDateRank(
