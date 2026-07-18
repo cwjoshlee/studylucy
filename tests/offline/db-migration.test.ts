@@ -250,6 +250,35 @@ describe("IndexedDB v2 authority journal migration", () => {
     });
   });
 
+  it("keeps typed dictation text out of IndexedDB and leaves ordinary attempts queueable", async () => {
+    const rawDictationText = "원문 받아쓰기 비밀 문장";
+    await markStudentAuthenticated();
+    await cacheIssuedPlan(plan, stars);
+
+    await expect(queueAttempt({
+      ...attempt,
+      clientAttemptId: "dictation-offline-attempt-0001",
+      dictationText: rawDictationText
+    })).rejects.toMatchObject({ code: "DICTATION_ONLINE_REQUIRED" });
+
+    await queueAttempt(attempt);
+    expect(await listActivities()).toEqual([
+      expect.objectContaining({
+        clientId: attempt.clientAttemptId,
+        event: expect.objectContaining({
+          kind: "attempt",
+          payload: expect.not.objectContaining({ dictationText: expect.anything() })
+        })
+      })
+    ]);
+
+    const raw = await openDB(OFFLINE_DB_NAME, OFFLINE_DB_VERSION);
+    const serializedRecords = await Promise.all(Array.from(raw.objectStoreNames)
+      .map(async (storeName) => JSON.stringify(await raw.getAll(storeName))));
+    raw.close();
+    expect(serializedRecords.join("\n")).not.toContain(rawDictationText);
+  });
+
   it("clears only cached authority and blocks every journal read or write until student PIN authentication", async () => {
     await markStudentAuthenticated();
     await cacheIssuedPlan(plan, stars);
