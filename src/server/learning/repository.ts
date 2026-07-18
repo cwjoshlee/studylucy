@@ -4,6 +4,7 @@ import {
   LearningItemPayloadSchema,
   type AttemptInput,
   type AttemptReceipt,
+  type ChallengeBonusReceipt,
   type LearningItemPayload,
   type StarAwardReceipt
 } from "../../shared/learning";
@@ -51,6 +52,7 @@ type CanonicalAttemptRow = AttemptRow & {
   mathAnswerJson: string | null;
   durationMs: number;
   difficultyFeedback: AttemptInput["difficultyFeedback"];
+  payloadJson: string;
 };
 
 type AttemptReceiptCore = Omit<AttemptReceipt, "activityCursor">;
@@ -152,6 +154,7 @@ export class LearningRepository {
              a.math_answer_json AS mathAnswerJson,
              a.duration_ms AS durationMs,
              a.difficulty_feedback AS difficultyFeedback,
+             cv.payload_json AS payloadJson,
              a.reading_pass AS readingPass,
              a.math_pass AS mathPass,
              a.dictation_pass AS dictationPass,
@@ -162,6 +165,8 @@ export class LearningRepository {
              r.event_id AS starEventId
       FROM attempts AS a
       JOIN attempt_star_receipts AS r ON r.attempt_id = a.id
+      JOIN content_versions AS cv
+        ON cv.item_id = a.item_id AND cv.version = a.content_version
       LEFT JOIN issued_daily_plans AS p ON p.id = a.issued_plan_id
       WHERE a.client_attempt_id = ?
     `).get(input.clientAttemptId) as CanonicalAttemptRow | undefined;
@@ -169,6 +174,13 @@ export class LearningRepository {
     const mathAnswerJson = input.mathAnswer === null
       ? null
       : JSON.stringify(input.mathAnswer);
+    const persistedDictationPass = row.dictationPass === null
+      ? null
+      : row.dictationPass === 1;
+    const currentDictationPass = evaluateAttemptCompletion(
+      LearningItemPayloadSchema.parse(JSON.parse(row.payloadJson)),
+      input
+    ).dictationPass;
     const matches =
       row.userId === userId &&
       row.trustedDeviceId === trustedDeviceId &&
@@ -181,9 +193,19 @@ export class LearningRepository {
       row.missedTokensJson === JSON.stringify(input.missedTokens) &&
       row.mathAnswerJson === mathAnswerJson &&
       row.durationMs === input.durationMs &&
-      row.difficultyFeedback === input.difficultyFeedback;
+      row.difficultyFeedback === input.difficultyFeedback &&
+      currentDictationPass === persistedDictationPass;
     if (!matches) throw new AttemptIdempotencyError();
-    return receiptFromRow(row, true);
+    return {
+      ...receiptFromRow(row, true),
+      challengeBonus: this.readChallengeBonusReceipt({
+        studentId: userId,
+        issuedPlanId: row.planId!,
+        attemptId: row.id,
+        studyDate: row.studyDate,
+        itemId: row.itemId
+      })
+    };
   }
 
   private findDuplicateAttemptCore(
@@ -275,10 +297,14 @@ export class LearningRepository {
     }
 
     const payload = input.snapshot.payload;
-    const { readingPass, mathPass, dictationPass, completed } = evaluateAttemptCompletion(
+    const evaluation = evaluateAttemptCompletion(
       payload,
       input
     );
+    const { readingPass, mathPass, dictationPass } = evaluation;
+    const completed = input.snapshot.step === "challenge"
+      ? true
+      : evaluation.completed;
 
     this.db.prepare(`
         INSERT INTO attempts (
@@ -318,6 +344,18 @@ export class LearningRepository {
       isRequired: input.snapshot.isRequired,
       createdAt: input.createdAt
     });
+    const challengeBonus = this.createChallengeBonusReceipt({
+      studentId: input.userId,
+      issuedPlanId: input.snapshot.issuedPlanId,
+      attemptId: input.id,
+      studyDate: input.snapshot.studyDate,
+      itemId: input.itemId,
+      step: input.snapshot.step,
+      subject: input.snapshot.payload.subject,
+      isRequired: input.snapshot.isRequired,
+      createdAt: input.createdAt
+    });
+    starAward.balance = this.getStarBalance(input.userId);
     this.db.prepare(`
         INSERT INTO attempt_star_receipts (
           attempt_id, awarded, amount, balance, event_id
@@ -331,19 +369,169 @@ export class LearningRepository {
     );
 
     return {
-      receipt: receiptFromRow({
-        id: input.id,
-        readingPass: readingPass ? 1 : 0,
-        mathPass: mathPass === null ? null : mathPass ? 1 : 0,
-        dictationPass: dictationPass === null ? null : dictationPass ? 1 : 0,
-        completed: completed ? 1 : 0,
-        starAwarded: starAward.awarded ? 1 : 0,
-        starAmount: starAward.amount,
-        starBalance: starAward.balance,
-        starEventId: starAward.eventId
-      }, false),
+      receipt: {
+        ...receiptFromRow({
+          id: input.id,
+          readingPass: readingPass ? 1 : 0,
+          mathPass: mathPass === null ? null : mathPass ? 1 : 0,
+          dictationPass: dictationPass === null
+            ? null
+            : dictationPass ? 1 : 0,
+          completed: completed ? 1 : 0,
+          starAwarded: starAward.awarded ? 1 : 0,
+          starAmount: starAward.amount,
+          starBalance: starAward.balance,
+          starEventId: starAward.eventId
+        }, false),
+        challengeBonus
+      },
       inserted: true
     };
+  }
+
+  private createChallengeBonusReceipt(input: {
+    studentId: string;
+    issuedPlanId: string;
+    attemptId: string;
+    studyDate: string;
+    itemId: string;
+    step: ValidatedAttemptSnapshot["step"];
+    subject: "korean" | "math";
+    isRequired: boolean;
+    createdAt: string;
+  }): ChallengeBonusReceipt {
+    if (
+      input.step !== "challenge" ||
+      !input.isRequired ||
+      !this.isChallengePerfect(
+        input.studentId,
+        input.issuedPlanId,
+        input.subject,
+        input.attemptId
+      )
+    ) {
+      return { eligible: false, awarded: false, amount: 0 };
+    }
+    const settings = this.db.prepare(`
+      SELECT challenge_bonus_stars AS amount
+      FROM daily_step_settings
+      WHERE student_id = ? AND study_date = ? AND subject = ?
+    `).get(
+      input.studentId,
+      input.studyDate,
+      input.subject
+    ) as { amount: number } | undefined;
+    const amount = settings?.amount ?? 0;
+    if (amount === 0) {
+      return { eligible: true, awarded: false, amount: 0 };
+    }
+    const applied = this.stars.applyInTransaction({
+      studentId: input.studentId,
+      delta: amount,
+      reason: "CHALLENGE_PERFECT",
+      reasonText: "도전 단계를 모두 맞혔어요",
+      studyDate: input.studyDate,
+      itemId: input.itemId,
+      attemptId: input.attemptId,
+      actorType: "system",
+      sourceKey: [
+        "challenge-perfect",
+        input.studentId,
+        input.studyDate,
+        input.subject
+      ].join(":"),
+      createdAt: input.createdAt
+    });
+    return {
+      eligible: true,
+      awarded: !applied.duplicate,
+      amount: applied.duplicate ? 0 : amount
+    };
+  }
+
+  private readChallengeBonusReceipt(input: {
+    studentId: string;
+    issuedPlanId: string;
+    attemptId: string;
+    studyDate: string;
+    itemId: string;
+  }): ChallengeBonusReceipt {
+    const item = this.db.prepare(`
+      SELECT ipi.step, ipi.is_required AS isRequired, ci.subject
+      FROM issued_plan_items AS ipi
+      JOIN content_items AS ci ON ci.id = ipi.item_id
+      WHERE ipi.plan_id = ? AND ipi.item_id = ?
+    `).get(input.issuedPlanId, input.itemId) as {
+      step: ValidatedAttemptSnapshot["step"];
+      isRequired: number;
+      subject: "korean" | "math";
+    } | undefined;
+    if (
+      item === undefined ||
+      item.step !== "challenge" ||
+      item.isRequired !== 1 ||
+      !this.isChallengePerfect(
+        input.studentId,
+        input.issuedPlanId,
+        item.subject,
+        input.attemptId
+      )
+    ) {
+      return { eligible: false, awarded: false, amount: 0 };
+    }
+    const event = this.db.prepare(`
+      SELECT attempt_id AS attemptId, delta
+      FROM star_events WHERE source_key = ?
+    `).get([
+      "challenge-perfect",
+      input.studentId,
+      input.studyDate,
+      item.subject
+    ].join(":")) as { attemptId: string | null; delta: number } | undefined;
+    const awarded = event?.attemptId === input.attemptId;
+    return {
+      eligible: true,
+      awarded,
+      amount: awarded ? event.delta : 0
+    };
+  }
+
+  private isChallengePerfect(
+    studentId: string,
+    issuedPlanId: string,
+    subject: "korean" | "math",
+    throughAttemptId: string
+  ): boolean {
+    const result = this.db.prepare(`
+      SELECT COUNT(*) AS total,
+             SUM(CASE WHEN EXISTS (
+               SELECT 1
+               FROM attempts AS a
+               WHERE a.user_id = ?
+                 AND a.study_date = plan.study_date
+                 AND a.item_id = ipi.item_id
+                 AND a.content_version = ipi.content_version
+                 AND a.rowid <= (
+                   SELECT boundary.rowid FROM attempts AS boundary
+                   WHERE boundary.id = ?
+                 )
+                 AND a.completed = 1
+                 AND (
+                   a.dictation_pass = 1 OR a.math_pass = 1 OR
+                   (a.dictation_pass IS NULL AND a.math_pass IS NULL
+                     AND a.reading_pass = 1)
+                 )
+             ) THEN 1 ELSE 0 END) AS passed
+      FROM issued_plan_items AS ipi
+      JOIN issued_daily_plans AS plan ON plan.id = ipi.plan_id
+      JOIN content_items AS ci ON ci.id = ipi.item_id
+      WHERE ipi.plan_id = ? AND ipi.is_required = 1
+        AND ipi.step = 'challenge' AND ci.subject = ?
+    `).get(studentId, throughAttemptId, issuedPlanId, subject) as {
+      total: number;
+      passed: number | null;
+    };
+    return result.total > 0 && result.passed === result.total;
   }
 
   private createStarAwardReceipt(input: {

@@ -630,9 +630,9 @@ describe("approved magical companion seed content", () => {
     expect(auditChildUiSideEffects("src/client/learning/learning-session.tsx")).toEqual([]);
   });
 
-  it("publishes exactly ten Korean and ten math v3 items", () => {
-    expect(INITIAL_CONTENT_VERSION).toBe(3);
-    expect(INITIAL_ITEMS.filter((item) => item.subject === "korean")).toHaveLength(10);
+  it("publishes thirteen Korean and ten math v4 items", () => {
+    expect(INITIAL_CONTENT_VERSION).toBe(4);
+    expect(INITIAL_ITEMS.filter((item) => item.subject === "korean")).toHaveLength(13);
     expect(INITIAL_ITEMS.filter((item) => item.subject === "math")).toHaveLength(10);
   });
 
@@ -701,9 +701,9 @@ describe("approved magical companion seed content", () => {
   it("gives every item distinct Korean delight copy and no commercial names", () => {
     const delight = INITIAL_ITEMS.map((item) => item.delight);
     expect(delight.every(Boolean)).toBe(true);
-    expect(new Set(delight.map((entry) => entry!.mishap)).size).toBe(20);
-    expect(new Set(delight.map((entry) => entry!.openingCue)).size).toBe(20);
-    expect(new Set(delight.map((entry) => entry!.celebrationCue)).size).toBe(20);
+    expect(new Set(delight.map((entry) => entry!.mishap)).size).toBe(23);
+    expect(new Set(delight.map((entry) => entry!.openingCue)).size).toBe(23);
+    expect(new Set(delight.map((entry) => entry!.celebrationCue)).size).toBe(23);
     for (const item of INITIAL_ITEMS) {
       const childCopy = activeItemChildCopy(item);
       expect(childCopy.join("\n")).toMatch(/[가-힣]/);

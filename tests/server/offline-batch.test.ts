@@ -112,6 +112,9 @@ function passingAttempt(
     mathAnswer: item.payload.kind === "math-story"
       ? item.payload.answer
       : null,
+    dictationText: item.payload.kind === "korean-dictation"
+      ? item.payload.answerText
+      : undefined,
     durationMs: 12_000,
     difficultyFeedback: null,
     ...overrides

@@ -40,19 +40,19 @@ describe("database bootstrap", () => {
       .toEqual({ count: 7 });
   });
 
-  it("seeds the exact ten Korean and ten math items", () => {
+  it("seeds the exact thirteen Korean and ten math items", () => {
     migrate(db);
     seedInitialContent(db);
     seedInitialContent(db);
 
     const rows = db.prepare("select subject, count(*) as count from content_items group by subject order by subject").all();
     expect(rows).toEqual([
-      { subject: "korean", count: 10 },
+      { subject: "korean", count: 13 },
       { subject: "math", count: 10 }
     ]);
   });
 
-  it("activates version 3 without rewriting existing v1 or v2 payloads", () => {
+  it("activates version 4 without rewriting existing v1, v2, or v3 payloads", () => {
     const upgrade = openDatabase(":memory:");
     try {
       migrate(upgrade);
@@ -73,7 +73,7 @@ describe("database bootstrap", () => {
 
       expect(upgrade.prepare(`
         SELECT active_version AS activeVersion FROM content_items WHERE id = 'ko-01'
-      `).get()).toEqual({ activeVersion: 3 });
+      `).get()).toEqual({ activeVersion: 4 });
       expect(upgrade.prepare(`
         SELECT payload_json AS payloadJson FROM content_versions
         WHERE item_id = 'math-01' AND version = 1
@@ -113,11 +113,11 @@ describe("database bootstrap", () => {
       `).run();
       upgrade.prepare(`
         INSERT INTO content_versions (item_id, version, payload_json, created_at)
-        VALUES ('math-02', 4, ?, '2026-07-18T00:00:00.000Z')
+        VALUES ('math-02', 5, ?, '2026-07-18T00:00:00.000Z')
       `).run(guardianPayload);
       upgrade.prepare(`
         UPDATE content_items
-        SET skill_id = 'skill-math-story', active_version = 4
+        SET skill_id = 'skill-math-story', active_version = 5
         WHERE id = 'math-02'
       `).run();
 
@@ -126,7 +126,7 @@ describe("database bootstrap", () => {
       expect(upgrade.prepare(`
         SELECT skill_id AS skillId, active_version AS activeVersion
         FROM content_items WHERE id = 'math-01'
-      `).get()).toEqual({ skillId: "skill-math-calculation", activeVersion: 3 });
+      `).get()).toEqual({ skillId: "skill-math-calculation", activeVersion: 4 });
       expect(upgrade.prepare(`
         SELECT payload_json AS payloadJson FROM content_versions
         WHERE item_id = 'math-01' AND version = 1
@@ -138,10 +138,10 @@ describe("database bootstrap", () => {
       expect(upgrade.prepare(`
         SELECT skill_id AS skillId, active_version AS activeVersion
         FROM content_items WHERE id = 'math-02'
-      `).get()).toEqual({ skillId: "skill-math-story", activeVersion: 4 });
+      `).get()).toEqual({ skillId: "skill-math-story", activeVersion: 5 });
       expect(upgrade.prepare(`
         SELECT payload_json AS payloadJson FROM content_versions
-        WHERE item_id = 'math-02' AND version = 4
+        WHERE item_id = 'math-02' AND version = 5
       `).get()).toEqual({ payloadJson: guardianPayload });
     } finally {
       upgrade.close();
@@ -159,15 +159,15 @@ describe("database bootstrap", () => {
       `).get() as { payloadJson: string };
       edited.prepare(`
         INSERT INTO content_versions (item_id, version, payload_json, created_at)
-        VALUES ('ko-01', 4, ?, '2026-07-17T00:00:00.000Z')
+        VALUES ('ko-01', 5, ?, '2026-07-17T00:00:00.000Z')
       `).run(v2.payloadJson);
-      edited.prepare("UPDATE content_items SET active_version = 4 WHERE id = 'ko-01'").run();
+      edited.prepare("UPDATE content_items SET active_version = 5 WHERE id = 'ko-01'").run();
 
       seedInitialContent(edited);
 
       expect(edited.prepare(`
         SELECT active_version AS activeVersion FROM content_items WHERE id = 'ko-01'
-      `).get()).toEqual({ activeVersion: 4 });
+      `).get()).toEqual({ activeVersion: 5 });
     } finally {
       edited.close();
     }
