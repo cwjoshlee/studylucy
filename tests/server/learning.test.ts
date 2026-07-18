@@ -77,6 +77,9 @@ function passingAttempt(
     mathAnswer: item.payload.kind === "math-story"
       ? item.payload.answer
       : null,
+    dictationText: item.payload.kind === "korean-dictation"
+      ? item.payload.answerText
+      : undefined,
     durationMs: 12_000,
     difficultyFeedback: null,
     ...overrides
@@ -192,6 +195,87 @@ describe("authoritative learning API", () => {
     `).get(recovery.json().planId, item.id)).toEqual({ step: "foundation" });
   });
 
+  it("completes a wrong challenge, unlocks from server completion, and awards one perfect bonus", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    harness.db.prepare(`
+      INSERT INTO daily_step_settings (
+        student_id, study_date, subject, difficulty, challenge_bonus_stars
+      ) VALUES (?, '2026-07-15', 'math', 3, 4)
+      ON CONFLICT(student_id, study_date, subject) DO UPDATE SET
+        difficulty = excluded.difficulty,
+        challenge_bonus_stars = excluded.challenge_bonus_stars
+    `).run((harness.db.prepare(`
+      SELECT id FROM users WHERE role = 'student'
+    `).get() as { id: string }).id);
+    const plan = await getToday(student);
+    const challenge = plan.items.find((item) =>
+      item.payload.subject === "math" && item.step === "challenge"
+    )!;
+
+    const wrong = await student.request("POST", "/api/student/attempts", {
+      ...passingAttempt(plan, challenge, "attempt-wrong-challenge-0001"),
+      mathAnswer: challenge.payload.kind === "math-story"
+        ? challenge.payload.answer + 1
+        : -1
+    });
+    expect(wrong.statusCode).toBe(201);
+    expect(wrong.json()).toMatchObject({
+      completed: true,
+      mathPass: false,
+      starAward: { awarded: true, amount: 1 },
+      challengeBonus: { eligible: false, awarded: false, amount: 0 }
+    });
+    expect((await getToday(student)).completedItemIds).toContain(challenge.id);
+
+    const correctInput = passingAttempt(
+      plan,
+      challenge,
+      "attempt-perfect-challenge-0001"
+    );
+    const perfect = await student.request(
+      "POST",
+      "/api/student/attempts",
+      correctInput
+    );
+    expect(perfect.statusCode).toBe(201);
+    expect(perfect.json().challengeBonus).toEqual({
+      eligible: true,
+      awarded: true,
+      amount: 4
+    });
+    const duplicate = await student.request(
+      "POST",
+      "/api/student/attempts",
+      correctInput
+    );
+    expect(duplicate.statusCode).toBe(200);
+    expect(duplicate.json()).toEqual({
+      ...perfect.json(),
+      duplicate: true
+    });
+    const wrongDuplicate = await student.request(
+      "POST",
+      "/api/student/attempts",
+      {
+        ...passingAttempt(plan, challenge, "attempt-wrong-challenge-0001"),
+        mathAnswer: challenge.payload.kind === "math-story"
+          ? challenge.payload.answer + 1
+          : -1
+      }
+    );
+    expect(wrongDuplicate.statusCode).toBe(200);
+    expect(wrongDuplicate.json()).toEqual({
+      ...wrong.json(),
+      duplicate: true,
+      activityCursor: perfect.json().activityCursor
+    });
+    expect(harness.db.prepare(`
+      SELECT COUNT(*) AS count FROM star_events
+      WHERE reason_code = 'CHALLENGE_PERFECT'
+    `).get()).toEqual({ count: 1 });
+  });
+
   it("persists normalized dictation completion without storing the typed text", async () => {
     const student = harness.client();
     await authenticateStudent(harness, student);
@@ -239,6 +323,25 @@ describe("authoritative learning API", () => {
     expect(JSON.stringify(harness.db.prepare(`
       SELECT * FROM attempts WHERE client_attempt_id = ?
     `).get("attempt-dictation-normalized-0001"))).not.toContain(typedText);
+    const equivalent = await student.request("POST", "/api/student/attempts", {
+      ...passingAttempt(plan, item, "attempt-dictation-normalized-0001"),
+      dictationText: "바람이 분다"
+    });
+    expect(equivalent.statusCode).toBe(200);
+    expect(equivalent.json()).toEqual({
+      ...response.json(),
+      duplicate: true
+    });
+    const changedOutcome = await student.request(
+      "POST",
+      "/api/student/attempts",
+      {
+        ...passingAttempt(plan, item, "attempt-dictation-normalized-0001"),
+        dictationText: "바람이 온다"
+      }
+    );
+    expect(changedOutcome.statusCode).toBe(400);
+    expect(changedOutcome.json()).toEqual({ code: "INVALID_REQUEST" });
   });
 
   it("rejects every legacy date query before materializing an arbitrary daily plan", async () => {
@@ -646,7 +749,8 @@ describe("authoritative learning API", () => {
         studyDate: plan.date,
         contentVersion: item.version,
         payload: item.payload,
-        isRequired: plan.requiredItemIds.includes(item.id)
+        isRequired: plan.requiredItemIds.includes(item.id),
+        step: item.step
       }
     };
     const exactRetry = repository.saveAttemptInTransaction(transactionInput);
@@ -676,7 +780,9 @@ describe("authoritative learning API", () => {
     const student = harness.client();
     await authenticateStudent(harness, student);
     const plan = await getToday(student);
-    const issuedMath = plan.items.find((item) => item.id === "math-01")!;
+    const issuedMath = plan.items.find(
+      (item) => item.payload.subject === "math"
+    )!;
     expect(issuedMath.payload.kind).toBe("math-story");
     expect(isCalculationItem(issuedMath.payload)).toBe(true);
 
@@ -816,7 +922,9 @@ describe("authoritative learning API", () => {
     const student = harness.client();
     await authenticateStudent(harness, student);
     const plan = await getToday(student);
-    const math = plan.items.find((item) => item.id === "math-01")!;
+    const math = plan.items.find((item) =>
+      item.payload.subject === "math" && item.step !== "challenge"
+    )!;
 
     const response = await student.request("POST", "/api/student/attempts", {
       ...passingAttempt(plan, math, "attempt-server-graded-0001"),
@@ -896,7 +1004,7 @@ describe("authoritative learning API", () => {
 
     const wrong = await student.request("POST", "/api/student/attempts", {
       ...passingAttempt(plan, plan.items.find((item) =>
-        item.id === "math-02"
+        item.payload.subject === "math" && item.step === "current"
       )!, "attempt-calculation-wrong-0001"),
       readingScore: 0,
       missedTokens: ["계산은 읽기 점수가 아니에요"],

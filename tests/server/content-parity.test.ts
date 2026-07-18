@@ -7,7 +7,8 @@ import { INITIAL_ITEMS_V1 } from "../../src/server/db/seed-v1";
 import { INITIAL_ITEMS_V2 } from "../../src/server/db/seed-v2";
 import {
   INITIAL_CONTENT_VERSION,
-  INITIAL_ITEMS
+  INITIAL_ITEMS,
+  INITIAL_ITEMS_V3
 } from "../../src/server/db/seed";
 import {
   isCalculationItem,
@@ -165,11 +166,24 @@ describe("approved version 2 content contract", () => {
     expect(INITIAL_ITEMS_V2.map(({ title }) => title)).toEqual(APPROVED_V2_TITLES);
   });
 
-  it("publishes ten legacy-parseable calculation extensions as active version 3", () => {
+  it("preserves the version 3 payload JSON byte-for-byte", () => {
+    expect(sha256(JSON.stringify(INITIAL_ITEMS_V3)))
+      .toBe("87418ea738d6e8df5c89567963ee11c65c037025cfdb4d947fa2da9dea2e8e75");
+  });
+
+  it("publishes the forward-only version 4 step-up content", () => {
     const calculations = INITIAL_ITEMS.filter(
       isCalculationItem
     );
-    expect(INITIAL_CONTENT_VERSION).toBe(3);
+    const dictations = INITIAL_ITEMS.filter((item) =>
+      item.kind === "korean-dictation"
+    );
+    expect(INITIAL_CONTENT_VERSION).toBe(4);
+    expect(dictations.map((item) => [item.mode, item.level])).toEqual([
+      ["word", "2단계"],
+      ["word", "3단계"],
+      ["sentence", "4단계"]
+    ]);
     expect(calculations).toHaveLength(10);
     expect(calculations.map((item) => [
       item.id,

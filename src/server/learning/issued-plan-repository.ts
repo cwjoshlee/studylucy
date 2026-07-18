@@ -1,6 +1,5 @@
 import type Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
-import { getDailyItems } from "../../shared/daily-order";
 import {
   LearningItemPayloadSchema,
   type AttemptInput,
@@ -51,6 +50,7 @@ export type ValidatedAttemptSnapshot = {
   contentVersion: number;
   payload: LearningItemPayload;
   isRequired: boolean;
+  step: LearningStep;
 };
 
 type CursorRow = {
@@ -104,8 +104,7 @@ export class IssuedPlanRepository {
       let plan = this.findDailyPlan(studentId, trustedDeviceId, studyDate);
       if (plan === null) {
         const required = this.dailyPlan.ensureInTransaction(studentId, studyDate);
-        const activeItems = this.listActiveItems();
-        const deliveredItems = getDailyItems(activeItems, studyDate);
+        const deliveredItems = this.listRequiredItems(studentId, studyDate);
         const cursor = this.getCursor(studentId);
         const submitUntil = new Date(
           Date.parse(kstDayBounds(studyDate).end) + 86_400_000 - 1
@@ -130,8 +129,8 @@ export class IssuedPlanRepository {
         const requiredIds = new Set(required.requiredItemIds);
         const insertItem = this.db.prepare(`
           INSERT INTO issued_plan_items (
-            plan_id, item_id, content_version, is_required, sort_order
-          ) VALUES (?, ?, ?, ?, ?)
+            plan_id, item_id, content_version, is_required, sort_order, step
+          ) VALUES (?, ?, ?, ?, ?, ?)
         `);
         deliveredItems.forEach((item, sortOrder) => {
           insertItem.run(
@@ -139,7 +138,8 @@ export class IssuedPlanRepository {
             item.id,
             item.version,
             requiredIds.has(item.id) ? 1 : 0,
-            sortOrder
+            sortOrder,
+            item.step
           );
         });
         this.db.prepare(`
@@ -329,6 +329,7 @@ export class IssuedPlanRepository {
     const item = this.db.prepare(`
       SELECT ipi.content_version AS contentVersion,
              ipi.is_required AS isRequired,
+             ipi.step AS step,
              cv.payload_json AS payloadJson
       FROM issued_plan_items AS ipi
       JOIN content_versions AS cv
@@ -336,7 +337,12 @@ export class IssuedPlanRepository {
        AND cv.version = ipi.content_version
       WHERE ipi.plan_id = ? AND ipi.item_id = ?
     `).get(input.planId, input.itemId) as
-      | { contentVersion: number; isRequired: number; payloadJson: string }
+      | {
+          contentVersion: number;
+          isRequired: number;
+          step: LearningStep;
+          payloadJson: string;
+        }
       | undefined;
     if (item === undefined) {
       throw new IssuedPlanError("PLAN_NOT_ISSUED");
@@ -349,7 +355,8 @@ export class IssuedPlanRepository {
       studyDate: plan.studyDate,
       contentVersion: item.contentVersion,
       payload: LearningItemPayloadSchema.parse(JSON.parse(item.payloadJson)),
-      isRequired: item.isRequired === 1
+      isRequired: item.isRequired === 1,
+      step: item.step
     };
   }
 
@@ -415,22 +422,35 @@ export class IssuedPlanRepository {
     };
   }
 
-  private listActiveItems(): Array<{
+  private listRequiredItems(
+    studentId: string,
+    studyDate: string
+  ): Array<{
     id: string;
     version: number;
+    step: LearningStep;
     payload: LearningItemPayload;
   }> {
     const rows = this.db.prepare(`
-      SELECT ci.id, ci.active_version AS version, cv.payload_json AS payloadJson
-      FROM content_items AS ci
+      SELECT ci.id, ci.active_version AS version, dr.step,
+             cv.payload_json AS payloadJson
+      FROM daily_requirements AS dr
+      JOIN content_items AS ci ON ci.id = dr.item_id
       JOIN content_versions AS cv
         ON cv.item_id = ci.id AND cv.version = ci.active_version
-      WHERE ci.status = 'published'
-      ORDER BY ci.id
-    `).all() as Array<{ id: string; version: number; payloadJson: string }>;
+      WHERE dr.student_id = ? AND dr.study_date = ?
+        AND ci.status = 'published'
+      ORDER BY dr.sort_order, dr.item_id
+    `).all(studentId, studyDate) as Array<{
+      id: string;
+      version: number;
+      step: LearningStep;
+      payloadJson: string;
+    }>;
     return rows.map((row) => ({
       id: row.id,
       version: row.version,
+      step: row.step,
       payload: LearningItemPayloadSchema.parse(JSON.parse(row.payloadJson))
     }));
   }

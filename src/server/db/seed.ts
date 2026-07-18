@@ -5,7 +5,7 @@ import {
 } from "../../shared/learning";
 import { INITIAL_ITEMS_V1 } from "./seed-v1";
 
-export const INITIAL_CONTENT_VERSION = 3;
+export const INITIAL_CONTENT_VERSION = 4;
 
 const MATH_TOKENS = {
   "math-01": ["모모", "보라 포도알", "8개", "초록 포도알", "7개", "모두"],
@@ -508,9 +508,80 @@ const CALCULATION_ITEMS: LearningItemPayload[] = ([
   }
 }));
 
-export const INITIAL_ITEMS: LearningItemPayload[] = [
+export const INITIAL_ITEMS_V3: LearningItemPayload[] = [
   ...V3_KOREAN_ITEMS,
   ...CALCULATION_ITEMS
+];
+
+const STEP_UP_DICTATION_ITEMS: LearningItemPayload[] = [
+  {
+    id: "ko-dictation-foundation",
+    kind: "korean-dictation",
+    subject: "korean",
+    unit: "낱말 받아쓰기",
+    title: "구름",
+    level: "2단계",
+    readLabel: "낱말을 듣고 쓰기",
+    text: "구름",
+    hint: "첫소리부터 천천히 떠올려 봐요.",
+    tokens: ["구름"],
+    promptText: "구름",
+    answerText: "구름",
+    mode: "word",
+    delight: {
+      companion: "momo",
+      mishap: "구름 한 조각이 받아쓰기 칸에 살포시 앉았어요.",
+      openingCue: "구름 소리를 천천히 듣고 한 글자씩 적어 볼까요?",
+      celebrationCue: "구름을 또박또박 적었어요! 하늘이 환하게 웃어요."
+    }
+  },
+  {
+    id: "ko-dictation-current",
+    kind: "korean-dictation",
+    subject: "korean",
+    unit: "낱말 받아쓰기",
+    title: "반짝임",
+    level: "3단계",
+    readLabel: "낱말을 듣고 쓰기",
+    text: "반짝임",
+    hint: "받침 소리를 한 글자씩 확인해 봐요.",
+    tokens: ["반짝임"],
+    promptText: "반짝임",
+    answerText: "반짝임",
+    mode: "word",
+    delight: {
+      companion: "momo",
+      mishap: "반짝이 하나가 받침 뒤에 꼭 숨어 버렸어요.",
+      openingCue: "반짝이는 소리를 놓치지 말고 차분히 적어 봐요.",
+      celebrationCue: "받침까지 정확해요! 글자가 별처럼 반짝여요."
+    }
+  },
+  {
+    id: "ko-dictation-challenge",
+    kind: "korean-dictation",
+    subject: "korean",
+    unit: "문장 받아쓰기",
+    title: "별빛이 내려요",
+    level: "4단계",
+    readLabel: "짧은 문장을 듣고 쓰기",
+    text: "별빛이 내려요.",
+    hint: "띄어쓰기는 천천히 다시 들어도 좋아요.",
+    tokens: ["별빛이", "내려요"],
+    promptText: "별빛이 내려요.",
+    answerText: "별빛이 내려요.",
+    mode: "sentence",
+    delight: {
+      companion: "momo",
+      mishap: "별빛 한 줄이 마침표를 데리고 산책을 나왔어요.",
+      openingCue: "짧은 문장을 끝까지 듣고 별빛처럼 이어 적어 봐요.",
+      celebrationCue: "문장을 모두 맞혔어요! 별빛과 마침표가 제자리를 찾았어요."
+    }
+  }
+];
+
+export const INITIAL_ITEMS: LearningItemPayload[] = [
+  ...INITIAL_ITEMS_V3,
+  ...STEP_UP_DICTATION_ITEMS
 ];
 
 const CURRICULUM_NODES = [
@@ -548,12 +619,12 @@ export function seedInitialContent(db: Database.Database): void {
   const promoteInitialItem = db.prepare(`
     UPDATE content_items
     SET active_version = @version
-    WHERE id = @itemId AND active_version < 3
+    WHERE id = @itemId AND active_version < 4
   `);
   const promoteCalculationSkill = db.prepare(`
     UPDATE content_items
     SET skill_id = 'skill-math-calculation'
-    WHERE id = @itemId AND active_version < 3
+    WHERE id = @itemId AND active_version < 4
   `);
 
   db.transaction(() => {
@@ -565,10 +636,11 @@ export function seedInitialContent(db: Database.Database): void {
     for (const item of INITIAL_ITEMS) {
       const legacyItem = INITIAL_ITEMS_V1.find(({ id }) => id === item.id);
       const versionTwoItem = INITIAL_ITEMS_V2.find(({ id }) => id === item.id);
-      if (!legacyItem || !versionTwoItem) {
-        throw new Error(`INITIAL_CONTENT_V1_MISSING:${item.id}`);
+      const versionThreeItem = INITIAL_ITEMS_V3.find(({ id }) => id === item.id);
+      if (versionThreeItem !== undefined && (!legacyItem || !versionTwoItem)) {
+        throw new Error(`INITIAL_CONTENT_LEGACY_MISSING:${item.id}`);
       }
-      const skillId = item.kind === "korean-reading"
+      const skillId = item.subject === "korean"
         ? "skill-korean-reading"
         : isCalculationItem(item)
           ? "skill-math-calculation"
@@ -581,21 +653,30 @@ export function seedInitialContent(db: Database.Database): void {
         activeVersion: INITIAL_CONTENT_VERSION,
         createdAt
       });
-      insertVersion.run({
-        itemId: legacyItem.id,
-        version: 1,
-        payloadJson: JSON.stringify(legacyItem),
-        createdAt
-      });
-      insertVersion.run({
-        itemId: versionTwoItem.id,
-        version: 2,
-        payloadJson: JSON.stringify(versionTwoItem),
-        createdAt
-      });
+      if (legacyItem !== undefined && versionTwoItem !== undefined &&
+          versionThreeItem !== undefined) {
+        insertVersion.run({
+          itemId: legacyItem.id,
+          version: 1,
+          payloadJson: JSON.stringify(legacyItem),
+          createdAt
+        });
+        insertVersion.run({
+          itemId: versionTwoItem.id,
+          version: 2,
+          payloadJson: JSON.stringify(versionTwoItem),
+          createdAt
+        });
+        insertVersion.run({
+          itemId: versionThreeItem.id,
+          version: 3,
+          payloadJson: JSON.stringify(versionThreeItem),
+          createdAt
+        });
+      }
       insertVersion.run({
         itemId: item.id,
-        version: 3,
+        version: INITIAL_CONTENT_VERSION,
         payloadJson: JSON.stringify(item),
         createdAt
       });

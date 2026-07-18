@@ -1,7 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getDailyItems } from "../../src/shared/daily-order";
 import type { TodayPlan } from "../../src/shared/learning";
-import { INITIAL_ITEMS } from "../../src/server/db/seed";
 import { StarRepository } from "../../src/server/stars/repository";
 import {
   createTestHarness,
@@ -105,17 +103,6 @@ function boundIdleEvent(
   };
 }
 
-function expectedRequiredIds(studyDate: string): string[] {
-  const counts = { korean: 0, math: 0 };
-  return getDailyItems(INITIAL_ITEMS, studyDate)
-    .filter((item) => {
-      if (counts[item.subject] >= 2) return false;
-      counts[item.subject] += 1;
-      return true;
-    })
-    .map((item) => item.id);
-}
-
 function passingAttempt(
   plan: TodayPlan,
   item: TodayPlan["items"][number],
@@ -134,10 +121,28 @@ function passingAttempt(
     mathAnswer: item.payload.kind === "math-story"
       ? item.payload.answer
       : null,
+    dictationText: item.payload.kind === "korean-dictation"
+      ? item.payload.answerText
+      : undefined,
     durationMs: 12_000,
     difficultyFeedback: null,
     ...overrides
   };
+}
+
+function failingAttempt(
+  plan: TodayPlan,
+  item: TodayPlan["items"][number],
+  clientAttemptId: string
+) {
+  const input = passingAttempt(plan, item, clientAttemptId);
+  if (item.payload.kind === "korean-dictation") {
+    return { ...input, dictationText: "틀린 답" };
+  }
+  if (item.payload.kind === "math-story") {
+    return { ...input, mathAnswer: item.payload.answer + 1 };
+  }
+  return { ...input, readingScore: 0, missedTokens: [item.payload.tokens[0]!] };
 }
 
 describe("issued-plan required learning star awards", () => {
@@ -157,7 +162,8 @@ describe("issued-plan required learning star awards", () => {
 
     const first = await getToday(student);
     const second = await getToday(student);
-    expect(first.requiredItemIds).toEqual(expectedRequiredIds("2026-07-15"));
+    expect(first.requiredItemIds).toEqual(first.items.map((item) => item.id));
+    expect(first.requiredItemIds).toHaveLength(6);
     expect(second.requiredItemIds).toEqual(first.requiredItemIds);
     expect(second.items).toEqual(first.items);
     expect(first.stars).toEqual({
@@ -182,6 +188,69 @@ describe("issued-plan required learning star awards", () => {
     ).isRequired === 1)).toEqual(
       first.requiredItemIds.map((itemId) => ({ itemId, isRequired: 1 }))
     );
+  });
+
+  it("issues one authoritative foundation, current, and challenge item per subject", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    expect((await student.request("POST", "/api/auth/guardian/login", {
+      password: FAMILY.password
+    })).statusCode).toBe(204);
+    const configured = await student.request(
+      "PUT",
+      "/api/guardian/daily-plans/2026-07-15",
+      {
+        koreanTarget: 2,
+        mathTarget: 2,
+        isRestDay: false,
+        subjectSettings: {
+          korean: { difficulty: 3, challengeBonusStars: 2 },
+          math: { difficulty: 3, challengeBonusStars: 4 }
+        }
+      }
+    );
+    expect(configured.statusCode).toBe(200);
+    expect(configured.json()).toMatchObject({
+      subjectSettings: {
+        korean: { difficulty: 3, challengeBonusStars: 2 },
+        math: { difficulty: 3, challengeBonusStars: 4 }
+      }
+    });
+    expect((await student.request("POST", "/api/auth/logout")).statusCode)
+      .toBe(204);
+    expect((await student.request("POST", "/api/auth/student/login", {
+      pin: "2580"
+    })).statusCode).toBe(200);
+
+    const today = await getToday(student);
+    expect(today.items).toHaveLength(6);
+    expect(today.requiredItemIds).toEqual(today.items.map((item) => item.id));
+    for (const subject of ["korean", "math"] as const) {
+      expect(today.items.filter((item) => item.payload.subject === subject)
+        .map((item) => item.step)).toEqual([
+          "foundation", "current", "challenge"
+        ]);
+    }
+    const korean = today.items.filter((item) =>
+      item.payload.subject === "korean"
+    );
+    expect(korean.map((item) => item.payload.kind)).toEqual([
+      "korean-dictation", "korean-dictation", "korean-dictation"
+    ]);
+    expect(korean.map((item) =>
+      item.payload.kind === "korean-dictation" ? item.payload.mode : null
+    )).toEqual(["word", "word", "sentence"]);
+    expect(harness.db.prepare(`
+      SELECT subject, step FROM daily_requirements
+      ORDER BY sort_order
+    `).all()).toEqual([
+      { subject: "korean", step: "foundation" },
+      { subject: "korean", step: "current" },
+      { subject: "korean", step: "challenge" },
+      { subject: "math", step: "foundation" },
+      { subject: "math", step: "current" },
+      { subject: "math", step: "challenge" }
+    ]);
   });
 
   it("awards one required-item source and keeps retry receipts idempotent", async () => {
@@ -270,20 +339,11 @@ describe("issued-plan required learning star awards", () => {
     const student = harness.client();
     await authenticateStudent(harness, student);
     const plan = await getToday(student);
-    const item = plan.items.find(
-      (candidate) => !plan.requiredItemIds.includes(candidate.id)
-    )!;
+    const item = plan.items[0]!;
     harness.db.prepare(`
-      INSERT INTO daily_requirements (
-        student_id, study_date, item_id, subject, sort_order, created_at
-      ) VALUES (?, ?, ?, ?, 99, ?)
-    `).run(
-      studentId(harness),
-      plan.date,
-      item.id,
-      item.payload.subject,
-      "2026-07-15T03:03:00.000Z"
-    );
+      UPDATE issued_plan_items SET is_required = 0
+      WHERE plan_id = ? AND item_id = ?
+    `).run(plan.planId, item.id);
 
     const response = await student.request(
       "POST",
@@ -308,17 +368,18 @@ describe("issued-plan required learning star awards", () => {
     const student = harness.client();
     await authenticateStudent(harness, student);
     const plan = await getToday(student);
-    const required = plan.items.find(
-      (candidate) => candidate.id === plan.requiredItemIds[0]
-    )!;
-    const optional = plan.items.find(
-      (candidate) => !plan.requiredItemIds.includes(candidate.id)
-    )!;
+    const required = plan.items.find((item) => item.step === "foundation")!;
+    const optional = plan.items.find((item) => item.step === "current")!;
+    harness.db.prepare(`
+      UPDATE issued_plan_items SET is_required = 0
+      WHERE plan_id = ? AND item_id = ?
+    `).run(plan.planId, optional.id);
 
-    const failed = await student.request("POST", "/api/student/attempts", {
-      ...passingAttempt(plan, required, "attempt-failed-required-0001"),
-      readingScore: 0
-    });
+    const failed = await student.request(
+      "POST",
+      "/api/student/attempts",
+      failingAttempt(plan, required, "attempt-failed-required-0001")
+    );
     expect(failed.statusCode).toBe(201);
     expect(failed.json().starAward).toEqual({
       awarded: false,
@@ -365,20 +426,14 @@ describe("issued-plan required learning star awards", () => {
 
     const plan = await getToday(student);
     expect(plan.requiredItemIds).toEqual([]);
+    expect(plan.items).toEqual([]);
     expect(harness.db.prepare(`
       SELECT COUNT(*) AS count FROM issued_plan_items WHERE is_required = 1
     `).get()).toEqual({ count: 0 });
-    const attempt = await student.request(
-      "POST",
-      "/api/student/attempts",
-      passingAttempt(plan, plan.items[0]!, "attempt-rest-day-0001")
-    );
-    expect(attempt.json().starAward).toEqual({
-      awarded: false,
-      amount: 0,
-      balance: 0,
-      eventId: null
-    });
+    expect(harness.db.prepare(`
+      SELECT COUNT(*) AS count FROM star_events
+      WHERE reason_code = 'CHALLENGE_PERFECT'
+    `).get()).toEqual({ count: 0 });
   });
 
   it("rolls back attempt, star, receipt, and cursor when receipt persistence fails", async () => {

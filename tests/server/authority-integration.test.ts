@@ -42,6 +42,9 @@ function passingAttempt(
     readingScore: 100,
     missedTokens: [],
     mathAnswer: item.payload.kind === "math-story" ? item.payload.answer : null,
+    dictationText: item.payload.kind === "korean-dictation"
+      ? item.payload.answerText
+      : undefined,
     durationMs: 12_000,
     difficultyFeedback: null
   };
@@ -110,7 +113,7 @@ describe("predeployment authority integration", () => {
     const requiredB = planB.requiredItemIds.map((id) =>
       planB.items.find((item) => item.id === id)!
     );
-    expect(requiredA).toHaveLength(4);
+    expect(requiredA).toHaveLength(6);
     expect(requiredB.map((item) => item.id)).toEqual(
       requiredA.map((item) => item.id)
     );
@@ -304,10 +307,10 @@ describe("predeployment authority integration", () => {
     expect(recovered.json()).toMatchObject({
       activityCursor: 5,
       stars: {
-        balance: 3,
-        earnedToday: 3,
+        balance: 5,
+        earnedToday: 5,
         deductedToday: 0,
-        lastReason: "필수 학습을 완료했어요"
+        lastReason: "도전 단계를 모두 맞혔어요"
       },
       processedPlan: { planId: recovery.planId, planKind: "recovery" },
       currentDailyPlan: { planId: currentA.planId },
@@ -319,7 +322,7 @@ describe("predeployment authority integration", () => {
         {
           clientId: preservedSourceAttempt.clientAttemptId,
           status: "APPLIED",
-          attempt: { completed: true, starAward: { amount: 1, balance: 3 } }
+          attempt: { completed: true, starAward: { amount: 1, balance: 5 } }
         }
       ]
     });
@@ -374,10 +377,10 @@ describe("predeployment authority integration", () => {
       activityCursor: 5,
       completedItemIds: completedBeforeContinuation,
       stars: {
-        balance: 3,
-        earnedToday: 3,
+        balance: 5,
+        earnedToday: 5,
         deductedToday: 0,
-        lastReason: "필수 학습을 완료했어요"
+        lastReason: "도전 단계를 모두 맞혔어요"
       }
     });
     expect(bStillCurrent.activityCursor).toBe(recovered.json().activityCursor);
@@ -402,17 +405,17 @@ describe("predeployment authority integration", () => {
     expect(continuation.json()).toMatchObject({
       completed: true,
       activityCursor: 6,
-      starAward: { awarded: true, amount: 1, balance: 4 }
+      starAward: { awarded: true, amount: 1, balance: 6 }
     });
     const bAfterContinuation = await today(b);
     expect(bAfterContinuation).toMatchObject({
       planId: planB.planId,
       offlineEpoch: planB.offlineEpoch,
       activityCursor: 6,
-      completedItemIds: planB.requiredItemIds,
+      completedItemIds: [...completedBeforeContinuation, bContinuationItem.id],
       stars: {
-        balance: 4,
-        earnedToday: 4,
+        balance: 6,
+        earnedToday: 6,
         deductedToday: 0,
         lastReason: "필수 학습을 완료했어요"
       }

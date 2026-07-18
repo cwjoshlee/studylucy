@@ -305,6 +305,16 @@ export const StarAwardReceiptSchema = z.object({
 
 export type StarAwardReceipt = z.infer<typeof StarAwardReceiptSchema>;
 
+export const ChallengeBonusReceiptSchema = z.object({
+  eligible: z.boolean(),
+  awarded: z.boolean(),
+  amount: z.number().int().nonnegative()
+}).strict();
+
+export type ChallengeBonusReceipt = z.infer<
+  typeof ChallengeBonusReceiptSchema
+>;
+
 export const AttemptReceiptSchema = z.object({
   id: z.string().min(1),
   duplicate: z.boolean(),
@@ -313,6 +323,7 @@ export const AttemptReceiptSchema = z.object({
   dictationPass: z.boolean().nullable(),
   completed: z.boolean(),
   starAward: StarAwardReceiptSchema,
+  challengeBonus: ChallengeBonusReceiptSchema.optional(),
   activityCursor: z.number().int().nonnegative()
 });
 
