@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import {
+  evaluateAttemptCompletion,
   LearningItemPayloadSchema,
   type AttemptInput,
   type AttemptReceipt,
@@ -18,6 +19,7 @@ export type ActiveLearningItem = {
 export type ProgressAttempt = {
   itemId: string;
   studyDate: string;
+  subject: "korean" | "math";
   readingPass: boolean;
   mathPass: boolean | null;
   missedTokens: string[];
@@ -263,11 +265,10 @@ export class LearningRepository {
     }
 
     const payload = input.snapshot.payload;
-    const readingPass =
-      input.readingScore >= 85 && input.missedTokens.length === 0;
-    const mathPass = payload.kind === "math-story"
-      ? input.mathAnswer !== null && input.mathAnswer === payload.answer
-      : null;
+    const { readingPass, mathPass, completed } = evaluateAttemptCompletion(
+      payload,
+      input
+    );
 
     this.db.prepare(`
         INSERT INTO attempts (
@@ -295,7 +296,6 @@ export class LearningRepository {
         input.occurredAt
     );
 
-    const completed = readingPass && (mathPass ?? true);
     const starAward = this.createStarAwardReceipt({
       studentId: input.userId,
       studyDate: input.snapshot.studyDate,
@@ -392,16 +392,19 @@ export class LearningRepository {
     const rows = this.db.prepare(`
       SELECT a.item_id AS itemId,
              a.study_date AS studyDate,
+             ci.subject AS subject,
              a.reading_pass AS readingPass,
              a.math_pass AS mathPass,
              a.missed_tokens_json AS missedTokensJson
       FROM attempts AS a
       JOIN users AS u ON u.id = a.user_id
+      JOIN content_items AS ci ON ci.id = a.item_id
       WHERE u.role = 'student' AND a.study_date BETWEEN ? AND ?
       ORDER BY a.created_at DESC, a.id DESC
     `).all(from, to) as Array<{
       itemId: string;
       studyDate: string;
+      subject: "korean" | "math";
       readingPass: number;
       mathPass: number | null;
       missedTokensJson: string;
@@ -410,6 +413,7 @@ export class LearningRepository {
     return rows.map((row) => ({
       itemId: row.itemId,
       studyDate: row.studyDate,
+      subject: row.subject,
       readingPass: row.readingPass === 1,
       mathPass: row.mathPass === null ? null : row.mathPass === 1,
       missedTokens: JSON.parse(row.missedTokensJson) as string[]

@@ -2,6 +2,7 @@ import { openDB, type DBSchema, type IDBPDatabase, type IDBPTransaction } from "
 import type { CurrentUser } from "../../shared/auth";
 import {
   ActivityEventSchema,
+  evaluateAttemptCompletion,
   AttemptInputSchema,
   LegacyAttemptInputSchema,
   LegacyIdleEventInputSchema,
@@ -21,7 +22,6 @@ import {
   type IdleEventInput,
   type StudentStarSummary
 } from "../../shared/stars";
-import { READING_PASS_SCORE } from "../learning/reading-judge";
 
 export const OFFLINE_DB_NAME = "sua-learning-v1";
 export const OFFLINE_DB_VERSION = 2;
@@ -409,15 +409,7 @@ function isLocallyCompleted(
     candidate.id === attempt.itemId &&
     candidate.version === attempt.contentVersion
   );
-  if (
-    item === undefined ||
-    attempt.readingScore < READING_PASS_SCORE ||
-    attempt.missedTokens.length > 0
-  ) {
-    return false;
-  }
-  return item.payload.kind !== "math-story" ||
-    attempt.mathAnswer === item.payload.answer;
+  return item !== undefined && evaluateAttemptCompletion(item.payload, attempt).completed;
 }
 
 async function nextSequence(

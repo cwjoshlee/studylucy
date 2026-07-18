@@ -3,6 +3,7 @@ import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
 import { INITIAL_ITEMS_V1 } from "../../src/server/db/seed-v1";
+import { INITIAL_ITEMS_V2 } from "../../src/server/db/seed-v2";
 import {
   INITIAL_CONTENT_VERSION,
   INITIAL_ITEMS
@@ -109,13 +110,71 @@ describe("retired prototype parity manifest", () => {
 });
 
 describe("approved version 2 content contract", () => {
-  it("publishes the exact ordered IDs and titles as active content version 2", () => {
-    expect(INITIAL_CONTENT_VERSION).toBe(2);
-    expect(INITIAL_ITEMS.map(({ id }) => id)).toEqual(APPROVED_V2_IDS);
-    expect(INITIAL_ITEMS.map(({ title }) => title)).toEqual(APPROVED_V2_TITLES);
+  it("preserves the version 2 payload JSON byte-for-byte", () => {
+    expect(sha256(JSON.stringify(INITIAL_ITEMS_V2)))
+      .toBe("1f4949569376f0c8119a9bd5267c78bde99af97097c490caccadd4c457d98c80");
+    expect(INITIAL_ITEMS_V2.map(({ id }) => id)).toEqual(APPROVED_V2_IDS);
+    expect(INITIAL_ITEMS_V2.map(({ title }) => title)).toEqual(APPROVED_V2_TITLES);
   });
 
-  it("round-trips every approved payload through the shared schema", () => {
+  it("publishes ten validated calculation items as active version 3", () => {
+    const calculations = INITIAL_ITEMS.filter(
+      (item) => item.kind === "math-calculation"
+    );
+    expect(INITIAL_CONTENT_VERSION).toBe(3);
+    expect(calculations).toHaveLength(10);
+    expect(calculations.map((item) => [
+      item.id,
+      item.operands,
+      item.operators,
+      item.layout,
+      item.answer
+    ])).toEqual([
+      ["math-01", [13, 9, 4], ["+", "+"], "horizontal", 26],
+      ["math-02", [21, 2, 8], ["+", "+"], "horizontal", 31],
+      ["math-03", [17, 3, 6], ["+", "+"], "horizontal", 26],
+      ["math-04", [21, 6, 9], ["+", "-"], "horizontal", 18],
+      ["math-05", [23, 7, 4], ["-", "-"], "horizontal", 12],
+      ["math-06", [15, 5, 3], ["-", "-"], "horizontal", 7],
+      ["math-07", [27, 6], ["+"], "vertical", 33],
+      ["math-08", [44, 9], ["-"], "vertical", 35],
+      ["math-09", [38, 7], ["+"], "vertical", 45],
+      ["math-10", [56, 8], ["-"], "vertical", 48]
+    ]);
+    expect(calculations.map(({ layout }) => layout))
+      .toEqual(expect.arrayContaining(["horizontal", "vertical"]));
+    expect(JSON.stringify(INITIAL_ITEMS.filter((item) => item.subject === "korean")))
+      .not.toMatch(/루미|봉봉/);
+  });
+
+  it("rejects invalid calculation payloads and round-trips every approved v3 payload", () => {
+    const calculation = {
+      id: "calculation-contract",
+      kind: "math-calculation",
+      subject: "math",
+      unit: "세 수의 혼합 계산",
+      title: "계산해 봐요",
+      level: "1단계",
+      readLabel: "식을 읽어 봐요",
+      text: "13 더하기 9 더하기 4예요.",
+      hint: "왼쪽부터 계산해요.",
+      tokens: ["13", "9", "4"],
+      operands: [13, 9, 4],
+      operators: ["+", "+"],
+      layout: "horizontal",
+      answer: 26,
+      checkHint: "13과 9를 더한 뒤 4를 더해요."
+    };
+    expect(LearningItemPayloadSchema.safeParse(calculation).success).toBe(true);
+    for (const invalid of [
+      { ...calculation, operators: ["+"] },
+      { ...calculation, subject: "korean" },
+      { ...calculation, answer: 25 },
+      { ...calculation, operands: [4, 9, 1], operators: ["-", "+"], answer: -4 },
+      { ...calculation, layout: "vertical" }
+    ]) {
+      expect(LearningItemPayloadSchema.safeParse(invalid).success).toBe(false);
+    }
     const roundTripped = INITIAL_ITEMS.map((item) =>
       LearningItemPayloadSchema.parse(JSON.parse(JSON.stringify(item))));
 

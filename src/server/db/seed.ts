@@ -2,7 +2,7 @@ import type Database from "better-sqlite3";
 import type { LearningItemPayload } from "../../shared/learning";
 import { INITIAL_ITEMS_V1 } from "./seed-v1";
 
-export const INITIAL_CONTENT_VERSION = 2;
+export const INITIAL_CONTENT_VERSION = 3;
 
 const MATH_TOKENS = {
   "math-01": ["모모", "보라 포도알", "8개", "초록 포도알", "7개", "모두"],
@@ -17,7 +17,7 @@ const MATH_TOKENS = {
   "math-10": ["봉봉", "별 모자", "15개", "양말 모자", "5개", "모두"]
 } as const;
 
-export const INITIAL_ITEMS: LearningItemPayload[] = [
+export const INITIAL_ITEMS_V2: LearningItemPayload[] = [
   {
     id: "ko-01",
     kind: "korean-reading",
@@ -420,14 +420,70 @@ export const INITIAL_ITEMS: LearningItemPayload[] = [
   }
 ];
 
+const V3_KOREAN_ITEMS = INITIAL_ITEMS_V2
+  .filter((item) => item.subject === "korean")
+  .map((item) => JSON.parse(JSON.stringify(item)
+    .replaceAll("루미", "버니")
+    .replaceAll("봉봉", "밀키")) as LearningItemPayload);
+
+type CalculationSeed = [
+  id: string,
+  operands: [number, number] | [number, number, number],
+  operators: ["+"] | ["-"] | ["+", "+"] | ["+", "-"] | ["-", "+"] | ["-", "-"],
+  layout: "horizontal" | "vertical",
+  answer: number
+];
+
+const CALCULATION_ITEMS: LearningItemPayload[] = ([
+  ["math-01", [13, 9, 4], ["+", "+"], "horizontal", 26],
+  ["math-02", [21, 2, 8], ["+", "+"], "horizontal", 31],
+  ["math-03", [17, 3, 6], ["+", "+"], "horizontal", 26],
+  ["math-04", [21, 6, 9], ["+", "-"], "horizontal", 18],
+  ["math-05", [23, 7, 4], ["-", "-"], "horizontal", 12],
+  ["math-06", [15, 5, 3], ["-", "-"], "horizontal", 7],
+  ["math-07", [27, 6], ["+"], "vertical", 33],
+  ["math-08", [44, 9], ["-"], "vertical", 35],
+  ["math-09", [38, 7], ["+"], "vertical", 45],
+  ["math-10", [56, 8], ["-"], "vertical", 48]
+] satisfies CalculationSeed[]).map(([id, operands, operators, layout, answer], index) => ({
+  id,
+  kind: "math-calculation" as const,
+  subject: "math" as const,
+  unit: operands.length === 2 ? "받아올림과 받아내림" : "세 수의 혼합 계산",
+  title: layout === "vertical" ? `세로셈 ${index - 5}` : `세 수 계산 ${index + 1}`,
+  level: `${Math.ceil((index + 1) / 2)}단계`,
+  readLabel: layout === "vertical" ? "세로셈 계산하기" : "식을 읽고 계산하기",
+  text: operands.map(String).join(" ") + "을(를) 차례대로 계산해요.",
+  hint: layout === "vertical" ? "일의 자리부터 차분히 계산해요." : "왼쪽부터 한 번씩 계산해요.",
+  tokens: operands.map(String),
+  operands,
+  operators,
+  layout,
+  answer,
+  checkHint: "계산 순서를 다시 확인해 봐요.",
+  delight: {
+    companion: "momo",
+    mishap: "숫자들이 줄을 서다가 자리를 바꾸었어요.",
+    openingCue: "버니와 밀키가 계산판을 반듯하게 펴 주었어요.",
+    celebrationCue: "정답을 찾았어요! 숫자들이 박수를 쳐요."
+  }
+}));
+
+export const INITIAL_ITEMS: LearningItemPayload[] = [
+  ...V3_KOREAN_ITEMS,
+  ...CALCULATION_ITEMS
+];
+
 const CURRICULUM_NODES = [
   { id: "grade-1", parentId: null, kind: "grade", code: "grade-1", title: "1학년", sortOrder: 1 },
   { id: "subject-korean", parentId: "grade-1", kind: "subject", code: "grade-1.korean", title: "국어", sortOrder: 1 },
   { id: "subject-math", parentId: "grade-1", kind: "subject", code: "grade-1.math", title: "수학", sortOrder: 2 },
   { id: "unit-korean-reading", parentId: "subject-korean", kind: "unit", code: "grade-1.korean.reading", title: "동화 읽기", sortOrder: 1 },
   { id: "unit-math-story", parentId: "subject-math", kind: "unit", code: "grade-1.math.story", title: "숲속 수학 이야기", sortOrder: 1 },
+  { id: "unit-math-calculation", parentId: "subject-math", kind: "unit", code: "grade-1.math.calculation", title: "받아올림과 받아내림", sortOrder: 2 },
   { id: "skill-korean-reading", parentId: "unit-korean-reading", kind: "skill", code: "grade-1.korean.reading.paragraph", title: "짧은 단락 읽기", sortOrder: 1 },
-  { id: "skill-math-story", parentId: "unit-math-story", kind: "skill", code: "grade-1.math.story.answer", title: "지문 읽고 답하기", sortOrder: 1 }
+  { id: "skill-math-story", parentId: "unit-math-story", kind: "skill", code: "grade-1.math.story.answer", title: "지문 읽고 답하기", sortOrder: 1 },
+  { id: "skill-math-calculation", parentId: "unit-math-calculation", kind: "skill", code: "grade-1.math.calculation.mixed", title: "세 수의 혼합 계산", sortOrder: 1 }
 ] as const;
 
 export function seedInitialContent(db: Database.Database): void {
@@ -453,7 +509,7 @@ export function seedInitialContent(db: Database.Database): void {
   const promoteInitialItem = db.prepare(`
     UPDATE content_items
     SET active_version = @version
-    WHERE id = @itemId AND active_version = 1
+    WHERE id = @itemId AND active_version < 3
   `);
 
   db.transaction(() => {
@@ -464,12 +520,15 @@ export function seedInitialContent(db: Database.Database): void {
     const createdAt = new Date().toISOString();
     for (const item of INITIAL_ITEMS) {
       const legacyItem = INITIAL_ITEMS_V1.find(({ id }) => id === item.id);
-      if (!legacyItem) {
+      const versionTwoItem = INITIAL_ITEMS_V2.find(({ id }) => id === item.id);
+      if (!legacyItem || !versionTwoItem) {
         throw new Error(`INITIAL_CONTENT_V1_MISSING:${item.id}`);
       }
       const skillId = item.kind === "korean-reading"
         ? "skill-korean-reading"
-        : "skill-math-story";
+        : item.kind === "math-calculation"
+          ? "skill-math-calculation"
+          : "skill-math-story";
 
       insertItem.run({
         id: item.id,
@@ -485,8 +544,14 @@ export function seedInitialContent(db: Database.Database): void {
         createdAt
       });
       insertVersion.run({
+        itemId: versionTwoItem.id,
+        version: 2,
+        payloadJson: JSON.stringify(versionTwoItem),
+        createdAt
+      });
+      insertVersion.run({
         itemId: item.id,
-        version: INITIAL_CONTENT_VERSION,
+        version: 3,
         payloadJson: JSON.stringify(item),
         createdAt
       });

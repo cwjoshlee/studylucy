@@ -52,18 +52,18 @@ describe("database bootstrap", () => {
     ]);
   });
 
-  it("activates initial content version 2 without rewriting an existing v1", () => {
+  it("activates version 3 without rewriting existing v1 or v2 payloads", () => {
     const upgrade = openDatabase(":memory:");
     try {
       migrate(upgrade);
       seedInitialContent(upgrade);
       const v1Before = upgrade.prepare(`
         SELECT payload_json AS payloadJson FROM content_versions
-        WHERE item_id = 'ko-01' AND version = 1
+        WHERE item_id = 'math-01' AND version = 1
       `).get() as { payloadJson: string };
-      const v2 = upgrade.prepare(`
+      const v2Before = upgrade.prepare(`
         SELECT payload_json AS payloadJson FROM content_versions
-        WHERE item_id = 'ko-01' AND version = 2
+        WHERE item_id = 'math-01' AND version = 2
       `).get() as { payloadJson: string };
 
       upgrade.prepare("UPDATE content_items SET active_version = 1 WHERE id = 'ko-01'").run();
@@ -73,21 +73,25 @@ describe("database bootstrap", () => {
 
       expect(upgrade.prepare(`
         SELECT active_version AS activeVersion FROM content_items WHERE id = 'ko-01'
-      `).get()).toEqual({ activeVersion: 2 });
+      `).get()).toEqual({ activeVersion: 3 });
       expect(upgrade.prepare(`
         SELECT payload_json AS payloadJson FROM content_versions
-        WHERE item_id = 'ko-01' AND version = 1
+        WHERE item_id = 'math-01' AND version = 1
       `).get()).toEqual({ payloadJson: v1Before.payloadJson });
       expect(upgrade.prepare(`
         SELECT payload_json AS payloadJson FROM content_versions
-        WHERE item_id = 'ko-01' AND version = 2
-      `).get()).toEqual({ payloadJson: v2.payloadJson });
+        WHERE item_id = 'math-01' AND version = 2
+      `).get()).toEqual({ payloadJson: v2Before.payloadJson });
+      expect(upgrade.prepare(`
+        SELECT payload_json AS payloadJson FROM content_versions
+        WHERE item_id = 'math-01' AND version = 3
+      `).get()).not.toEqual({ payloadJson: v2Before.payloadJson });
     } finally {
       upgrade.close();
     }
   });
 
-  it("never downgrades guardian-authored active version 3", () => {
+  it("never downgrades a guardian-authored active version", () => {
     const edited = openDatabase(":memory:");
     try {
       migrate(edited);
@@ -98,15 +102,15 @@ describe("database bootstrap", () => {
       `).get() as { payloadJson: string };
       edited.prepare(`
         INSERT INTO content_versions (item_id, version, payload_json, created_at)
-        VALUES ('ko-01', 3, ?, '2026-07-17T00:00:00.000Z')
+        VALUES ('ko-01', 4, ?, '2026-07-17T00:00:00.000Z')
       `).run(v2.payloadJson);
-      edited.prepare("UPDATE content_items SET active_version = 3 WHERE id = 'ko-01'").run();
+      edited.prepare("UPDATE content_items SET active_version = 4 WHERE id = 'ko-01'").run();
 
       seedInitialContent(edited);
 
       expect(edited.prepare(`
         SELECT active_version AS activeVersion FROM content_items WHERE id = 'ko-01'
-      `).get()).toEqual({ activeVersion: 3 });
+      `).get()).toEqual({ activeVersion: 4 });
     } finally {
       edited.close();
     }

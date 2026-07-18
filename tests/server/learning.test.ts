@@ -71,7 +71,7 @@ function passingAttempt(
     occurredAt: "2026-07-15T03:05:00.000Z",
     readingScore: 100,
     missedTokens: [],
-    mathAnswer: item.payload.kind === "math-story"
+    mathAnswer: item.payload.kind === "math-story" || item.payload.kind === "math-calculation"
       ? item.payload.answer
       : null,
     durationMs: 12_000,
@@ -484,7 +484,7 @@ describe("authoritative learning API", () => {
     const student = harness.client();
     await authenticateStudent(harness, student);
     const plan = await getToday(student);
-    const item = plan.items.find(({ payload }) => payload.kind === "math-story")!;
+    const item = plan.items.find(({ payload }) => payload.subject === "math")!;
     const otherItem = plan.items.find(({ id }) => id !== item.id)!;
     const clientAttemptId = "attempt-changed-body-reuse-0001";
     const canonical = passingAttempt(plan, item, clientAttemptId);
@@ -589,14 +589,16 @@ describe("authoritative learning API", () => {
     await authenticateStudent(harness, student);
     const plan = await getToday(student);
     const issuedMath = plan.items.find((item) => item.id === "math-01")!;
-    expect(issuedMath.payload.kind).toBe("math-story");
+    expect(issuedMath.payload.kind).toBe("math-calculation");
 
     const nextContentVersion = INITIAL_CONTENT_VERSION + 1;
     const publishedNextVersion = {
       ...issuedMath.payload,
       title: "바뀐 수학 문제",
       text: "정답이 완전히 달라진 새 문제예요.",
-      ...(issuedMath.payload.kind === "math-story" ? { answer: 999 } : {})
+      ...(issuedMath.payload.kind === "math-story" || issuedMath.payload.kind === "math-calculation"
+        ? { answer: 999 }
+        : {})
     };
     harness.db.prepare(`
       INSERT INTO content_versions (item_id, version, payload_json, created_at)
@@ -763,8 +765,78 @@ describe("authoritative learning API", () => {
     expect(progress.json()).toEqual({
       completedItems: 0,
       totalAttempts: 1,
-      readingPassRate: 100,
+      readingPassRate: 0,
       mathPassRate: 0,
+      recentReviewTokens: []
+    });
+  });
+
+  it("lets a correct calculation complete once without reading credit or Korean review-token effects", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    const plan = await getToday(student);
+    const calculation = plan.items.find(
+      (item) => item.payload.kind === "math-calculation"
+    )!;
+    const korean = plan.items.find((item) => item.payload.subject === "korean")!;
+    expect(calculation).toBeDefined();
+
+    const correct = await student.request("POST", "/api/student/attempts", {
+      ...passingAttempt(plan, calculation, "attempt-calculation-correct-0001"),
+      readingScore: 0,
+      missedTokens: ["계산은 읽기 점수가 아니에요"]
+    });
+    expect(correct.statusCode).toBe(201);
+    expect(correct.json()).toMatchObject({
+      readingPass: true,
+      mathPass: true,
+      completed: true,
+      starAward: { awarded: true, amount: 1 }
+    });
+    const duplicate = await student.request("POST", "/api/student/attempts", {
+      ...passingAttempt(plan, calculation, "attempt-calculation-correct-0001"),
+      readingScore: 0,
+      missedTokens: ["계산은 읽기 점수가 아니에요"]
+    });
+    expect(duplicate.statusCode).toBe(200);
+    expect(duplicate.json()).toMatchObject({
+      duplicate: true,
+      completed: true,
+      starAward: { awarded: true, amount: 1 }
+    });
+
+    const wrong = await student.request("POST", "/api/student/attempts", {
+      ...passingAttempt(plan, plan.items.find((item) =>
+        item.id === "math-02"
+      )!, "attempt-calculation-wrong-0001"),
+      readingScore: 0,
+      missedTokens: ["계산은 읽기 점수가 아니에요"],
+      mathAnswer: -1
+    });
+    expect(wrong.statusCode).toBe(201);
+    expect(wrong.json()).toMatchObject({
+      readingPass: true,
+      mathPass: false,
+      completed: false,
+      starAward: { awarded: false, amount: 0 }
+    });
+
+    expect((await student.request("POST", "/api/student/attempts",
+      passingAttempt(plan, korean, "attempt-korean-progress-0001")
+    )).statusCode).toBe(201);
+    const guardian = harness.client();
+    expect((await guardian.request("POST", "/api/auth/guardian/login", {
+      password: FAMILY.password
+    })).statusCode).toBe(204);
+    const progress = await guardian.request(
+      "GET",
+      "/api/guardian/progress?from=2026-07-15&to=2026-07-15"
+    );
+    expect(progress.json()).toEqual({
+      completedItems: 2,
+      totalAttempts: 3,
+      readingPassRate: 100,
+      mathPassRate: 50,
       recentReviewTokens: []
     });
   });

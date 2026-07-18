@@ -141,6 +141,46 @@ function mathAttempt(clientAttemptId: string, mathAnswer: number) {
   };
 }
 
+function calculationPlan(): TodayPlan {
+  const current = plan();
+  return {
+    ...current,
+    requiredItemIds: ["math-01"],
+    items: [{
+      id: "math-01",
+      version: 3,
+      payload: {
+        id: "math-01",
+        kind: "math-calculation",
+        subject: "math",
+        unit: "세 수의 혼합 계산",
+        title: "세 수를 계산해요",
+        level: "1단계",
+        readLabel: "식을 읽어 봐요",
+        text: "13 더하기 9 더하기 4예요.",
+        hint: "왼쪽부터 계산해요.",
+        tokens: ["13", "9", "4"],
+        operands: [13, 9, 4],
+        operators: ["+", "+"],
+        layout: "horizontal",
+        answer: 26,
+        checkHint: "13과 9를 더한 뒤 4를 더해요."
+      }
+    }]
+  };
+}
+
+function calculationAttempt(clientAttemptId: string, mathAnswer: number) {
+  return {
+    ...attempt(clientAttemptId),
+    itemId: "math-01",
+    contentVersion: 3,
+    readingScore: 0,
+    missedTokens: ["계산은 읽기 점수가 아니에요"],
+    mathAnswer
+  };
+}
+
 function idle(clientIdleEventId: string): IdleEventInput {
   return {
     clientIdleEventId,
@@ -240,6 +280,20 @@ describe("unified persistent offline synchronization", () => {
     await deleteDB(OFFLINE_DB_NAME);
     vi.useFakeTimers({ toFake: ["Date"] });
     vi.setSystemTime(new Date("2026-07-16T02:00:00.000Z"));
+  });
+
+  it("uses the server calculation completion authority for provisional offline progress", async () => {
+    const current = calculationPlan();
+    await readyWithPlan(current);
+    await queueAttempt(calculationAttempt("attempt-calculation-local-0001", 26));
+    await queueAttempt(calculationAttempt("attempt-calculation-local-0002", -1));
+
+    await expect(getQueueCounts()).resolves.toEqual({
+      activities: 2,
+      provisionalAttempts: 1,
+      rejected: 0
+    });
+    await expect(getProvisionalItemIds()).resolves.toEqual(["math-01"]);
   });
 
   it("reserves one exact oldest group before I/O and reuses the same batch/envelope after a lost response while new rows wait", async () => {

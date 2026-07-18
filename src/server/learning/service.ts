@@ -150,9 +150,10 @@ export class LearningService {
 
   getGuardianProgress(from: string, to: string): GuardianProgress {
     const attempts = this.repository.listProgressAttempts(from, to);
+    const koreanAttempts = attempts.filter((attempt) => attempt.subject === "korean");
     const mathAttempts = attempts.filter((attempt) => attempt.mathPass !== null);
     const tokenCounts = new Map<string, number>();
-    for (const attempt of attempts) {
+    for (const attempt of koreanAttempts) {
       for (const token of attempt.missedTokens) {
         tokenCounts.set(token, (tokenCounts.get(token) ?? 0) + 1);
       }
@@ -168,11 +169,11 @@ export class LearningService {
     return {
       completedItems,
       totalAttempts: attempts.length,
-      readingPassRate: attempts.length === 0
+      readingPassRate: koreanAttempts.length === 0
         ? 0
         : Math.round(
-            attempts.filter((attempt) => attempt.readingPass).length * 100 /
-              attempts.length
+            koreanAttempts.filter((attempt) => attempt.readingPass).length * 100 /
+              koreanAttempts.length
           ),
       mathPassRate: mathAttempts.length === 0
         ? 0

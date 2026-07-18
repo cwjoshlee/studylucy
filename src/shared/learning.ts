@@ -29,10 +29,87 @@ export const LearningItemPayloadSchema = z.discriminatedUnion("kind", [
     answer: z.number().int(),
     unitLabel: z.string(),
     checkHint: z.string().min(1)
+  }),
+  BaseItem.extend({
+    kind: z.literal("math-calculation"),
+    subject: z.literal("math"),
+    unit: z.enum(["받아올림과 받아내림", "세 수의 혼합 계산"]),
+    operands: z.union([
+      z.tuple([z.number().int(), z.number().int()]),
+      z.tuple([z.number().int(), z.number().int(), z.number().int()])
+    ]),
+    operators: z.union([
+      z.tuple([z.literal("+")]),
+      z.tuple([z.literal("-")]),
+      z.tuple([z.literal("+"), z.literal("+")]),
+      z.tuple([z.literal("+"), z.literal("-")]),
+      z.tuple([z.literal("-"), z.literal("+")]),
+      z.tuple([z.literal("-"), z.literal("-")])
+    ]),
+    layout: z.enum(["horizontal", "vertical"]),
+    answer: z.number().int(),
+    checkHint: z.string().min(1)
+  }).superRefine((payload, context) => {
+    if (payload.operators.length !== payload.operands.length - 1) {
+      context.addIssue({
+        code: "custom",
+        path: ["operators"],
+        message: "CALCULATION_OPERATOR_LENGTH_MISMATCH"
+      });
+      return;
+    }
+    if (payload.layout === "vertical" && payload.operands.length !== 2) {
+      context.addIssue({
+        code: "custom",
+        path: ["layout"],
+        message: "CALCULATION_VERTICAL_REQUIRES_TWO_OPERANDS"
+      });
+      return;
+    }
+    let result = payload.operands[0];
+    for (let index = 0; index < payload.operators.length; index += 1) {
+      const operand = payload.operands[index + 1]!;
+      result = payload.operators[index] === "+"
+        ? result + operand
+        : result - operand;
+      if (result < 0) {
+        context.addIssue({
+          code: "custom",
+          path: ["operands", index + 1],
+          message: "CALCULATION_NEGATIVE_INTERMEDIATE"
+        });
+        return;
+      }
+    }
+    if (result !== payload.answer) {
+      context.addIssue({
+        code: "custom",
+        path: ["answer"],
+        message: "CALCULATION_ANSWER_MISMATCH"
+      });
+    }
   })
 ]);
 
 export type LearningItemPayload = z.infer<typeof LearningItemPayloadSchema>;
+
+export function evaluateAttemptCompletion(
+  payload: LearningItemPayload,
+  input: Pick<AttemptInput, "readingScore" | "missedTokens" | "mathAnswer">
+): Pick<AttemptReceipt, "readingPass" | "mathPass" | "completed"> {
+  const isCalculation = payload.kind === "math-calculation";
+  const readingPass = isCalculation
+    ? true
+    : input.readingScore >= 85 && input.missedTokens.length === 0;
+  const mathPass = payload.kind === "math-story" || isCalculation
+    ? input.mathAnswer !== null && input.mathAnswer === payload.answer
+    : null;
+  return {
+    readingPass,
+    mathPass,
+    completed: isCalculation ? mathPass === true : readingPass && (mathPass ?? true)
+  };
+}
 
 export const AttemptInputSchema = z.object({
   clientAttemptId: z.string().min(12).max(80),
