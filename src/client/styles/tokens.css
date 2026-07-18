@@ -1,0 +1,29 @@
+:root {
+  --touch-min: 48px;
+  --ink: #473d5f;
+  --ink-soft: #716785;
+  --cream: #fffaf1;
+  --cloud: #fffefe;
+  --lavender: #e9ddff;
+  --lavender-deep: #7659a8;
+  --mint: #dff5e9;
+  --peach: #ffe0cf;
+  --sky: #d7f4ff;
+  --coral: #f4a78e;
+  --grape: #9b65b5;
+  --companion-outline: #5a4a6f;
+  --star: #ffd96a;
+  --rose: #ef8aa7;
+  --line: #dfd4e9;
+  --shadow: 0 14px 34px rgb(94 72 125 / 14%);
+  --radius-large: 28px;
+  --radius-medium: 20px;
+  color: var(--ink);
+  background: var(--cream);
+  font-family: "Apple SD Gothic Neo", "Noto Sans KR", sans-serif;
+  font-synthesis: none;
+}
+
+* { box-sizing: border-box; }
+body { margin: 0; min-width: 320px; min-height: 100vh; }
+button, input { font: inherit; }

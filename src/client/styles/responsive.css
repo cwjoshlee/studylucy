@@ -1,0 +1,86 @@
+@media (max-width: 950px) {
+  .student-shell {
+    grid-template-columns: 260px minmax(0, 1fr);
+    grid-template-areas:
+      "header header"
+      "left main";
+  }
+  .student-shell__main {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "intro" "required" "right" "optional";
+  }
+  .student-learning-view { padding: 14px; }
+  .student-shell__right { position: static; }
+}
+
+@media (max-width: 850px),
+  (orientation: portrait) and (max-width: 1000px) {
+  .student-shell {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "header" "left" "main";
+    padding: 14px;
+  }
+  .student-shell__left { display: block; position: static; }
+  .student-shell__main {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "intro" "required" "right" "optional";
+  }
+  .student-shell__left .friend-stage__cast {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+  }
+  .student-shell__left .friend-stage__cast li {
+    grid-template-columns: minmax(0, 1fr);
+    justify-items: center;
+    text-align: center;
+  }
+  .student-shell__left .friend-stage__cast .companion-avatar { grid-row: auto; }
+  .learning-companion {
+    grid-template-columns: 72px minmax(0, 1fr);
+    gap: 12px;
+  }
+  .learning-companion .companion-avatar {
+    width: 72px;
+    height: 72px;
+  }
+  .calculation-lesson { grid-template-columns: minmax(0, 1fr); }
+}
+
+@media (max-width: 700px) {
+  .study-grid { grid-template-columns: minmax(0, 1fr); }
+  .section-heading { align-items: flex-start; flex-direction: column; }
+  .guardian-shell {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-areas: "guardian-header" "guardian-tabs" "guardian-panel";
+    padding: 14px;
+  }
+  .guardian-tabs {
+    grid-template-columns: repeat(5, minmax(120px, 1fr));
+    overflow-x: auto;
+    position: static;
+  }
+  .guardian-filter, .guardian-manual-stars, .guardian-plan-form,
+  .guardian-plan-loader, .guardian-metrics, .adjustment-values {
+    grid-template-columns: minmax(0, 1fr);
+  }
+  .guardian-sync-review li { grid-template-columns: minmax(0, 1fr); }
+  .chanaping-coach {
+    position: static;
+    width: 100%;
+    max-width: none;
+    grid-template-columns: 62px minmax(0, 1fr) auto;
+    margin-top: 4px;
+    box-sizing: border-box;
+  }
+  .chanaping-coach__art { width: 62px; height: 62px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    scroll-behavior: auto !important;
+    transition: none !important;
+  }
+  .learning-companion *,
+  .star-celebration * { transform: none !important; }
+  .star-celebration__particles { display: none !important; }
+}

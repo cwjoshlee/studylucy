@@ -1,0 +1,76 @@
+.student-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 260px minmax(0, 1fr) 240px;
+  grid-template-areas:
+    "header header header"
+    "left main main";
+  gap: 22px;
+  padding: 22px;
+  background:
+    radial-gradient(circle at 10% 8%, rgb(255 217 106 / 26%), transparent 24rem),
+    linear-gradient(145deg, #fffaf1, #f5efff 66%, #ecfbf3);
+}
+.student-header { grid-area: header; }
+.student-shell__left { grid-area: left; }
+.student-shell__main {
+  grid-area: main;
+  display: grid;
+  min-width: 0;
+  grid-template-columns: minmax(0, 1fr) 240px;
+  grid-template-areas:
+    "intro right"
+    "required right"
+    "optional right";
+  gap: 22px;
+}
+.student-shell__intro { grid-area: intro; }
+.student-shell__required { grid-area: required; }
+.student-shell__right { grid-area: right; }
+.student-shell__optional { grid-area: optional; }
+.student-shell__left, .student-shell__right { align-self: start; position: sticky; top: 22px; }
+.study-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+.section-heading { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
+
+.student-learning-view {
+  min-height: 100vh;
+  display: grid;
+  place-items: start center;
+  padding: 22px;
+  background:
+    radial-gradient(circle at 10% 8%, rgb(255 217 106 / 26%), transparent 24rem),
+    linear-gradient(145deg, #fffaf1, #f5efff 66%, #ecfbf3);
+}
+
+.guardian-shell {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: minmax(180px, 240px) minmax(0, 1fr);
+  grid-template-areas:
+    "guardian-header guardian-header"
+    "guardian-tabs guardian-panel";
+  gap: 22px;
+  padding: 22px;
+  background: linear-gradient(145deg, #fffaf1, #f5efff 66%, #ecfbf3);
+}
+.guardian-header { grid-area: guardian-header; }
+.guardian-tabs {
+  grid-area: guardian-tabs;
+  display: grid;
+  align-self: start;
+  position: sticky;
+  top: 22px;
+}
+.guardian-panel { grid-area: guardian-panel; min-width: 0; }
+
+.login-shell, .guardian-placeholder {
+  min-height: 100vh;
+  display: grid;
+  place-items: center;
+  padding: 28px;
+  background: linear-gradient(150deg, var(--cream), #f1e9ff, var(--mint));
+}
+
+.login-card, .guardian-placeholder {
+  width: min(100%, 580px);
+}

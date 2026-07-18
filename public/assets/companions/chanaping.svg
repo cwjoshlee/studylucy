@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" role="img" aria-label="누운 차나핑 학습 코치">
+  <rect width="240" height="240" rx="44" fill="#e7f7f3"/>
+  <path d="M31 174c11-34 42-55 86-55 44 0 76 18 91 51l-13 29H45z" fill="#f6e6bd"/>
+  <path d="M39 180c12-21 35-32 66-32 30 0 50 10 65 29l-13 20H49z" fill="#dce6d7"/>
+  <path d="M52 172c11-17 28-24 51-24 28 0 45 9 56 27l-13 15H61z" fill="#b6d5c5"/>
+  <ellipse cx="125" cy="112" rx="64" ry="55" fill="#fff4dc" stroke="#276f64" stroke-width="5"/>
+  <path d="M67 110c-19-14-19-46 4-57 11-5 25-2 30 8-20 5-27 27-16 43z" fill="#1f9d8b"/>
+  <path d="M88 73c10-25 42-35 65-19 15 10 18 30 8 46-9-12-24-18-39-13-14 5-23 17-25 31-16-7-23-28-9-45z" fill="#1f9d8b"/>
+  <path d="M154 82c20 2 35 20 31 40-2 11-10 20-20 25-5-17-16-27-32-31 13-9 21-20 21-34z" fill="#167a70"/>
+  <path d="M72 119c8 7 19 9 29 5" fill="none" stroke="#276f64" stroke-width="5" stroke-linecap="round"/>
+  <path d="M143 124c9 4 20 2 27-5" fill="none" stroke="#276f64" stroke-width="5" stroke-linecap="round"/>
+  <path d="M104 145c11 7 23 7 33 0" fill="none" stroke="#c26b72" stroke-width="4" stroke-linecap="round"/>
+  <path d="M83 159c15 15 54 17 77 0l-8 27c-21 13-42 13-62 0z" fill="#1d685f"/>
+  <path d="M114 169l11 14 11-14" fill="#f9d8b8" stroke="#155149" stroke-width="3"/>
+  <path d="M44 179c15-16 32-20 49-12l-10 29H42z" fill="#91c8bb"/>
+  <path d="M167 168c16-8 30-3 39 11v17h-37z" fill="#91c8bb"/>
+  <path d="M37 197h171" fill="none" stroke="#276f64" stroke-width="5" stroke-linecap="round"/>
+</svg>

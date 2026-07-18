@@ -1,0 +1,29 @@
+name: ${SMOKE_PROJECT_NAME:-sua-learning-smoke}
+
+services:
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    restart: "no"
+    init: true
+    user: "1000:1000"
+    environment:
+      NODE_ENV: production
+      HOST: 0.0.0.0
+      PORT: 8787
+      DATABASE_PATH: /data/sua-learning-smoke.db
+      BACKUP_DIR: /data/backups
+      APP_ORIGIN: https://smoke.invalid
+      SETUP_SECRET: smoke-setup-secret-not-production-0001
+      SESSION_PEPPER: smoke-session-pepper-not-production-01
+      SESSION_DAYS: 1
+      TIME_ZONE: Asia/Seoul
+    ports:
+      - "127.0.0.1:18787:8787"
+    tmpfs:
+      - /data:uid=1000,gid=1000,mode=0700
+      - /tmp:size=64m,mode=1777
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
