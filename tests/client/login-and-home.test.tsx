@@ -11,6 +11,7 @@ import { ApiError } from "../../src/client/api/client";
 import { createProductionApi } from "../../src/client/api/production";
 import type { ActivityEvent, TodayPlan } from "../../src/shared/learning";
 import { TodayStars } from "../../src/client/delight/today-stars";
+import { stepStatus } from "../../src/client/home/student-home";
 import {
   OFFLINE_DB_NAME,
   cacheIssuedPlan,
@@ -46,6 +47,58 @@ beforeEach(async () => {
 });
 
 describe("가족 로그인과 학생 홈", () => {
+  it("groups six daily steps and unlocks only from canonical completed item receipts", async () => {
+    const seeded = createFakeApi();
+    const original = await seeded.getToday();
+    const makeItem = (
+      id: string,
+      subject: "korean" | "math",
+      step: "foundation" | "current" | "challenge"
+    ): TodayPlan["items"][number] => ({
+      id,
+      version: 4,
+      step,
+      payload: {
+        id,
+        kind: "korean-reading",
+        subject,
+        unit: subject === "korean" ? "낱말" : "계산",
+        title: `${subject === "korean" ? "국어" : "수학"} ${step}`,
+        level: "1단계",
+        readLabel: "읽기",
+        text: "학습 내용",
+        hint: "천천히 해 봐요.",
+        tokens: ["학습"]
+      }
+    });
+    const items = (["korean", "math"] as const).flatMap((subject) =>
+      (["foundation", "current", "challenge"] as const).map((step) =>
+        makeItem(`${subject}-${step}`, subject, step)
+      )
+    );
+    const plan: TodayPlan = {
+      ...original,
+      items,
+      requiredItemIds: items.map((item) => item.id),
+      completedItemIds: []
+    };
+    const api = createFakeApi({ getToday: vi.fn().mockResolvedValue(plan) });
+    await markStudentAuthenticated();
+    render(<App api={api} />);
+
+    const korean = await screen.findByRole("group", { name: "국어 스텝업" });
+    const math = screen.getByRole("group", { name: "수학 스텝업" });
+    expect(within(korean).getByRole("button", { name: /기초 다지기.*시작하기/ })).toBeEnabled();
+    expect(within(korean).getByRole("button", { name: /현재 수준.*시작하기/ })).toBeDisabled();
+    expect(within(korean).getByRole("button", { name: /도전.*시작하기/ })).toBeDisabled();
+    expect(within(math).getByRole("button", { name: /기초 다지기.*시작하기/ })).toBeEnabled();
+    expect(within(math).getByRole("button", { name: /현재 수준.*시작하기/ })).toBeDisabled();
+
+    expect(stepStatus(items, ["korean-foundation"], items[1]!)).toBe("available");
+    expect(stepStatus(items, ["korean-foundation"], items[2]!)).toBe("locked");
+    expect(stepStatus(items, ["korean-foundation", "korean-current"], items[2]!)).toBe("available");
+    expect(stepStatus(items, ["korean-foundation", "korean-current", "korean-challenge"], items[2]!)).toBe("complete");
+  });
   it("keeps the shared component fake honest about guardian-only device registration", async () => {
     const api = createFakeApi();
 

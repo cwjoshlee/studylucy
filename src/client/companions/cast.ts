@@ -13,7 +13,7 @@ export const COMPANION_CAST: Record<CompanionId, CompanionProfile> = {
   lumi: {
     id: "lumi",
     name: "별토끼 버니",
-    role: "다정한 길잡이",
+    role: "버니 별빛 길 안내자",
     alt: "작은 망토와 별 지팡이를 든 크림색 토끼 버니",
     asset: "/assets/companions/lumi.svg",
     accent: "lilac"
@@ -37,7 +37,7 @@ export const COMPANION_CAST: Record<CompanionId, CompanionProfile> = {
   bongbong: {
     id: "bongbong",
     name: "아기용 밀키",
-    role: "축하와 쉬는 시간 친구",
+    role: "밀키 계산·받아쓰기 공부 조수",
     alt: "별가루 비눗방울을 내뿜는 복숭아색 아기용 밀키",
     asset: "/assets/companions/bongbong.svg",
     accent: "peach"

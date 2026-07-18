@@ -60,6 +60,9 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .study-card h3, .study-card p { margin: 0; }
 .study-card h3 { font-size: 1.25rem; }
 .study-card button { width: 100%; margin-top: auto; }
+.step-up-groups { display: grid; gap: 20px; }
+.step-up-group { display: grid; gap: 12px; }
+.step-up-group > h3 { margin: 0; color: var(--grape); }
 .study-card__friend { display: flex; align-items: center; gap: 10px; color: var(--grape); }
 .study-card__mishap {
   display: grid;
@@ -91,6 +94,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   gap: 12px;
 }
 .learning-session textarea { min-height: 120px; width: 100%; resize: vertical; }
+.dictation-panel { display: grid; gap: 16px; }
+.dictation-panel__input {
+  min-height: 132px;
+  font-size: clamp(1.35rem, 4vw, 2rem);
+  line-height: 1.5;
+}
 .learning-session input { width: min(100%, 280px); }
 .learning-session aside, .learning-session [aria-label="읽기 결과"] {
   display: grid;

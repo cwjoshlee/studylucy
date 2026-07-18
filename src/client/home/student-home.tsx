@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import type { CompanionId } from "../../shared/companions";
-import type { TodayPlan } from "../../shared/learning";
+import type { PlanItem, TodayPlan } from "../../shared/learning";
 import type { StudentStarSummary } from "../../shared/stars";
 import type { ClientApi } from "../api/client";
 import { COMPANION_CAST } from "../companions/cast";
@@ -29,6 +29,31 @@ import {
 } from "../offline/db";
 
 type StudentData = { plan: TodayPlan; stars: StudentStarSummary };
+
+export type StepStatus = "locked" | "available" | "complete";
+
+const STEP_ORDER = ["foundation", "current", "challenge"] as const;
+const STEP_LABEL = {
+  foundation: "기초 다지기",
+  current: "현재 수준",
+  challenge: "도전"
+} as const;
+
+export function stepStatus(
+  items: readonly PlanItem[],
+  completedItemIds: readonly string[],
+  item: PlanItem
+): StepStatus {
+  if (completedItemIds.includes(item.id)) return "complete";
+  const position = STEP_ORDER.indexOf(item.step);
+  const earlierSubjectItems = items.filter((candidate) =>
+    candidate.payload.subject === item.payload.subject &&
+    STEP_ORDER.indexOf(candidate.step) < position
+  );
+  return earlierSubjectItems.every((candidate) => completedItemIds.includes(candidate.id))
+    ? "available"
+    : "locked";
+}
 
 export function StudentHome({
   api,
@@ -215,7 +240,7 @@ export function StudentHome({
     data.plan.completedItemIds.includes(item.id)
   ).length;
   const nextRequired = requiredItems.find((item) =>
-    !data.plan.completedItemIds.includes(item.id)
+    stepStatus(requiredItems, data.plan.completedItemIds, item) === "available"
   ) ?? requiredItems[0] ?? null;
   const metCompanions = Array.from(new Set(data.plan.completedItemIds.flatMap((id) => {
     const item = data.plan.items.find((candidate) => candidate.id === id);
@@ -224,13 +249,19 @@ export function StudentHome({
       : [item.payload.delight?.companion ?? (item.payload.subject === "korean" ? "toto" : "momo")];
   }))) as CompanionId[];
   const renderCard = (item: TodayPlan["items"][number], required: boolean) => {
-    const completed = data.plan.completedItemIds.includes(item.id);
+    const status = required
+      ? stepStatus(requiredItems, data.plan.completedItemIds, item)
+      : "available";
+    const completed = status === "complete";
     const provisional = provisionalItemIds.has(item.id) && !completed;
+    const stageLabel = item.step === undefined ? null : STEP_LABEL[item.step];
     const companion = item.payload.delight?.companion
       ?? (item.payload.subject === "korean" ? "toto" : "momo");
     return (
       <article className={`study-card ${required ? "study-card--required" : ""}`} key={item.id}>
-        <p className="subject-chip">{item.payload.subject === "korean" ? "국어" : "수학"} · {item.payload.unit}</p>
+        <p className="subject-chip">
+          {item.payload.subject === "korean" ? "국어" : "수학"} · {stageLabel === null ? item.payload.unit : `${stageLabel} · ${item.payload.unit}`}
+        </p>
         <h3>{item.payload.title}</h3>
         <div className="study-card__friend">
           <CompanionAvatar id={companion} size="small" decorative />
@@ -249,8 +280,12 @@ export function StudentHome({
         ) : null}
         {completed ? <strong>함께 해결했어요</strong> : null}
         {provisional ? <strong className="provisional-label">동기화 대기</strong> : null}
-        <button type="button" onClick={() => setSelectedItem(item)}>
-          {item.payload.title} 시작하기
+        <button
+          type="button"
+          disabled={status === "locked"}
+          onClick={() => setSelectedItem(item)}
+        >
+          {stageLabel === null ? "" : `${stageLabel} · `}{item.payload.title} 시작하기
         </button>
       </article>
     );
@@ -295,7 +330,28 @@ export function StudentHome({
             <h2 id="required-title">필수 학습</h2>
             <span>{requiredItems.length}개의 마법 걸음</span>
           </div>
-          <div className="study-grid">{requiredItems.map((item) => renderCard(item, true))}</div>
+          <div className="step-up-groups">
+            {(["korean", "math"] as const).map((subject) => {
+              const subjectItems = requiredItems
+                .filter((item) => item.payload.subject === subject)
+                .sort((left, right) => STEP_ORDER.indexOf(left.step) - STEP_ORDER.indexOf(right.step));
+              if (subjectItems.length === 0) return null;
+              const subjectLabel = subject === "korean" ? "국어" : "수학";
+              return (
+                <section
+                  className="step-up-group"
+                  role="group"
+                  aria-label={`${subjectLabel} 스텝업`}
+                  key={subject}
+                >
+                  <h3>{subjectLabel} 기초부터 도전까지</h3>
+                  <div className="study-grid">
+                    {subjectItems.map((item) => renderCard(item, true))}
+                  </div>
+                </section>
+              );
+            })}
+          </div>
         </section>
         <aside className="student-shell__right" aria-label="별 현황">
           <TodayStars summary={data.stars} queuedCount={queuedCount} />
