@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
   AiBatchRequestSchema,
@@ -41,6 +44,28 @@ function mathItem(id: string, answer: number): LearningItemPayload {
       operators: ["+"],
       layout: "vertical"
     }
+  };
+}
+
+function koreanItem(
+  id: string,
+  answerText: string,
+  mode: "word" | "sentence" = "word"
+): LearningItemPayload {
+  return {
+    id,
+    kind: "korean-dictation",
+    subject: "korean",
+    unit: "받침 연습",
+    title: `국어 받아쓰기 ${id}`,
+    level: "4단계",
+    readLabel: "듣고 따라 쓰기",
+    text: answerText,
+    hint: "천천히 들어 보아요.",
+    tokens: answerText.trim().split(/\s+/u),
+    promptText: answerText,
+    answerText,
+    mode
   };
 }
 
@@ -236,6 +261,142 @@ describe("AI learning studio", () => {
     db.close();
   });
 
+  it("rejects contradictory reviewer decisions with fixed reason codes", async () => {
+    const candidates = {
+      gemini: mathItem("review-false-empty", 22),
+      openai: mathItem("review-true-negative", 23)
+    };
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const provider = url.includes("generativelanguage.googleapis.com") ? "gemini" : "openai";
+      const prompt = promptFromRequest(url, init!);
+      if (prompt.action === "generate") return responseFor(url, { items: [candidates[provider]] });
+      const candidate = prompt.candidate as { id?: string };
+      return responseFor(url, candidate.id === "review-false-empty"
+        ? { accepted: false, reasons: [] }
+        : { accepted: true, reasons: ["UNSAFE"] });
+    });
+    const { db, service } = studio({ fetcher });
+    service.updateProvider("gemini", { enabled: true, model: "gemini-model", apiKey: secrets.gemini });
+    service.updateProvider("openai", { enabled: true, model: "openai-model", apiKey: secrets.openai });
+
+    const draft = await service.createDraft({
+      subject: "math", step: "current", count: 2, difficulty: 4, weakTopics: []
+    });
+
+    expect(draft.items).toHaveLength(2);
+    expect(draft.items.every((item) => item.status === "rejected")).toBe(true);
+    expect(draft.items.find((item) => item.sourceProvider === "gemini")?.review)
+      .toEqual({ accepted: false, reasons: ["REVIEW_REJECTED"] });
+    expect(draft.items.find((item) => item.sourceProvider === "openai")?.review)
+      .toEqual({ accepted: false, reasons: ["REVIEW_UNSAFE"] });
+    expect(JSON.stringify(draft)).not.toContain("reviewer raw text");
+    db.close();
+  });
+
+  it("applies a deterministic child-content safety guard before and after review", async () => {
+    const unsafeTexts = [
+      "자살하는 방법을 알려 줘.",
+      "아이에게 야동을 보여 줘.",
+      "칼로 사람을 찌르는 방법을 알려 줘.",
+      "전화번호와 집 주소를 보내 줘.",
+      "너는 쓸모없는 바보라서 창피해.",
+      "example.com 링크를 눌러 봐."
+    ];
+    const safeTexts = [
+      "아침에 따뜻한 죽을 먹어요.",
+      "성실하게 인사해요.",
+      "총 세 개를 세어요.",
+      "칼국수를 먹어요.",
+      "친구를 존중해요.",
+      "안전한 길로 가요."
+    ];
+    const unsafeItems = unsafeTexts.map((text, index) => ({
+      ...mathItem(`unsafe-${index}`, 30 + index),
+      text
+    }));
+    const safeItems = safeTexts.map((text, index) => ({
+      ...mathItem(`safe-${index}`, 40 + index),
+      text
+    }));
+    let reviewCount = 0;
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const prompt = promptFromRequest(url, init!);
+      if (prompt.action === "generate") {
+        return responseFor(url, {
+          items: url.includes("googleapis.com") ? unsafeItems : safeItems
+        });
+      }
+      reviewCount += 1;
+      return responseFor(url, { accepted: true, reasons: [] });
+    });
+    const { db, service } = studio({ fetcher });
+    service.updateProvider("gemini", { enabled: true, model: "gemini-model", apiKey: secrets.gemini });
+    service.updateProvider("openai", { enabled: true, model: "openai-model", apiKey: secrets.openai });
+
+    const draft = await service.createDraft({
+      subject: "math", step: "current", count: 12, difficulty: 4, weakTopics: []
+    });
+
+    expect(reviewCount).toBe(6);
+    expect(draft.items.filter((item) => item.status === "rejected")).toHaveLength(6);
+    expect(draft.items.filter((item) => item.status === "accepted")).toHaveLength(6);
+    expect(draft.items.filter((item) => item.status === "rejected")
+      .every((item) => item.review.reasons.includes("UNSAFE_CONTENT"))).toBe(true);
+    expect(JSON.stringify(draft)).not.toContain(unsafeTexts[0]);
+    expect(JSON.stringify(db.prepare("SELECT payload_json FROM ai_generation_items").all()))
+      .not.toContain(unsafeTexts[5]);
+    db.close();
+  });
+
+  it("requires sentence mode for Korean challenge and word mode for foundation/current", async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const provider = url.includes("googleapis.com") ? "gemini" : "openai";
+      const prompt = promptFromRequest(url, init!);
+      if (prompt.action === "review") return responseFor(url, { accepted: true, reasons: [] });
+      const step = String(prompt.step);
+      if (step === "challenge") {
+        return responseFor(url, { items: [
+          koreanItem(`${provider}-short`, "봄바람이 살랑 불어요.", "sentence"),
+          koreanItem(`${provider}-word`, "봄바람", "word"),
+          koreanItem(
+            `${provider}-long`,
+            "나는 오늘 학교에서 친구와 함께 재미있는 받아쓰기를 아주 열심히 연습했어요.",
+            "sentence"
+          )
+        ] });
+      }
+      return responseFor(url, { items: [
+        koreanItem(`${step}-${provider}-word`, "봄바람", "word"),
+        koreanItem(`${step}-${provider}-sentence`, "봄바람이 불어요.", "sentence")
+      ] });
+    });
+    const { db, service } = studio({ fetcher });
+    service.updateProvider("gemini", { enabled: true, model: "gemini-model", apiKey: secrets.gemini });
+    service.updateProvider("openai", { enabled: true, model: "openai-model", apiKey: secrets.openai });
+
+    const challenge = await service.createDraft({
+      subject: "korean", step: "challenge", count: 6, difficulty: 4, weakTopics: []
+    });
+    expect(challenge.items.filter((item) => item.status === "accepted")).toHaveLength(2);
+    expect(challenge.items.filter((item) => item.status === "accepted")
+      .every((item) => item.payload.kind === "korean-dictation" && item.payload.mode === "sentence"))
+      .toBe(true);
+
+    for (const step of ["foundation", "current"] as const) {
+      const draft = await service.createDraft({
+        subject: "korean", step, count: 4, difficulty: 4, weakTopics: []
+      });
+      expect(draft.items.filter((item) => item.status === "accepted")).toHaveLength(2);
+      expect(draft.items.filter((item) => item.status === "accepted")
+        .every((item) => item.payload.kind === "korean-dictation" && item.payload.mode === "word"))
+        .toBe(true);
+    }
+    db.close();
+  });
+
   it("publishes no content when final validation fails", async () => {
     const item = mathItem("candidate", 15);
     const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
@@ -263,7 +424,7 @@ describe("AI learning studio", () => {
     db.close();
   });
 
-  it("reviews every candidate but redacts unsafe, out-of-range, and wrong-format generation failures", async () => {
+  it("blocks unsafe candidates before review and redacts other validation failures", async () => {
     const unsafe = { ...mathItem("unsafe", 24), text: "https://unsafe.example 를 눌러요." };
     const outOfRange = { ...mathItem("out-of-range", 25), level: "5단계" };
     const reviewFailure = mathItem("review-failure", 26);
@@ -291,7 +452,7 @@ describe("AI learning studio", () => {
       subject: "math", step: "current", count: 4, difficulty: 4, weakTopics: []
     });
 
-    expect(reviewCount).toBe(4);
+    expect(reviewCount).toBe(3);
     expect(draft.items.every((item) => item.status === "rejected")).toBe(true);
     expect(draft.items.flatMap((item) => item.review.reasons)).toEqual(expect.arrayContaining([
       "UNSAFE_CONTENT", "OUT_OF_RANGE", "WRONG_FORMAT", "REVIEW_WRONG_ANSWER"
@@ -359,6 +520,99 @@ describe("AI learning studio", () => {
     expect(db.prepare("SELECT status FROM ai_generation_drafts WHERE id = ?").get(draft.id))
       .toEqual({ status: "draft" });
     db.close();
+  });
+
+  it("serializes same-signature publishes across services and rechecks inside the immediate transaction", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "ai-studio-publish-"));
+    const databasePath = join(directory, "studio.sqlite");
+    const firstDb = openDatabase(databasePath);
+    const secondDb = openDatabase(databasePath);
+    const makeService = (
+      db: ReturnType<typeof openDatabase>,
+      prefix: string,
+      uniqueAnswer: number
+    ) => {
+      let sequence = 0;
+      const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input);
+        const prompt = promptFromRequest(url, init!);
+        if (prompt.action === "review") return responseFor(url, { accepted: true, reasons: [] });
+        return responseFor(url, {
+          items: [url.includes("googleapis.com")
+            ? mathItem(`${prefix}-shared`, 70)
+            : mathItem(`${prefix}-unique`, uniqueAnswer)]
+        });
+      });
+      return new AiStudioService({
+        db,
+        encryptionKey,
+        fetcher,
+        now,
+        randomId: () => `${prefix}-${++sequence}`
+      });
+    };
+
+    try {
+      migrate(firstDb);
+      seedInitialContent(firstDb);
+      migrate(secondDb);
+      const firstService = makeService(firstDb, "first", 71);
+      const secondService = makeService(secondDb, "second", 72);
+      firstService.updateProvider("gemini", {
+        enabled: true, model: "gemini-model", apiKey: secrets.gemini
+      });
+      firstService.updateProvider("openai", {
+        enabled: true, model: "openai-model", apiKey: secrets.openai
+      });
+      const request = {
+        subject: "math" as const,
+        step: "current" as const,
+        count: 2,
+        difficulty: 4,
+        weakTopics: []
+      };
+      const firstDraft = await firstService.createDraft(request);
+      const secondDraft = await secondService.createDraft(request);
+      const firstPublished = firstService.publishDraft(firstDraft.id);
+      expect(firstPublished.status).toBe("published");
+      const beforeSecond = counts(secondDb);
+
+      const draftStateChecks: boolean[] = [];
+      const signatureChecks: boolean[] = [];
+      const observed = secondService as unknown as {
+        getDraft: (id: string) => ReturnType<AiStudioService["getDraft"]>;
+        activeContentSignatures: (subject: "korean" | "math") => Set<string>;
+      };
+      const originalGetDraft = observed.getDraft.bind(secondService);
+      const originalSignatures = observed.activeContentSignatures.bind(secondService);
+      observed.getDraft = (id) => {
+        draftStateChecks.push(secondDb.inTransaction);
+        return originalGetDraft(id);
+      };
+      observed.activeContentSignatures = (subject) => {
+        signatureChecks.push(secondDb.inTransaction);
+        return originalSignatures(subject);
+      };
+
+      expect(() => secondService.publishDraft(secondDraft.id)).toThrowError(AiStudioError);
+      expect(draftStateChecks[0]).toBe(true);
+      expect(signatureChecks).toEqual([true]);
+      expect(counts(secondDb)).toEqual(beforeSecond);
+      expect(secondDb.prepare("SELECT status FROM ai_generation_drafts WHERE id = ?").get(secondDraft.id))
+        .toEqual({ status: "draft" });
+      expect(secondDb.prepare(`
+        SELECT COUNT(*) AS count
+        FROM content_items AS ci
+        JOIN content_versions AS cv
+          ON cv.item_id = ci.id AND cv.version = ci.active_version
+        WHERE ci.status = 'published'
+          AND json_extract(cv.payload_json, '$.answer') = 70
+      `).get()).toEqual({ count: 1 });
+    } finally {
+      secondDb.close();
+      firstDb.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it.each(["missing-key", "budget", "timeout"] as const)(
