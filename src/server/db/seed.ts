@@ -1,5 +1,8 @@
 import type Database from "better-sqlite3";
-import type { LearningItemPayload } from "../../shared/learning";
+import {
+  isCalculationItem,
+  type LearningItemPayload
+} from "../../shared/learning";
 import { INITIAL_ITEMS_V1 } from "./seed-v1";
 
 export const INITIAL_CONTENT_VERSION = 3;
@@ -431,23 +434,59 @@ type CalculationSeed = [
   operands: [number, number] | [number, number, number],
   operators: ["+"] | ["-"] | ["+", "+"] | ["+", "-"] | ["-", "+"] | ["-", "-"],
   layout: "horizontal" | "vertical",
-  answer: number
+  answer: number,
+  mishap: string,
+  openingCue: string,
+  celebrationCue: string
 ];
 
 const CALCULATION_ITEMS: LearningItemPayload[] = ([
-  ["math-01", [13, 9, 4], ["+", "+"], "horizontal", 26],
-  ["math-02", [21, 2, 8], ["+", "+"], "horizontal", 31],
-  ["math-03", [17, 3, 6], ["+", "+"], "horizontal", 26],
-  ["math-04", [21, 6, 9], ["+", "-"], "horizontal", 18],
-  ["math-05", [23, 7, 4], ["-", "-"], "horizontal", 12],
-  ["math-06", [15, 5, 3], ["-", "-"], "horizontal", 7],
-  ["math-07", [27, 6], ["+"], "vertical", 33],
-  ["math-08", [44, 9], ["-"], "vertical", 35],
-  ["math-09", [38, 7], ["+"], "vertical", 45],
-  ["math-10", [56, 8], ["-"], "vertical", 48]
-] satisfies CalculationSeed[]).map(([id, operands, operators, layout, answer], index) => ({
+  ["math-01", [13, 9, 4], ["+", "+"], "horizontal", 26,
+    "숫자 카드 세 장이 기차처럼 이어졌어요.",
+    "버니가 첫 카드부터 차례로 보자고 속삭였어요.",
+    "세 수를 모두 더했어요! 밀키가 손뽉을 쳤어요."],
+  ["math-02", [21, 2, 8], ["+", "+"], "horizontal", 31,
+    "두 번째 숫자가 숨바꼭질을 하려고 숨었어요.",
+    "밀키가 숨은 숫자를 찾아 제자리에 놓았어요.",
+    "왼쪽부터 끝까지 계산했어요! 버니가 별을 그려 줬어요."],
+  ["math-03", [17, 3, 6], ["+", "+"], "horizontal", 26,
+    "더하기 표시들이 서로 먼저 가겠다고 줄을 섰어요.",
+    "버니가 왼쪽 표시부터 천천히 가자고 했어요.",
+    "더하기 길을 바르게 걸었어요! 밀키가 기쁨의 춤을 추었어요."],
+  ["math-04", [21, 6, 9], ["+", "-"], "horizontal", 18,
+    "더하기와 빼기가 한 모자를 같이 쓰려고 했어요.",
+    "밀키가 표시를 하나씩 가리키며 순서를 알려 줬어요.",
+    "더하고 빼는 순서를 지켰어요! 버니가 환하게 웃었어요."],
+  ["math-05", [23, 7, 4], ["-", "-"], "horizontal", 12,
+    "빼기 표시 하나가 뒤로 거꾸로 걸어갔어요.",
+    "버니가 표시의 어깨를 톡톡 두드려 앞을 보게 했어요.",
+    "두 번 빼기를 잘 해냈어요! 밀키가 작은 깃발을 흔들었어요."],
+  ["math-06", [15, 5, 3], ["-", "-"], "horizontal", 7,
+    "숫자 세 개가 작은 의자 하나에 함께 앉았어요.",
+    "밀키가 한 칸씩 떨어져 앉으면 계산하기 편하다고 했어요.",
+    "조금씩 빼서 답을 찾았어요! 버니가 의자를 반듯하게 정리했어요."],
+  ["math-07", [27, 6], ["+"], "vertical", 33,
+    "위의 숫자가 넘어질까 봐 바닥을 꽉 잡았어요.",
+    "버니가 일의 자리부터 반듯하게 맞추어 주었어요.",
+    "세로줄을 따라 합을 찾았어요! 밀키가 긴 리본을 펼쳤어요."],
+  ["math-08", [44, 9], ["-"], "vertical", 35,
+    "아래 숫자가 위칸을 구경하러 올라갔어요.",
+    "밀키가 각 숫자를 자릿수에 맞게 다시 세웠어요.",
+    "자릿수를 맞춰 빼기를 끝냈어요! 버니가 기쁨의 종을 울렸어요."],
+  ["math-09", [38, 7], ["+"], "vertical", 45,
+    "일의 자리 숫자들이 먼저 놀이를 시작했어요.",
+    "버니가 일의 자리를 먼저 계산해 보자고 했어요.",
+    "받아올림까지 잊지 않았어요! 밀키가 별 도장을 꾹 눌러 줬어요."],
+  ["math-10", [56, 8], ["-"], "vertical", 48,
+    "빼기 표시가 숫자 사이에서 길을 잃었어요.",
+    "밀키가 표시를 제자리에 놓고 차분히 빼 보자고 했어요.",
+    "세로셍 마지막 답을 찾았어요! 버니가 완성 표시를 붙였어요."]
+] satisfies CalculationSeed[]).map(([
+  id, operands, operators, layout, answer,
+  mishap, openingCue, celebrationCue
+], index) => ({
   id,
-  kind: "math-calculation" as const,
+  kind: "math-story" as const,
   subject: "math" as const,
   unit: operands.length === 2 ? "받아올림과 받아내림" : "세 수의 혼합 계산",
   title: layout === "vertical" ? `세로셈 ${index - 5}` : `세 수 계산 ${index + 1}`,
@@ -456,16 +495,16 @@ const CALCULATION_ITEMS: LearningItemPayload[] = ([
   text: operands.map(String).join(" ") + "을(를) 차례대로 계산해요.",
   hint: layout === "vertical" ? "일의 자리부터 차분히 계산해요." : "왼쪽부터 한 번씩 계산해요.",
   tokens: operands.map(String),
-  operands,
-  operators,
-  layout,
+  question: "계산한 답은 얼마일까요?",
   answer,
+  unitLabel: "",
+  calculation: { operands, operators, layout },
   checkHint: "계산 순서를 다시 확인해 봐요.",
   delight: {
     companion: "momo",
-    mishap: "숫자들이 줄을 서다가 자리를 바꾸었어요.",
-    openingCue: "버니와 밀키가 계산판을 반듯하게 펴 주었어요.",
-    celebrationCue: "정답을 찾았어요! 숫자들이 박수를 쳐요."
+    mishap,
+    openingCue,
+    celebrationCue
   }
 }));
 
@@ -531,7 +570,7 @@ export function seedInitialContent(db: Database.Database): void {
       }
       const skillId = item.kind === "korean-reading"
         ? "skill-korean-reading"
-        : item.kind === "math-calculation"
+        : isCalculationItem(item)
           ? "skill-math-calculation"
           : "skill-math-story";
 
@@ -560,7 +599,7 @@ export function seedInitialContent(db: Database.Database): void {
         payloadJson: JSON.stringify(item),
         createdAt
       });
-      if (item.kind === "math-calculation") {
+      if (isCalculationItem(item)) {
         promoteCalculationSkill.run({ itemId: item.id });
       }
       promoteInitialItem.run({

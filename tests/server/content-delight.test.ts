@@ -629,8 +629,8 @@ describe("approved magical companion seed content", () => {
     expect(auditChildUiSideEffects("src/client/learning/learning-session.tsx")).toEqual([]);
   });
 
-  it("publishes exactly ten Korean and ten math v2 items", () => {
-    expect(INITIAL_CONTENT_VERSION).toBe(2);
+  it("publishes exactly ten Korean and ten math v3 items", () => {
+    expect(INITIAL_CONTENT_VERSION).toBe(3);
     expect(INITIAL_ITEMS.filter((item) => item.subject === "korean")).toHaveLength(10);
     expect(INITIAL_ITEMS.filter((item) => item.subject === "math")).toHaveLength(10);
   });
@@ -639,6 +639,8 @@ describe("approved magical companion seed content", () => {
     const delight = INITIAL_ITEMS.map((item) => item.delight);
     expect(delight.every(Boolean)).toBe(true);
     expect(new Set(delight.map((entry) => entry!.mishap)).size).toBe(20);
+    expect(new Set(delight.map((entry) => entry!.openingCue)).size).toBe(20);
+    expect(new Set(delight.map((entry) => entry!.celebrationCue)).size).toBe(20);
     for (const item of INITIAL_ITEMS) {
       const childCopy = activeItemChildCopy(item);
       expect(childCopy.join("\n")).toMatch(/[가-힣]/);
@@ -649,6 +651,14 @@ describe("approved magical companion seed content", () => {
   it("keeps every math answer, unit and scaffold internally consistent", () => {
     for (const item of INITIAL_ITEMS) {
       if (item.kind !== "math-story") continue;
+      if (item.calculation !== undefined) {
+        expect(item.calculation.operands.every((operand) => operand >= 0 && operand <= 99))
+          .toBe(true);
+        expect(item.calculation.operators).toHaveLength(item.calculation.operands.length - 1);
+        expect(item.answer).toBeGreaterThanOrEqual(0);
+        expect(item.answer).toBeLessThanOrEqual(99);
+        continue;
+      }
       expect(item.text.match(/\d+/g)).toHaveLength(2);
       expect(item.question).toContain("몇");
       expect(item.unitLabel.length).toBeGreaterThan(0);

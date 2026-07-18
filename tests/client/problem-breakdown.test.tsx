@@ -8,7 +8,10 @@ import {
   mathScaffold,
   splitKoreanSentences
 } from "../../src/client/learning/problem-breakdown";
-import type { LearningItemPayload } from "../../src/shared/learning";
+import type {
+  CalculationItem,
+  LearningItemPayload
+} from "../../src/shared/learning";
 
 afterEach(cleanup);
 
@@ -42,9 +45,9 @@ const koreanItem: Extract<LearningItemPayload, { kind: "korean-reading" }> = {
   tokens: ["또또", "줄무늬 조개", "양말", "모자"]
 };
 
-const calculationItem: Extract<LearningItemPayload, { kind: "math-calculation" }> = {
+const calculationItem: CalculationItem = {
   id: "calculation-test",
-  kind: "math-calculation",
+  kind: "math-story",
   subject: "math",
   unit: "세 수의 혼합 계산",
   title: "세 수를 계산해요",
@@ -53,10 +56,14 @@ const calculationItem: Extract<LearningItemPayload, { kind: "math-calculation" }
   text: "이야기 문장으로 보이면 안 되는 텍스트예요.",
   hint: "낱말 힌트로 보이면 안 되는 텍스트예요.",
   tokens: ["이야기", "낱말"],
-  operands: [13, 9, 4],
-  operators: ["+", "+"],
-  layout: "horizontal",
+  question: "계산한 답은 얼마일까요?",
   answer: 26,
+  unitLabel: "",
+  calculation: {
+    operands: [13, 9, 4],
+    operators: ["+", "+"],
+    layout: "horizontal"
+  },
   checkHint: "13에 9를 더한 뒤 4를 더해 봐요."
 };
 

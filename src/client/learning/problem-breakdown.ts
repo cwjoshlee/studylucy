@@ -1,4 +1,7 @@
-import type { LearningItemPayload } from "../../shared/learning";
+import type {
+  CalculationItem,
+  LearningItemPayload
+} from "../../shared/learning";
 
 export function splitKoreanSentences(text: string): string[] {
   return (text.match(/[^.!?]+[.!?]?/g) ?? [text])
@@ -11,11 +14,11 @@ export function extractNumberClues(text: string): string[] {
 }
 
 export function calculationExpression(
-  item: Extract<LearningItemPayload, { kind: "math-calculation" }>
+  item: CalculationItem
 ): string {
-  return item.operands.reduce((expression, operand, index) => index === 0
+  return item.calculation.operands.reduce((expression, operand, index) => index === 0
     ? `${operand}`
-    : `${expression} ${item.operators[index - 1]} ${operand}`, "");
+    : `${expression} ${item.calculation.operators[index - 1]} ${operand}`, "");
 }
 
 export function mathScaffold(
@@ -32,7 +35,7 @@ export function mathScaffold(
 }
 
 export function calculationScaffold(
-  item: Extract<LearningItemPayload, { kind: "math-calculation" }>,
+  item: CalculationItem,
   retryCount: number
 ): string {
   if (retryCount <= 1) return item.checkHint;

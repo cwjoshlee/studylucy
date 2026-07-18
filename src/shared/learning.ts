@@ -43,83 +43,115 @@ const BaseItem = z.object({
   delight: LearningDelightSchema.optional()
 });
 
+const CalculationOperandSchema = z.number().int().min(0).max(99);
+export const CalculationExtensionSchema = z.object({
+  operands: z.union([
+    z.tuple([CalculationOperandSchema, CalculationOperandSchema]),
+    z.tuple([CalculationOperandSchema, CalculationOperandSchema, CalculationOperandSchema])
+  ]),
+  operators: z.union([
+    z.tuple([z.literal("+")]),
+    z.tuple([z.literal("-")]),
+    z.tuple([z.literal("+"), z.literal("+")]),
+    z.tuple([z.literal("+"), z.literal("-")]),
+    z.tuple([z.literal("-"), z.literal("+")]),
+    z.tuple([z.literal("-"), z.literal("-")])
+  ]),
+  layout: z.enum(["horizontal", "vertical"])
+}).strict();
+
+const MathStoryItemSchema = BaseItem.extend({
+  kind: z.literal("math-story"),
+  question: z.string().min(1),
+  answer: z.number().int(),
+  unitLabel: z.string(),
+  checkHint: z.string().min(1),
+  calculation: CalculationExtensionSchema.optional()
+}).superRefine((payload, context) => {
+  const calculation = payload.calculation;
+  if (calculation === undefined) return;
+  if (payload.subject !== "math") {
+    context.addIssue({
+      code: "custom",
+      path: ["subject"],
+      message: "CALCULATION_REQUIRES_MATH_SUBJECT"
+    });
+  }
+  if (!["받아올림과 받아내림", "세 수의 혼합 계산"].includes(payload.unit)) {
+    context.addIssue({
+      code: "custom",
+      path: ["unit"],
+      message: "CALCULATION_UNIT_INVALID"
+    });
+  }
+  if (calculation.operators.length !== calculation.operands.length - 1) {
+    context.addIssue({
+      code: "custom",
+      path: ["calculation", "operators"],
+      message: "CALCULATION_OPERATOR_LENGTH_MISMATCH"
+    });
+    return;
+  }
+  if (calculation.layout === "vertical" && calculation.operands.length !== 2) {
+    context.addIssue({
+      code: "custom",
+      path: ["calculation", "layout"],
+      message: "CALCULATION_VERTICAL_REQUIRES_TWO_OPERANDS"
+    });
+    return;
+  }
+  let result = calculation.operands[0];
+  for (let index = 0; index < calculation.operators.length; index += 1) {
+    const operand = calculation.operands[index + 1]!;
+    result = calculation.operators[index] === "+"
+      ? result + operand
+      : result - operand;
+    if (result < 0 || result > 99) {
+      context.addIssue({
+        code: "custom",
+        path: ["calculation", "operands", index + 1],
+        message: result < 0
+          ? "CALCULATION_NEGATIVE_INTERMEDIATE"
+          : "CALCULATION_INTERMEDIATE_ABOVE_KEYPAD_MAX"
+      });
+      return;
+    }
+  }
+  if (payload.answer < 0 || payload.answer > 99) {
+    context.addIssue({
+      code: "custom",
+      path: ["answer"],
+      message: "CALCULATION_ANSWER_OUT_OF_KEYPAD_RANGE"
+    });
+  }
+  if (result !== payload.answer) {
+    context.addIssue({
+      code: "custom",
+      path: ["answer"],
+      message: "CALCULATION_ANSWER_MISMATCH"
+    });
+  }
+});
+
 export const LearningItemPayloadSchema = z.discriminatedUnion("kind", [
   BaseItem.extend({ kind: z.literal("korean-reading") }),
-  BaseItem.extend({
-    kind: z.literal("math-story"),
-    question: z.string().min(1),
-    answer: z.number().int(),
-    unitLabel: z.string(),
-    checkHint: z.string().min(1)
-  }),
-  BaseItem.extend({
-    kind: z.literal("math-calculation"),
-    subject: z.literal("math"),
-    unit: z.enum(["받아올림과 받아내림", "세 수의 혼합 계산"]),
-    operands: z.union([
-      z.tuple([z.number().int(), z.number().int()]),
-      z.tuple([z.number().int(), z.number().int(), z.number().int()])
-    ]),
-    operators: z.union([
-      z.tuple([z.literal("+")]),
-      z.tuple([z.literal("-")]),
-      z.tuple([z.literal("+"), z.literal("+")]),
-      z.tuple([z.literal("+"), z.literal("-")]),
-      z.tuple([z.literal("-"), z.literal("+")]),
-      z.tuple([z.literal("-"), z.literal("-")])
-    ]),
-    layout: z.enum(["horizontal", "vertical"]),
-    answer: z.number().int(),
-    checkHint: z.string().min(1)
-  }).superRefine((payload, context) => {
-    if (payload.operators.length !== payload.operands.length - 1) {
-      context.addIssue({
-        code: "custom",
-        path: ["operators"],
-        message: "CALCULATION_OPERATOR_LENGTH_MISMATCH"
-      });
-      return;
-    }
-    if (payload.layout === "vertical" && payload.operands.length !== 2) {
-      context.addIssue({
-        code: "custom",
-        path: ["layout"],
-        message: "CALCULATION_VERTICAL_REQUIRES_TWO_OPERANDS"
-      });
-      return;
-    }
-    let result = payload.operands[0];
-    for (let index = 0; index < payload.operators.length; index += 1) {
-      const operand = payload.operands[index + 1]!;
-      result = payload.operators[index] === "+"
-        ? result + operand
-        : result - operand;
-      if (result < 0) {
-        context.addIssue({
-          code: "custom",
-          path: ["operands", index + 1],
-          message: "CALCULATION_NEGATIVE_INTERMEDIATE"
-        });
-        return;
-      }
-    }
-    if (result !== payload.answer) {
-      context.addIssue({
-        code: "custom",
-        path: ["answer"],
-        message: "CALCULATION_ANSWER_MISMATCH"
-      });
-    }
-  })
+  MathStoryItemSchema
 ]);
 
 export type LearningItemPayload = z.infer<typeof LearningItemPayloadSchema>;
+export type CalculationItem = Extract<LearningItemPayload, { kind: "math-story" }> & {
+  calculation: z.infer<typeof CalculationExtensionSchema>;
+};
+
+export function isCalculationItem(payload: LearningItemPayload): payload is CalculationItem {
+  return payload.kind === "math-story" && payload.calculation !== undefined;
+}
 
 export function evaluateAttemptCompletion(
   payload: LearningItemPayload,
   input: Pick<AttemptInput, "readingScore" | "missedTokens" | "mathAnswer">
 ): Pick<AttemptReceipt, "readingPass" | "mathPass" | "completed"> {
-  const isCalculation = payload.kind === "math-calculation";
+  const isCalculation = isCalculationItem(payload);
   const readingPass = isCalculation
     ? true
     : input.readingScore >= 85 && input.missedTokens.length === 0;

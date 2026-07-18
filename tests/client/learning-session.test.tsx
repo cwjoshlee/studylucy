@@ -15,6 +15,7 @@ import {
 import { ApiClient, ApiError } from "../../src/client/api/client";
 import type {
   AttemptReceipt,
+  CalculationItem,
   LearningItemPayload,
   LearningSessionReceipt,
   TodayPlan
@@ -84,9 +85,9 @@ const mathPlanItem: TodayPlan["items"][number] = {
   payload: mathItem
 };
 
-const calculationItem: Extract<LearningItemPayload, { kind: "math-calculation" }> = {
+const calculationItem: CalculationItem = {
   id: "calculation-01",
-  kind: "math-calculation",
+  kind: "math-story",
   subject: "math",
   unit: "세 수의 혼합 계산",
   title: "세 수를 계산해요",
@@ -95,10 +96,14 @@ const calculationItem: Extract<LearningItemPayload, { kind: "math-calculation" }
   text: "이야기 문장으로 보이면 안 되는 텍스트예요.",
   hint: "낱말 힌트로 보이면 안 되는 텍스트예요.",
   tokens: ["이야기", "낱말"],
-  operands: [13, 9, 4],
-  operators: ["+", "+"],
-  layout: "horizontal",
+  question: "계산한 답은 얼마일까요?",
   answer: 26,
+  unitLabel: "",
+  calculation: {
+    operands: [13, 9, 4],
+    operators: ["+", "+"],
+    layout: "horizontal"
+  },
   checkHint: "13에 9를 더한 뒤 4를 더해 봐요.",
   delight: {
     companion: "momo",
@@ -268,6 +273,7 @@ describe("LearningSession", () => {
       studyDate="2026-07-16"
     />);
 
+    await flushLearningSessionIssue();
     await screen.findByRole("status", { name: "차나핑 코치" });
     api.coachMessage.mockClear();
     await user.click(screen.getByRole("button", { name: "1" }));
@@ -293,6 +299,7 @@ describe("LearningSession", () => {
     };
     const { rerender } = render(<LearningSession {...props} />);
 
+    await flushLearningSessionIssue();
     await screen.findByRole("status", { name: "차나핑 코치" });
     await waitFor(() => expect(api.coachMessage).toHaveBeenCalledOnce());
     api.coachMessage.mockClear();

@@ -151,7 +151,7 @@ function calculationPlan(): TodayPlan {
       version: 3,
       payload: {
         id: "math-01",
-        kind: "math-calculation",
+        kind: "math-story",
         subject: "math",
         unit: "세 수의 혼합 계산",
         title: "세 수를 계산해요",
@@ -160,10 +160,14 @@ function calculationPlan(): TodayPlan {
         text: "13 더하기 9 더하기 4예요.",
         hint: "왼쪽부터 계산해요.",
         tokens: ["13", "9", "4"],
-        operands: [13, 9, 4],
-        operators: ["+", "+"],
-        layout: "horizontal",
+        question: "계산한 답은 얼마일까요?",
         answer: 26,
+        unitLabel: "",
+        calculation: {
+          operands: [13, 9, 4],
+          operators: ["+", "+"],
+          layout: "horizontal"
+        },
         checkHint: "13과 9를 더한 뒤 4를 더해요."
       }
     }]

@@ -2,13 +2,61 @@ import { createHash } from "node:crypto";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { describe, expect, it } from "vitest";
+import { z } from "zod";
 import { INITIAL_ITEMS_V1 } from "../../src/server/db/seed-v1";
 import { INITIAL_ITEMS_V2 } from "../../src/server/db/seed-v2";
 import {
   INITIAL_CONTENT_VERSION,
   INITIAL_ITEMS
 } from "../../src/server/db/seed";
-import { LearningItemPayloadSchema } from "../../src/shared/learning";
+import {
+  isCalculationItem,
+  LearningItemPayloadSchema
+} from "../../src/shared/learning";
+
+const LegacyKoreanChildCueSchema455f750 = z.string()
+  .trim()
+  .min(1)
+  .max(120)
+  .regex(/[가-힣]/, "KOREAN_TEXT_REQUIRED")
+  .regex(/^[^A-Za-z\r\n]+$/, "LATIN_OR_NEWLINE_FORBIDDEN")
+  .superRefine((value, context) => {
+    const sentenceCount = value.split(/[.!?]+/u)
+      .map((part) => part.trim())
+      .filter(Boolean)
+      .length;
+    if (sentenceCount > 2) {
+      context.addIssue({ code: "custom", message: "AT_MOST_TWO_SENTENCES" });
+    }
+  });
+const LegacyDelightSchema455f750 = z.object({
+  companion: z.enum(["lumi", "toto", "momo", "bongbong"]),
+  mishap: LegacyKoreanChildCueSchema455f750,
+  openingCue: LegacyKoreanChildCueSchema455f750,
+  celebrationCue: LegacyKoreanChildCueSchema455f750
+}).strict();
+const LegacyBaseItemSchema455f750 = z.object({
+  id: z.string().min(1),
+  subject: z.enum(["korean", "math"]),
+  unit: z.string().min(1),
+  title: z.string().min(1),
+  level: z.string().min(1),
+  readLabel: z.string().min(1),
+  text: z.string().min(1),
+  hint: z.string(),
+  tokens: z.array(z.string().min(1)).min(1),
+  delight: LegacyDelightSchema455f750.optional()
+});
+const LegacyLearningItemPayloadSchema455f750 = z.discriminatedUnion("kind", [
+  LegacyBaseItemSchema455f750.extend({ kind: z.literal("korean-reading") }),
+  LegacyBaseItemSchema455f750.extend({
+    kind: z.literal("math-story"),
+    question: z.string().min(1),
+    answer: z.number().int(),
+    unitLabel: z.string(),
+    checkHint: z.string().min(1)
+  })
+]);
 
 const PAYLOAD_HASHES = {
   "ko-01": "add18e0a89b8d54bf5ffbbf9190fad68f3a6b4ee20647dbdc48997221b2ed694",
@@ -117,32 +165,37 @@ describe("approved version 2 content contract", () => {
     expect(INITIAL_ITEMS_V2.map(({ title }) => title)).toEqual(APPROVED_V2_TITLES);
   });
 
-  it("publishes ten validated calculation items as active version 3", () => {
+  it("publishes ten legacy-parseable calculation extensions as active version 3", () => {
     const calculations = INITIAL_ITEMS.filter(
-      (item) => item.kind === "math-calculation"
+      isCalculationItem
     );
     expect(INITIAL_CONTENT_VERSION).toBe(3);
     expect(calculations).toHaveLength(10);
     expect(calculations.map((item) => [
       item.id,
-      item.operands,
-      item.operators,
-      item.layout,
+      item.kind,
+      item.calculation?.operands,
+      item.calculation?.operators,
+      item.calculation?.layout,
       item.answer
     ])).toEqual([
-      ["math-01", [13, 9, 4], ["+", "+"], "horizontal", 26],
-      ["math-02", [21, 2, 8], ["+", "+"], "horizontal", 31],
-      ["math-03", [17, 3, 6], ["+", "+"], "horizontal", 26],
-      ["math-04", [21, 6, 9], ["+", "-"], "horizontal", 18],
-      ["math-05", [23, 7, 4], ["-", "-"], "horizontal", 12],
-      ["math-06", [15, 5, 3], ["-", "-"], "horizontal", 7],
-      ["math-07", [27, 6], ["+"], "vertical", 33],
-      ["math-08", [44, 9], ["-"], "vertical", 35],
-      ["math-09", [38, 7], ["+"], "vertical", 45],
-      ["math-10", [56, 8], ["-"], "vertical", 48]
+      ["math-01", "math-story", [13, 9, 4], ["+", "+"], "horizontal", 26],
+      ["math-02", "math-story", [21, 2, 8], ["+", "+"], "horizontal", 31],
+      ["math-03", "math-story", [17, 3, 6], ["+", "+"], "horizontal", 26],
+      ["math-04", "math-story", [21, 6, 9], ["+", "-"], "horizontal", 18],
+      ["math-05", "math-story", [23, 7, 4], ["-", "-"], "horizontal", 12],
+      ["math-06", "math-story", [15, 5, 3], ["-", "-"], "horizontal", 7],
+      ["math-07", "math-story", [27, 6], ["+"], "vertical", 33],
+      ["math-08", "math-story", [44, 9], ["-"], "vertical", 35],
+      ["math-09", "math-story", [38, 7], ["+"], "vertical", 45],
+      ["math-10", "math-story", [56, 8], ["-"], "vertical", 48]
     ]);
-    expect(calculations.map(({ layout }) => layout))
+    expect(calculations.map((item) => item.calculation?.layout))
       .toEqual(expect.arrayContaining(["horizontal", "vertical"]));
+    for (const item of calculations) {
+      expect(LegacyLearningItemPayloadSchema455f750.safeParse(item).success, item.id)
+        .toBe(true);
+    }
     expect(JSON.stringify(INITIAL_ITEMS.filter((item) => item.subject === "korean")))
       .not.toMatch(/루미|봉봉/);
   });
@@ -150,7 +203,7 @@ describe("approved version 2 content contract", () => {
   it("rejects invalid calculation payloads and round-trips every approved v3 payload", () => {
     const calculation = {
       id: "calculation-contract",
-      kind: "math-calculation",
+      kind: "math-story",
       subject: "math",
       unit: "세 수의 혼합 계산",
       title: "계산해 봐요",
@@ -159,19 +212,26 @@ describe("approved version 2 content contract", () => {
       text: "13 더하기 9 더하기 4예요.",
       hint: "왼쪽부터 계산해요.",
       tokens: ["13", "9", "4"],
-      operands: [13, 9, 4],
-      operators: ["+", "+"],
-      layout: "horizontal",
+      question: "계산한 답은 얼마일까요?",
       answer: 26,
+      unitLabel: "",
+      calculation: {
+        operands: [13, 9, 4],
+        operators: ["+", "+"],
+        layout: "horizontal"
+      },
       checkHint: "13과 9를 더한 뒤 4를 더해요."
     };
     expect(LearningItemPayloadSchema.safeParse(calculation).success).toBe(true);
     for (const invalid of [
-      { ...calculation, operators: ["+"] },
+      { ...calculation, calculation: { ...calculation.calculation, operators: ["+"] } },
       { ...calculation, subject: "korean" },
       { ...calculation, answer: 25 },
-      { ...calculation, operands: [4, 9, 1], operators: ["-", "+"], answer: -4 },
-      { ...calculation, layout: "vertical" }
+      { ...calculation, calculation: { ...calculation.calculation, operands: [-1, 9, 4] } },
+      { ...calculation, calculation: { ...calculation.calculation, operands: [4, 9, 1], operators: ["-", "+"] }, answer: -4 },
+      { ...calculation, calculation: { operands: [90, 20], operators: ["+"], layout: "horizontal" }, answer: 110 },
+      { ...calculation, calculation: { operands: [90, 20, 20], operators: ["+", "-"], layout: "horizontal" }, answer: 90 },
+      { ...calculation, calculation: { ...calculation.calculation, layout: "vertical" } }
     ]) {
       expect(LearningItemPayloadSchema.safeParse(invalid).success).toBe(false);
     }

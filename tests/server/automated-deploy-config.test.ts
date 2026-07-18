@@ -127,6 +127,22 @@ describe("GHCR pull deployment configuration", () => {
     expect(workflow).toContain("type=sha");
     expect(workflow).toContain("org.opencontainers.image.revision=${{ github.sha }}");
     expect(workflow).toContain("org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}");
+    expect(workflow).toMatch(/publish-image:[\s\S]*concurrency:\s*\n\s+group: main-publish\s*\n\s+cancel-in-progress: true/);
+  });
+
+  it("documents a non-printed 32-byte base64 AI encryption key for production", async () => {
+    const [example, nasRunbook] = await Promise.all([
+      source(".env.example"),
+      source("ops/synology/README.md")
+    ]);
+
+    expect(example).toContain("LLM_ENCRYPTION_KEY=");
+    expect(example).toContain("base64 of exactly 32 random bytes");
+    expect(example).toContain("openssl rand -base64 32");
+    expect(nasRunbook).toContain('llm_encryption_key="$(openssl rand -base64 32)"');
+    expect(nasRunbook).toContain('printf \'%s\\n\' "LLM_ENCRYPTION_KEY=${llm_encryption_key}"');
+    expect(nasRunbook).toContain("unset setup_secret session_pepper llm_encryption_key");
+    expect(nasRunbook).toMatch(/\{[\s\S]*LLM_ENCRYPTION_KEY=\$\{llm_encryption_key\}[\s\S]*\} > \.env/);
   });
 
   it("keeps production image-only and smoke build-only on separate loopback ports", async () => {

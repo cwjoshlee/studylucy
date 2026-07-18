@@ -1,4 +1,7 @@
-import type { LearningItemPayload } from "../../shared/learning";
+import {
+  isCalculationItem,
+  type LearningItemPayload
+} from "../../shared/learning";
 import {
   calculationExpression,
   calculationScaffold,
@@ -18,21 +21,21 @@ export function ProblemBreakdown({
   mathRetryCount,
   showMathScaffold
 }: ProblemBreakdownProps) {
-  if (item.kind === "math-calculation") {
+  if (isCalculationItem(item)) {
     const expression = calculationExpression(item);
     const label = `${expression} = ?`;
-    const [firstOperand, secondOperand] = item.operands;
+    const [firstOperand, secondOperand] = item.calculation.operands;
 
     return (
       <section className="problem-breakdown">
         <div
-          className={`calculation-board calculation-board--${item.layout}`}
+          className={`calculation-board calculation-board--${item.calculation.layout}`}
           aria-label={label}
         >
-          {item.layout === "vertical" ? (
+          {item.calculation.layout === "vertical" ? (
             <div className="calculation-board__vertical-operands">
               <span>{firstOperand}</span>
-              <span><b aria-hidden="true">{item.operators[0]}</b>{secondOperand}</span>
+              <span><b aria-hidden="true">{item.calculation.operators[0]}</b>{secondOperand}</span>
               <span className="calculation-board__line">?</span>
             </div>
           ) : (

@@ -40,6 +40,7 @@ export function ChanaPingCoach({
   const abortRef = useRef<AbortController | null>(null);
   const generationRef = useRef(0);
   const lastRequestRef = useRef<{ key: string; at: number } | null>(null);
+  const lastRemoteCueRef = useRef<{ text: string; at: number } | null>(null);
   const requestMessageRef = useRef(requestMessage);
 
   useEffect(() => {
@@ -58,6 +59,13 @@ export function ChanaPingCoach({
   }, [cueKey, event, retryCount, subject]);
 
   useEffect(() => {
+    if (hidden) {
+      abortRef.current?.abort();
+      abortRef.current = null;
+      generationRef.current += 1;
+      setRemoteCue(null);
+      return;
+    }
     const send = requestMessageRef.current;
     if (send === undefined) return;
     const input = { event, subject, retryCount, hintStage };
@@ -72,11 +80,17 @@ export function ChanaPingCoach({
     setRemoteCue(null);
     void send(input, controller.signal).then((response) => {
       if (!controller.signal.aborted && generation === generationRef.current && response.source === "llm") {
+        const receivedAt = Date.now();
+        if (
+          lastRemoteCueRef.current?.text === response.message &&
+          receivedAt - lastRemoteCueRef.current.at < REPEAT_WINDOW_MS
+        ) return;
+        lastRemoteCueRef.current = { text: response.message, at: receivedAt };
         setRemoteCue(response.message);
       }
     }).catch(() => undefined);
     return () => controller.abort();
-  }, [event, hintStage, retryCount, subject]);
+  }, [event, hidden, hintStage, retryCount, subject]);
 
   if (hidden) return null;
 

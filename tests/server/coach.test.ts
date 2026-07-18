@@ -51,9 +51,12 @@ describe("AI coach privacy and budget boundaries", () => {
     expect(fetcher).toHaveBeenCalledOnce();
     const [url, init] = fetcher.mock.calls[0] as [string, RequestInit];
     expect(url).toContain("generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent");
-    const sent = JSON.stringify(init.body);
+    const sent = String(init.body);
     expect(sent).toContain("retry");
     expect(sent).toContain("math");
+    expect(JSON.parse(sent)).toMatchObject({
+      generationConfig: { maxOutputTokens: 64 }
+    });
     expect(sent).not.toMatch(/name|pin|transcript|answer|cookie|device|plan|provider-secret/i);
     db.close();
   });
@@ -116,8 +119,112 @@ describe("AI coach privacy and budget boundaries", () => {
 
     expect(fetcher).toHaveBeenCalledOnce();
     expect(fetcher.mock.calls[0]?.[0]).toBe("https://api.openai.com/v1/responses");
-    expect(JSON.stringify(fetcher.mock.calls[0]?.[1]?.body)).toContain("gpt-5-nano");
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toMatchObject({
+      model: "gpt-5-nano",
+      max_output_tokens: 64
+    });
     expect(fallback.source).toBe("local");
+    db.close();
+  });
+
+  it("keeps the conservative reservation when observed token usage is higher", async () => {
+    const db = openDatabase(":memory:");
+    migrate(db);
+    db.prepare(`
+      INSERT INTO ai_coach_usage
+        (month, provider, model, input_tokens, output_tokens, estimated_won, created_at)
+      VALUES ('2026-07', 'openai', 'gpt-5-nano', 0, 0, 999, '2026-07-18T00:00:00.000Z')
+    `).run();
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      output_text: JSON.stringify({ message: "한 걸음씩 해 보자" }),
+      usage: { input_tokens: 50_000, output_tokens: 50_000 }
+    }), { status: 200 }));
+    const service = new AiCoachService({
+      db,
+      encryptionKey: key,
+      fetcher,
+      now: () => new Date("2026-07-18T03:00:00.000Z")
+    });
+    service.updateSettings({
+      enabled: true,
+      provider: "openai",
+      apiKey: "provider-secret",
+      monthlyBudgetWon: 1000
+    });
+
+    await expect(service.message({
+      event: "thinking", subject: "math", retryCount: 2, hintStage: "step"
+    })).resolves.toMatchObject({ source: "llm" });
+
+    expect(fetcher).toHaveBeenCalledOnce();
+    expect(db.prepare(`
+      SELECT SUM(estimated_won) AS spent FROM ai_coach_usage WHERE month = '2026-07'
+    `).get()).toEqual({ spent: 1000 });
+    expect(db.prepare(`
+      SELECT input_tokens AS inputTokens, output_tokens AS outputTokens, estimated_won AS estimatedWon
+      FROM ai_coach_usage WHERE id = 2
+    `).get()).toEqual({ inputTokens: 50_000, outputTokens: 50_000, estimatedWon: 1 });
+    db.close();
+  });
+
+  it("never calls a provider when the conservative reservation does not fit", async () => {
+    const db = openDatabase(":memory:");
+    migrate(db);
+    db.prepare(`
+      INSERT INTO ai_coach_usage
+        (month, provider, model, input_tokens, output_tokens, estimated_won, created_at)
+      VALUES ('2026-07', 'gemini', 'gemini-2.5-flash-lite', 0, 0, 1000, '2026-07-18T00:00:00.000Z')
+    `).run();
+    const fetcher = vi.fn();
+    const service = new AiCoachService({
+      db,
+      encryptionKey: key,
+      fetcher,
+      now: () => new Date("2026-07-18T03:00:00.000Z")
+    });
+    service.updateSettings({ enabled: true, apiKey: "provider-secret" });
+
+    await expect(service.message({
+      event: "retry", subject: "korean", retryCount: 1, hintStage: "first"
+    })).resolves.toMatchObject({ source: "local" });
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(db.prepare(`
+      SELECT SUM(estimated_won) AS spent FROM ai_coach_usage WHERE month = '2026-07'
+    `).get()).toEqual({ spent: 1000 });
+    db.close();
+  });
+
+  it("keeps concurrent reservations within the monthly application cap", async () => {
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const fetcher = vi.fn().mockImplementation(async () => new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: JSON.stringify({ message: "차근차근 해 보자" }) }] } }],
+      usageMetadata: { promptTokenCount: 20, candidatesTokenCount: 10 }
+    }), { status: 200 }));
+    const service = new AiCoachService({
+      db,
+      encryptionKey: key,
+      fetcher,
+      now: () => new Date("2026-07-18T03:00:00.000Z")
+    });
+    service.updateSettings({
+      enabled: true,
+      apiKey: "provider-secret",
+      monthlyBudgetWon: 2
+    });
+
+    await Promise.all(Array.from({ length: 6 }, (_, retryCount) => service.message({
+      event: "retry",
+      subject: "math",
+      retryCount,
+      hintStage: "first"
+    })));
+
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(db.prepare(`
+      SELECT SUM(estimated_won) AS spent, COUNT(*) AS calls
+      FROM ai_coach_usage WHERE month = '2026-07'
+    `).get()).toEqual({ spent: 2, calls: 2 });
     db.close();
   });
 });

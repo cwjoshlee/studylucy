@@ -19,6 +19,15 @@ const MODEL_BY_PROVIDER: Record<AiCoachProvider, string> = {
 };
 const PERSONA = "초등 학습을 다정하게 돕는 차나핑 코치다. 한국어로 짧고 안전하게 격려한다. 정답이나 개인정보를 요구하지 않는다.";
 const LOCAL_MESSAGE = "차근차근 한 번 더 해 보자!";
+export const PROVIDER_OUTPUT_TOKEN_CAP = 64;
+/**
+ * The fixed persona plus the strict event envelope is bounded below 512 input
+ * tokens. At the official 2026-07-18 maximum used by these models
+ * ($0.10/M input and $0.40/M output) and a conservative 2,000 KRW/USD,
+ * 512 input + 64 output tokens cost at most 0.1536 won. One whole won is
+ * therefore the smallest conservative reservation for every bounded call.
+ */
+export const COACH_CALL_RESERVATION_WON = 1;
 
 type SettingsRow = {
   enabled: number;
@@ -134,7 +143,6 @@ export class AiCoachService {
     if (settings.enabled !== 1 || this.deps.encryptionKey === null || !this.hasStoredKey(settings)) {
       return this.local();
     }
-    if (this.monthSpent() + 1 > settings.monthlyBudgetWon) return this.local();
     let apiKey: string;
     try {
       apiKey = decryptApiKey({ ciphertext: settings.ciphertext!, iv: settings.iv!, tag: settings.tag! }, this.deps.encryptionKey);
@@ -142,13 +150,13 @@ export class AiCoachService {
       return this.local();
     }
 
-    this.recordUsage(settings, 0, 0, 1);
+    const usageId = this.reserveUsage(settings);
+    if (usageId === null) return this.local();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 4_000);
     try {
       const provider = await this.callProvider(settings, apiKey, input, controller.signal);
-      const actual = Math.max(1, Math.ceil((provider.inputTokens + provider.outputTokens) / 1_000));
-      this.recordUsage(settings, provider.inputTokens, provider.outputTokens, actual - 1);
+      this.recordObservedTokens(usageId, provider.inputTokens, provider.outputTokens);
       const message = parseJsonMessage(provider.text);
       if (message === null) return this.local();
       return { message, source: "llm" };
@@ -181,11 +189,32 @@ export class AiCoachService {
     return row.spent;
   }
 
-  private recordUsage(settings: SettingsRow, inputTokens: number, outputTokens: number, estimatedWon: number): void {
+  private reserveUsage(settings: SettingsRow): number | null {
+    return this.deps.db.transaction(() => {
+      if (this.monthSpent() + COACH_CALL_RESERVATION_WON > settings.monthlyBudgetWon) {
+        return null;
+      }
+      const result = this.deps.db.prepare(`
+        INSERT INTO ai_coach_usage
+          (month, provider, model, input_tokens, output_tokens, estimated_won, created_at)
+        VALUES (?, ?, ?, 0, 0, ?, ?)
+      `).run(
+        monthAt(this.now()),
+        settings.provider,
+        settings.model,
+        COACH_CALL_RESERVATION_WON,
+        this.now().toISOString()
+      );
+      return Number(result.lastInsertRowid);
+    }).immediate();
+  }
+
+  private recordObservedTokens(usageId: number, inputTokens: number, outputTokens: number): void {
     this.deps.db.prepare(`
-      INSERT INTO ai_coach_usage (month, provider, model, input_tokens, output_tokens, estimated_won, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(monthAt(this.now()), settings.provider, settings.model, inputTokens, outputTokens, estimatedWon, this.now().toISOString());
+      UPDATE ai_coach_usage
+      SET input_tokens = ?, output_tokens = ?
+      WHERE id = ?
+    `).run(inputTokens, outputTokens, usageId);
   }
 
   private async callProvider(
@@ -203,7 +232,10 @@ export class AiCoachService {
           headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
           body: JSON.stringify({
             contents: [{ role: "user", parts: [{ text: `${PERSONA}\n${coachInput}` }] }],
-            generationConfig: { responseMimeType: "application/json" }
+            generationConfig: {
+              responseMimeType: "application/json",
+              maxOutputTokens: PROVIDER_OUTPUT_TOKEN_CAP
+            }
           }),
           signal
         }
@@ -228,6 +260,7 @@ export class AiCoachService {
           { role: "developer", content: PERSONA },
           { role: "user", content: coachInput }
         ],
+        max_output_tokens: PROVIDER_OUTPUT_TOKEN_CAP,
         text: { format: { type: "json_object" } }
       }),
       signal

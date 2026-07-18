@@ -13,6 +13,7 @@ import type {
   LearningSessionReceipt,
   TodayPlan
 } from "../../shared/learning";
+import { isCalculationItem } from "../../shared/learning";
 import type { CoachMessageRequest, CoachMessageResponse } from "../../shared/learning";
 import type { ReadingResult } from "../../shared/reading";
 import type { IdleEventInput, IdleEventResult } from "../../shared/stars";
@@ -480,6 +481,7 @@ function LearningSessionView({
     event.preventDefault();
     if (
       item.kind !== "math-story" ||
+      isCalculationItem(item) ||
       learningControlsPaused
     ) return;
     if (!/^-?\d+$/.test(mathAnswer.trim())) {
@@ -495,7 +497,7 @@ function LearningSessionView({
 
   async function checkCalculationAnswer(): Promise<void> {
     if (
-      item.kind !== "math-calculation" ||
+      !isCalculationItem(item) ||
       learningControlsPaused ||
       !/^\d+$/.test(mathAnswer)
     ) return;
@@ -654,7 +656,7 @@ function LearningSessionView({
       />
       <p className="subject-chip">{item.subject === "korean" ? "국어" : "수학"} · {item.unit}</p>
       <h2>{item.title}</h2>
-      {item.kind === "math-calculation" ? (
+      {isCalculationItem(item) ? (
         <div className="calculation-lesson">
           <ProblemBreakdown
             item={item}
@@ -755,7 +757,7 @@ function LearningSessionView({
           </>
           ) : null}
 
-          {item.kind === "math-story" ? (
+          {item.kind === "math-story" && !isCalculationItem(item) ? (
         <form onSubmit={(event) => void checkMathAnswer(event)}>
           <label>
             답 쓰기

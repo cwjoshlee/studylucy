@@ -2,13 +2,15 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import {
+  act,
   cleanup,
   fireEvent,
   render,
   screen,
+  waitFor,
   within
 } from "@testing-library/react";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { CompanionAvatar } from "../../src/client/companions/companion-avatar";
 import { COMPANION_CAST } from "../../src/client/companions/cast";
 import {
@@ -159,6 +161,90 @@ describe("magical companion components", () => {
 
     expect(screen.getByRole("img", { name: "누운 차나핑 학습 코치" }))
       .toHaveAttribute("src", `/assets/companions/${asset}`);
+  });
+
+  it("does not request an AI cue while hidden", async () => {
+    const requestMessage = vi.fn().mockResolvedValue({
+      message: "차근차근 해 보자",
+      source: "llm" as const
+    });
+
+    render(<ChanaPingCoach
+      event="lesson-open"
+      subject="korean"
+      retryCount={0}
+      cueKey="2026-07-18:ko-hidden"
+      requestMessage={requestMessage}
+      hidden
+      onHide={() => undefined}
+    />);
+
+    await act(async () => undefined);
+    expect(requestMessage).not.toHaveBeenCalled();
+    expect(screen.queryByLabelText("차나핑 학습 코치")).not.toBeInTheDocument();
+  });
+
+  it("aborts an in-flight AI cue when the coach becomes hidden", async () => {
+    const requestMessage = vi.fn((_input, signal?: AbortSignal) =>
+      new Promise<{ message: string; source: "llm" }>((_resolve, reject) => {
+        signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+      })
+    );
+    const view = render(<ChanaPingCoach
+      event="lesson-open"
+      subject="math"
+      retryCount={0}
+      cueKey="2026-07-18:math-visible"
+      requestMessage={requestMessage}
+      hidden={false}
+      onHide={() => undefined}
+    />);
+    await waitFor(() => expect(requestMessage).toHaveBeenCalledOnce());
+    const signal = requestMessage.mock.calls[0]?.[1] as AbortSignal;
+
+    view.rerender(<ChanaPingCoach
+      event="lesson-open"
+      subject="math"
+      retryCount={0}
+      cueKey="2026-07-18:math-visible"
+      requestMessage={requestMessage}
+      hidden
+      onHide={() => undefined}
+    />);
+
+    expect(signal.aborted).toBe(true);
+  });
+
+  it("does not re-announce duplicate LLM text inside the repeat window", async () => {
+    const requestMessage = vi.fn().mockResolvedValue({
+      message: "한 걸음씩 해 보자",
+      source: "llm" as const
+    });
+    const view = render(<ChanaPingCoach
+      event="lesson-open"
+      subject="math"
+      retryCount={0}
+      cueKey="2026-07-18:math-repeat"
+      requestMessage={requestMessage}
+      hidden={false}
+      onHide={() => undefined}
+    />);
+    expect(await screen.findByText("한 걸음씩 해 보자")).toBeVisible();
+
+    view.rerender(<ChanaPingCoach
+      event="retry"
+      subject="math"
+      retryCount={1}
+      cueKey="2026-07-18:math-repeat"
+      requestMessage={requestMessage}
+      hidden={false}
+      onHide={() => undefined}
+    />);
+
+    await waitFor(() => expect(requestMessage).toHaveBeenCalledTimes(2));
+    await waitFor(() => {
+      expect(screen.queryByText("한 걸음씩 해 보자")).not.toBeInTheDocument();
+    });
   });
 
   it("keeps the original local coach SVG small and free of external or executable content", async () => {

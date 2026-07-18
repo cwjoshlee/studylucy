@@ -30,14 +30,16 @@ cd /volume1/docker/sua-learning
 umask 077
 setup_secret="$(openssl rand -hex 32)"
 session_pepper="$(openssl rand -hex 32)"
+llm_encryption_key="$(openssl rand -base64 32)"
 {
   printf '%s\n' 'APP_ORIGIN=https://your-host.synology.me'
   printf '%s\n' "SETUP_SECRET=${setup_secret}"
   printf '%s\n' "SESSION_PEPPER=${session_pepper}"
+  printf '%s\n' "LLM_ENCRYPTION_KEY=${llm_encryption_key}"
   printf '%s\n' 'SESSION_DAYS=14'
   printf '%s\n' 'APP_IMAGE=ghcr.io/cwjoshlee/studylucy:main'
 } > .env
-unset setup_secret session_pepper
+unset setup_secret session_pepper llm_encryption_key
 chmod 600 .env
 ```
 
@@ -47,6 +49,8 @@ chmod 600 .env
 data       1000:1000, mode 700
 .env       배포 관리자 소유, mode 600 (APP_IMAGE와 비밀값 포함)
 ```
+
+`LLM_ENCRYPTION_KEY`는 반드시 정확히 32바이트의 난수를 base64로 인코딩한 값이어야 한다. 위 명령은 값을 셸 변수에 받은 뒤 mode 600의 `.env`에만 기록하며, 터미널이나 로그에 비밀값을 출력하지 않는다.
 
 `main` 이미지가 public이면 GHCR 로그인은 필요 없다. 패키지가 private인 경우에만 최소 read 권한의 별도 토큰을 사용해 표준 입력으로 로그인하고, 토큰이나 `.env` 내용을 터미널 기록에 남기지 않는다.
 

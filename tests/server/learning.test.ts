@@ -1,7 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
 import { INITIAL_CONTENT_VERSION } from "../../src/server/db/seed";
 import { LearningRepository } from "../../src/server/learning/repository";
-import type { TodayPlan } from "../../src/shared/learning";
+import {
+  isCalculationItem,
+  type TodayPlan
+} from "../../src/shared/learning";
 import {
   createTestHarness,
   type TestClient
@@ -71,7 +74,7 @@ function passingAttempt(
     occurredAt: "2026-07-15T03:05:00.000Z",
     readingScore: 100,
     missedTokens: [],
-    mathAnswer: item.payload.kind === "math-story" || item.payload.kind === "math-calculation"
+    mathAnswer: item.payload.kind === "math-story"
       ? item.payload.answer
       : null,
     durationMs: 12_000,
@@ -589,14 +592,15 @@ describe("authoritative learning API", () => {
     await authenticateStudent(harness, student);
     const plan = await getToday(student);
     const issuedMath = plan.items.find((item) => item.id === "math-01")!;
-    expect(issuedMath.payload.kind).toBe("math-calculation");
+    expect(issuedMath.payload.kind).toBe("math-story");
+    expect(isCalculationItem(issuedMath.payload)).toBe(true);
 
     const nextContentVersion = INITIAL_CONTENT_VERSION + 1;
     const publishedNextVersion = {
       ...issuedMath.payload,
       title: "바뀐 수학 문제",
       text: "정답이 완전히 달라진 새 문제예요.",
-      ...(issuedMath.payload.kind === "math-story" || issuedMath.payload.kind === "math-calculation"
+      ...(issuedMath.payload.kind === "math-story"
         ? { answer: 999 }
         : {})
     };
@@ -776,7 +780,7 @@ describe("authoritative learning API", () => {
     await authenticateStudent(harness, student);
     const plan = await getToday(student);
     const calculation = plan.items.find(
-      (item) => item.payload.kind === "math-calculation"
+      (item) => isCalculationItem(item.payload)
     )!;
     const korean = plan.items.find((item) => item.payload.subject === "korean")!;
     expect(calculation).toBeDefined();
