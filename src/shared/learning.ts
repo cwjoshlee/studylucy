@@ -30,7 +30,7 @@ export const CoachMessageRequestSchema = z.object({
 export type CoachMessageRequest = z.infer<typeof CoachMessageRequestSchema>;
 export type CoachMessageResponse = { message: string; source: "llm" | "local" };
 
-const BaseItem = z.object({
+const BaseItemSchema = z.object({
   id: z.string().min(1),
   subject: z.enum(["korean", "math"]),
   unit: z.string().min(1),
@@ -60,7 +60,32 @@ export const CalculationExtensionSchema = z.object({
   layout: z.enum(["horizontal", "vertical"])
 }).strict();
 
-const MathStoryItemSchema = BaseItem.extend({
+type BaseItem = z.infer<typeof BaseItemSchema>;
+
+export const LearningStepSchema = z.enum(["foundation", "current", "challenge"]);
+export type LearningStep = z.infer<typeof LearningStepSchema>;
+
+export type AiProviderSettingsView = {
+  provider: "gemini" | "openai";
+  enabled: boolean;
+  model: string;
+  hasApiKey: boolean;
+};
+
+export const KoreanDictationItemSchema = BaseItemSchema.extend({
+  kind: z.literal("korean-dictation"),
+  promptText: z.string().min(1),
+  answerText: z.string().min(1),
+  mode: z.enum(["word", "sentence"])
+});
+export type KoreanDictationItem = BaseItem & {
+  kind: "korean-dictation";
+  promptText: string;
+  answerText: string;
+  mode: "word" | "sentence";
+};
+
+const MathStoryItemSchema = BaseItemSchema.extend({
   kind: z.literal("math-story"),
   question: z.string().min(1),
   answer: z.number().int(),
@@ -134,11 +159,18 @@ const MathStoryItemSchema = BaseItem.extend({
 });
 
 export const LearningItemPayloadSchema = z.discriminatedUnion("kind", [
-  BaseItem.extend({ kind: z.literal("korean-reading") }),
+  BaseItemSchema.extend({ kind: z.literal("korean-reading") }),
+  KoreanDictationItemSchema,
   MathStoryItemSchema
 ]);
 
 export type LearningItemPayload = z.infer<typeof LearningItemPayloadSchema>;
+export type PlanItem = {
+  id: string;
+  version: number;
+  step: LearningStep;
+  payload: LearningItemPayload;
+};
 export type CalculationItem = Extract<LearningItemPayload, { kind: "math-story" }> & {
   calculation: z.infer<typeof CalculationExtensionSchema>;
 };
@@ -175,6 +207,7 @@ export const AttemptInputSchema = z.object({
   readingScore: z.number().int().min(0).max(100),
   missedTokens: z.array(z.string().min(1)).max(20),
   mathAnswer: z.number().int().nullable(),
+  dictationText: z.string().optional(),
   durationMs: z.number().int().min(0).max(3_600_000),
   difficultyFeedback: z.enum(["easy", "thinking", "hard"]).nullable()
 });
@@ -212,6 +245,7 @@ export const TodayPlanSchema = z.object({
   items: z.array(z.object({
     id: z.string().min(1),
     version: z.number().int().positive(),
+    step: LearningStepSchema.default("current"),
     payload: LearningItemPayloadSchema
   }))
 });

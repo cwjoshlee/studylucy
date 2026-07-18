@@ -73,6 +73,7 @@ export class LearningService {
       items: issued.items.map(({ id, version, payload }) => ({
         id,
         version,
+        step: "current",
         payload
       }))
     };

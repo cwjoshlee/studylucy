@@ -562,6 +562,7 @@ export class OfflineBatchService {
       items: snapshot.items.map(({ id, version, payload }) => ({
         id,
         version,
+        step: "current",
         payload
       }))
     };

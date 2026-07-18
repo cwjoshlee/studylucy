@@ -9,7 +9,8 @@ export const StarReasonSchema = z.enum([
   "GUARDIAN_ADJUSTMENT",
   "REWARD_REDEMPTION",
   "REVERSAL",
-  "NO_BALANCE_AUDIT"
+  "NO_BALANCE_AUDIT",
+  "CHALLENGE_PERFECT"
 ]);
 
 export type StarReason = z.infer<typeof StarReasonSchema>;
