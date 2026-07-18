@@ -136,9 +136,29 @@ describe("magical companion components", () => {
 
     expect(screen.getByRole("img", { name: "누운 차나핑 학습 코치" }))
       .toHaveAttribute("src", "/assets/companions/chanaping.svg");
+    expect(screen.getByLabelText("차나핑 학습 코치"))
+      .toHaveAttribute("data-chanaping-mood", "rest");
     expect(screen.getByRole("status", { name: "차나핑 코치" })).toBeVisible();
     expect(screen.getByRole("button", { name: "차나핑 코치 숨기기" }))
       .toHaveClass("chanaping-coach__hide");
+  });
+
+  it.each([
+    ["correct", "chanaping-celebrate.svg"],
+    ["retry", "chanaping-grumble.svg"],
+    ["thinking", "chanaping-bored.svg"]
+  ] as const)("shows the %s ChanaPing art for %s", (event, asset) => {
+    render(<ChanaPingCoach
+      event={event}
+      subject="math"
+      retryCount={1}
+      cueKey="2026-07-18:math-01"
+      hidden={false}
+      onHide={() => undefined}
+    />);
+
+    expect(screen.getByRole("img", { name: "누운 차나핑 학습 코치" }))
+      .toHaveAttribute("src", `/assets/companions/${asset}`);
   });
 
   it("keeps the original local coach SVG small and free of external or executable content", async () => {
@@ -148,5 +168,20 @@ describe("magical companion components", () => {
     expect(source).toMatch(/teal|#1f9d8b/i);
     expect(source).not.toMatch(/<script|<foreignObject|onload=|(?:href|src)=["']https?:/i);
     expect(Buffer.byteLength(source)).toBeLessThanOrEqual(120_000);
+  });
+
+  it("keeps ChanaPing emotion art local, small, and inert", async () => {
+    const sources = await Promise.all(
+      (["celebrate", "grumble", "bored", "focus"] as const).map((mood) =>
+        readFile(resolve(`public/assets/companions/chanaping-${mood}.svg`), "utf8")
+      )
+    );
+
+    for (const source of sources) {
+      expect(source).toContain('viewBox="0 0 240 240"');
+      expect(source).toMatch(/teal|#1f9d8b/i);
+      expect(source).not.toMatch(/<script|<foreignObject|on[a-z]+\s*=|(?:href|src)\s*=/i);
+      expect(Buffer.byteLength(source)).toBeLessThanOrEqual(120_000);
+    }
   });
 });

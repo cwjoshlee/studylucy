@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" role="img" aria-label="토라진 차나핑 학습 코치">
+  <rect width="240" height="240" rx="44" fill="#e7f7f3"/>
+  <path d="M35 210c9-47 41-68 85-68s76 21 85 68" fill="#b6d5c5"/>
+  <ellipse cx="120" cy="113" rx="61" ry="57" fill="#fff4dc" stroke="#276f64" stroke-width="5"/>
+  <path d="M61 112C41 99 47 67 70 63c12-2 24 6 27 17-19 3-28 20-20 36z" fill="#1f9d8b"/>
+  <path d="M84 78c8-28 45-37 69-18 14 11 16 33 5 49-10-15-29-19-45-11-12 6-19 16-20 30-16-10-19-32-9-50z" fill="#1f9d8b"/>
+  <path d="M156 77c22 3 34 26 25 46-5 10-13 16-24 19-2-17-12-28-29-34 17-7 27-17 28-31z" fill="#167a70"/>
+  <path d="M76 109l27 7M138 116l27-10" fill="none" stroke="#276f64" stroke-width="6" stroke-linecap="round"/>
+  <circle cx="94" cy="125" r="4" fill="#276f64"/><circle cx="148" cy="125" r="4" fill="#276f64"/>
+  <path d="M104 151c11-6 21-6 32 0" fill="none" stroke="#c26b72" stroke-width="4" stroke-linecap="round"/>
+  <path d="M66 177c18-17 36-18 54-2M174 177c-18-17-36-18-54-2" fill="none" stroke="#91c8bb" stroke-width="17" stroke-linecap="round"/>
+  <path d="M90 174c15 9 45 9 60 0l10 35H80z" fill="#1d685f"/>
+  <path d="M110 177l10 14 10-14" fill="#f9d8b8" stroke="#155149" stroke-width="3"/>
+  <path d="M38 74c6-11 17-16 29-12" fill="none" stroke="#c26b72" stroke-width="4" stroke-linecap="round"/>
+</svg>

@@ -397,11 +397,16 @@ describe("LearningSession", () => {
 
     const coach = await screen.findByRole("status", { name: "차나핑 코치" });
     const openingCue = coach.textContent;
+    const coachArt = screen.getByRole("img", { name: "누운 차나핑 학습 코치" });
+    const openingArt = coachArt.getAttribute("src");
     await user.click(screen.getByRole("button", { name: "1" }));
     expect(coach).toHaveTextContent(openingCue ?? "");
+    expect(coachArt).toHaveAttribute("src", openingArt ?? "");
 
     await user.click(screen.getByRole("button", { name: "답 확인" }));
     await waitFor(() => expect(coach).not.toHaveTextContent(openingCue ?? ""));
+    await waitFor(() => expect(coachArt)
+      .toHaveAttribute("src", "/assets/companions/chanaping-grumble.svg"));
     expect(coach).not.toHaveTextContent(/별|차감|바보|느려|게으르|벌|못하|틀렸잖/);
   });
 

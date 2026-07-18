@@ -1,6 +1,10 @@
 import { useEffect, useRef, useState } from "react";
 import type { ChanaPingEvent } from "../../shared/learning";
-import { selectLocalChanaPingCue } from "./chanaping-cues";
+import {
+  getChanaPingArt,
+  getChanaPingMood,
+  selectLocalChanaPingCue
+} from "./chanaping-cues";
 
 const REPEAT_WINDOW_MS = 4 * 60 * 1_000;
 
@@ -19,6 +23,8 @@ export function ChanaPingCoach({
   hidden: boolean;
   onHide: () => void;
 }) {
+  const mood = getChanaPingMood(event);
+  const art = getChanaPingArt(mood);
   const initialCue = selectLocalChanaPingCue({ event, subject, retryCount, key: cueKey });
   const [cue, setCue] = useState(initialCue);
   const lastCueRef = useRef({ text: initialCue, at: Date.now() });
@@ -37,10 +43,14 @@ export function ChanaPingCoach({
   if (hidden) return null;
 
   return (
-    <aside className="chanaping-coach" aria-label="차나핑 학습 코치">
+    <aside
+      className="chanaping-coach"
+      aria-label="차나핑 학습 코치"
+      data-chanaping-mood={mood}
+    >
       <img
         className="chanaping-coach__art"
-        src="/assets/companions/chanaping.svg"
+        src={art}
         alt="누운 차나핑 학습 코치"
       />
       <p className="chanaping-coach__cue" role="status" aria-live="polite" aria-label="차나핑 코치">

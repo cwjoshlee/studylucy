@@ -155,6 +155,25 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .chanaping-coach__cue strong { color: #155149; font-size: .86rem; }
 .chanaping-coach__cue span { font-size: .9rem; }
 .chanaping-coach__hide { min-width: 48px; min-height: 48px; padding: 6px; font-size: .78rem; }
+.chanaping-coach[data-chanaping-mood="celebrate"] .chanaping-coach__art {
+  animation: chanaping-celebrate 1.4s ease-in-out infinite;
+}
+.chanaping-coach[data-chanaping-mood="grumble"] .chanaping-coach__art {
+  animation: chanaping-grumble 1.8s ease-in-out infinite;
+}
+@keyframes chanaping-celebrate {
+  50% { transform: translateY(-4px) rotate(-2deg); }
+}
+@keyframes chanaping-grumble {
+  25% { transform: translateX(-2px) rotate(-1deg); }
+  75% { transform: translateX(2px) rotate(1deg); }
+}
+@media (prefers-reduced-motion: reduce) {
+  .chanaping-coach[data-chanaping-mood="celebrate"] .chanaping-coach__art,
+  .chanaping-coach[data-chanaping-mood="grumble"] .chanaping-coach__art {
+    animation: none;
+  }
+}
 .manual-reading-check {
   padding: 12px 14px;
   border: 2px solid var(--line);

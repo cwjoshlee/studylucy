@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" role="img" aria-label="졸린 차나핑 학습 코치">
+  <rect width="240" height="240" rx="44" fill="#e7f7f3"/>
+  <path d="M28 191c12-37 43-57 92-57 45 0 75 19 92 57l-14 24H42z" fill="#f6e6bd"/>
+  <path d="M38 204c16-25 42-38 82-38 38 0 66 13 82 38" fill="#b6d5c5"/>
+  <ellipse cx="120" cy="115" rx="62" ry="56" fill="#fff4dc" stroke="#276f64" stroke-width="5"/>
+  <path d="M61 114C42 99 47 69 69 64c12-3 25 5 28 17-19 4-27 21-19 37z" fill="#1f9d8b"/>
+  <path d="M84 78c9-27 45-37 69-18 14 11 16 33 5 49-10-15-29-19-45-11-12 6-19 16-20 30-16-10-19-32-9-50z" fill="#1f9d8b"/>
+  <path d="M156 78c22 3 34 26 25 46-5 10-13 16-24 19-2-17-12-28-29-34 17-7 27-17 28-31z" fill="#167a70"/>
+  <path d="M77 125c9 5 18 5 27 0M136 125c9 5 18 5 27 0" fill="none" stroke="#276f64" stroke-width="5" stroke-linecap="round"/>
+  <path d="M107 148c8 4 18 4 26 0" fill="none" stroke="#c26b72" stroke-width="4" stroke-linecap="round"/>
+  <path d="M62 179c11-12 28-13 43-5M178 179c-11-12-28-13-43-5" fill="none" stroke="#91c8bb" stroke-width="14" stroke-linecap="round"/>
+  <path d="M89 175c16 9 46 9 62 0l9 29H80z" fill="#1d685f"/>
+  <path d="M110 178l10 13 10-13" fill="#f9d8b8" stroke="#155149" stroke-width="3"/>
+  <path d="M183 74h12l-7 9h11l-16 16 5-13h-10z" fill="#9bb8b3"/>
+  <text x="45" y="84" fill="#7a9b95" font-family="sans-serif" font-size="20" font-weight="700">Z</text>
+</svg>

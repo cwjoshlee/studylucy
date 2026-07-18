@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 240" role="img" aria-label="기뻐하는 차나핑 학습 코치">
+  <rect width="240" height="240" rx="44" fill="#e7f7f3"/>
+  <path d="M35 205c10-46 41-68 85-68s76 22 85 68" fill="#b6d5c5"/>
+  <path d="M51 207c13-29 37-44 69-44 31 0 55 15 69 44" fill="#f6e6bd"/>
+  <ellipse cx="120" cy="113" rx="61" ry="57" fill="#fff4dc" stroke="#276f64" stroke-width="5"/>
+  <path d="M61 112C41 99 47 67 70 63c12-2 24 6 27 17-19 3-28 20-20 36z" fill="#1f9d8b"/>
+  <path d="M84 78c8-28 45-37 69-18 14 11 16 33 5 49-10-15-29-19-45-11-12 6-19 16-20 30-16-10-19-32-9-50z" fill="#1f9d8b"/>
+  <path d="M156 77c22 3 34 26 25 46-5 10-13 16-24 19-2-17-12-28-29-34 17-7 27-17 28-31z" fill="#167a70"/>
+  <path d="M78 118c8 11 19 12 29 2M134 120c10 10 21 8 28-3" fill="none" stroke="#276f64" stroke-width="5" stroke-linecap="round"/>
+  <path d="M101 143c12 15 27 15 39 0" fill="none" stroke="#c26b72" stroke-width="5" stroke-linecap="round"/>
+  <path d="M72 166l-31-29M168 166l31-29" fill="none" stroke="#91c8bb" stroke-width="15" stroke-linecap="round"/>
+  <path d="m36 118 4 10 10 4-10 4-4 10-4-10-10-4 10-4zM205 84l3 8 8 3-8 3-3 8-3-8-8-3 8-3zM193 156l3 8 8 3-8 3-3 8-3-8-8-3 8-3z" fill="#f2bb48"/>
+  <path d="M92 174c16 10 40 10 56 0l10 30H82z" fill="#1d685f"/>
+  <path d="M110 176l10 14 10-14" fill="#f9d8b8" stroke="#155149" stroke-width="3"/>
+</svg>
