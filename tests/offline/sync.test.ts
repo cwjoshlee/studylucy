@@ -11,6 +11,7 @@ import type {
 import type { IdleEventInput } from "../../src/shared/stars";
 import {
   OFFLINE_DB_NAME,
+  OFFLINE_DB_VERSION,
   applyBatchReceipt,
   cacheIssuedPlan,
   getAcknowledgedCursor,
@@ -670,7 +671,7 @@ describe("unified persistent offline synchronization", () => {
   it("safely derives a missing v2 provisional verdict only from an available exact plan snapshot", async () => {
     await readyWithPlan();
     await queueAttempt(attempt("attempt-v2-optional-verdict-0001"));
-    const database = await openDB(OFFLINE_DB_NAME, 2);
+    const database = await openDB(OFFLINE_DB_NAME, OFFLINE_DB_VERSION);
     const row = await database.get("activityQueue", "attempt-v2-optional-verdict-0001");
     delete row.provisionalCompleted;
     await database.put("activityQueue", row);
