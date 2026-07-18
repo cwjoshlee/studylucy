@@ -91,6 +91,63 @@ describe("database bootstrap", () => {
     }
   });
 
+  it("moves reusable math items to the calculation skill without touching guardian versions", () => {
+    const upgrade = openDatabase(":memory:");
+    try {
+      migrate(upgrade);
+      seedInitialContent(upgrade);
+      const v1Before = upgrade.prepare(`
+        SELECT payload_json AS payloadJson FROM content_versions
+        WHERE item_id = 'math-01' AND version = 1
+      `).get() as { payloadJson: string };
+      const v2Before = upgrade.prepare(`
+        SELECT payload_json AS payloadJson FROM content_versions
+        WHERE item_id = 'math-01' AND version = 2
+      `).get() as { payloadJson: string };
+      const guardianPayload = JSON.stringify({ guardian: "kept" });
+
+      upgrade.prepare(`
+        UPDATE content_items
+        SET skill_id = 'skill-math-story', active_version = 2
+        WHERE id = 'math-01'
+      `).run();
+      upgrade.prepare(`
+        INSERT INTO content_versions (item_id, version, payload_json, created_at)
+        VALUES ('math-02', 4, ?, '2026-07-18T00:00:00.000Z')
+      `).run(guardianPayload);
+      upgrade.prepare(`
+        UPDATE content_items
+        SET skill_id = 'skill-math-story', active_version = 4
+        WHERE id = 'math-02'
+      `).run();
+
+      seedInitialContent(upgrade);
+
+      expect(upgrade.prepare(`
+        SELECT skill_id AS skillId, active_version AS activeVersion
+        FROM content_items WHERE id = 'math-01'
+      `).get()).toEqual({ skillId: "skill-math-calculation", activeVersion: 3 });
+      expect(upgrade.prepare(`
+        SELECT payload_json AS payloadJson FROM content_versions
+        WHERE item_id = 'math-01' AND version = 1
+      `).get()).toEqual(v1Before);
+      expect(upgrade.prepare(`
+        SELECT payload_json AS payloadJson FROM content_versions
+        WHERE item_id = 'math-01' AND version = 2
+      `).get()).toEqual(v2Before);
+      expect(upgrade.prepare(`
+        SELECT skill_id AS skillId, active_version AS activeVersion
+        FROM content_items WHERE id = 'math-02'
+      `).get()).toEqual({ skillId: "skill-math-story", activeVersion: 4 });
+      expect(upgrade.prepare(`
+        SELECT payload_json AS payloadJson FROM content_versions
+        WHERE item_id = 'math-02' AND version = 4
+      `).get()).toEqual({ payloadJson: guardianPayload });
+    } finally {
+      upgrade.close();
+    }
+  });
+
   it("never downgrades a guardian-authored active version", () => {
     const edited = openDatabase(":memory:");
     try {

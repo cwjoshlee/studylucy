@@ -511,6 +511,11 @@ export function seedInitialContent(db: Database.Database): void {
     SET active_version = @version
     WHERE id = @itemId AND active_version < 3
   `);
+  const promoteCalculationSkill = db.prepare(`
+    UPDATE content_items
+    SET skill_id = 'skill-math-calculation'
+    WHERE id = @itemId AND active_version < 3
+  `);
 
   db.transaction(() => {
     for (const node of CURRICULUM_NODES) {
@@ -555,6 +560,9 @@ export function seedInitialContent(db: Database.Database): void {
         payloadJson: JSON.stringify(item),
         createdAt
       });
+      if (item.kind === "math-calculation") {
+        promoteCalculationSkill.run({ itemId: item.id });
+      }
       promoteInitialItem.run({
         itemId: item.id,
         version: INITIAL_CONTENT_VERSION
