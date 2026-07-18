@@ -148,7 +148,7 @@ export function getReceiptAuthorityGeneration(): number {
 }
 
 export class OfflineAuthorityError extends Error {
-  constructor(readonly code: "AUTH_REQUIRED" | "DEVICE_ACTION_REQUIRED" | "PLAN_AUTHORITY_REQUIRED" | "RESERVATION_INVALID" | "CLIENT_ID_CONFLICT") {
+  constructor(readonly code: "AUTH_REQUIRED" | "DEVICE_ACTION_REQUIRED" | "PLAN_AUTHORITY_REQUIRED" | "RESERVATION_INVALID" | "CLIENT_ID_CONFLICT" | "DICTATION_ONLINE_REQUIRED") {
     super(code);
     this.name = "OfflineAuthorityError";
   }
@@ -518,6 +518,9 @@ export async function updateCachedPlanActivityCursor(
 
 export async function queueAttempt(input: AttemptInput): Promise<void> {
   const safe = AttemptInputSchema.parse(input);
+  if (safe.dictationText !== undefined) {
+    throw new OfflineAuthorityError("DICTATION_ONLINE_REQUIRED");
+  }
   await withDatabase(async (database) => {
     const transaction = database.transaction(
       ["activityQueue", "todayPlans", "meta"],
