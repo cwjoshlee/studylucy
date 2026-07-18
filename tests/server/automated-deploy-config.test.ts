@@ -181,6 +181,7 @@ describe("GHCR pull deployment configuration", () => {
     const { result, commands } = await runDeployScenario("healthy");
 
     expect(result.status).toBe(0);
+    expect(commands).toContain("|compose exec -T app npm run backup");
     expect(commands.indexOf("|compose exec -T app npm run backup"))
       .toBeLessThan(commands.indexOf("|compose up -d --no-deps app"));
     expect(commands).toContain("curl --fail --silent --show-error http://127.0.0.1:8787/api/health");
