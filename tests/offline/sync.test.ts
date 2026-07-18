@@ -65,6 +65,7 @@ function plan(overrides: Partial<TodayPlan> = {}): TodayPlan {
     items: [{
       id: "ko-01",
       version: 1,
+      step: "current",
       payload: {
         id: "ko-01",
         kind: "korean-reading",
@@ -112,6 +113,7 @@ function mathPlan(): TodayPlan {
       {
         id: "math-01",
         version: 1,
+        step: "current",
         payload: {
           id: "math-01",
           subject: "math",
@@ -149,6 +151,7 @@ function calculationPlan(): TodayPlan {
     items: [{
       id: "math-01",
       version: 3,
+      step: "current",
       payload: {
         id: "math-01",
         kind: "math-story",

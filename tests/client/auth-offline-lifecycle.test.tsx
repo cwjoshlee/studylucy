@@ -53,6 +53,7 @@ function dailyPlan(overrides: Partial<TodayPlan> = {}): TodayPlan {
     items: [{
       id: "ko-01",
       version: 1,
+      step: "current",
       payload: {
         id: "ko-01",
         kind: "korean-reading",

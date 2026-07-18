@@ -83,7 +83,8 @@ describe("append-only star ledger", () => {
       "GUARDIAN_ADJUSTMENT",
       "REWARD_REDEMPTION",
       "REVERSAL",
-      "NO_BALANCE_AUDIT"
+      "NO_BALANCE_AUDIT",
+      "CHALLENGE_PERFECT"
     ]);
   });
 

@@ -37,7 +37,7 @@ describe("database bootstrap", () => {
     migrate(db);
 
     expect(db.prepare("select count(*) as count from schema_migrations").get())
-      .toEqual({ count: 6 });
+      .toEqual({ count: 7 });
   });
 
   it("seeds the exact ten Korean and ten math items", () => {
@@ -225,7 +225,7 @@ describe("database bootstrap", () => {
       migrate(versionTwo);
 
       expect(versionTwo.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get())
-        .toEqual({ count: 6 });
+        .toEqual({ count: 7 });
       const deviceColumns = versionTwo.prepare("PRAGMA table_info('trusted_devices')").all()
         .map((column) => (column as { name: string }).name);
       expect(deviceColumns).toEqual(expect.arrayContaining([
@@ -376,7 +376,7 @@ describe("database bootstrap", () => {
 
       expect(versionThree.prepare(`
         SELECT COUNT(*) AS count FROM schema_migrations
-      `).get()).toEqual({ count: 6 });
+      `).get()).toEqual({ count: 7 });
       expect(versionThree.prepare(`
         SELECT * FROM offline_activity_receipts
         WHERE client_event_id = 'event-v3-existing'

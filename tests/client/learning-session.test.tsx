@@ -82,6 +82,7 @@ const readingItem: LearningItemPayload = {
 const mathPlanItem: TodayPlan["items"][number] = {
   id: mathItem.id,
   version: 1,
+  step: "current",
   payload: mathItem
 };
 
@@ -116,12 +117,14 @@ const calculationItem: CalculationItem = {
 const calculationPlanItem: TodayPlan["items"][number] = {
   id: calculationItem.id,
   version: 3,
+  step: "current",
   payload: calculationItem
 };
 
 const readingPlanItem: TodayPlan["items"][number] = {
   id: readingItem.id,
   version: 1,
+  step: "current",
   payload: readingItem
 };
 
