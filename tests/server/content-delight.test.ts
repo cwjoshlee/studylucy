@@ -22,6 +22,8 @@ const CHILD_UI_FILES = [
   "src/client/learning/problem-breakdown-view.tsx",
   "src/client/companions/cast.ts",
   "src/client/companions/cues.ts",
+  "src/client/companions/chanaping-cues.ts",
+  "src/client/companions/chanaping.tsx",
   "src/client/companions/companion-avatar.tsx",
   "src/client/companions/friend-stage.tsx",
   "src/client/companions/learning-companion.tsx",
@@ -37,6 +39,7 @@ const PURE_DISPLAY_FILES = [
 const PURE_DISPLAY_IMPORT_ALLOWLIST = new Map<string, ReadonlySet<string>>([
   ["src/client/companions/cast.ts", new Set(["../../shared/companions"])],
   ["src/client/companions/cues.ts", new Set(["../../shared/companions"])],
+  ["src/client/companions/chanaping-cues.ts", new Set(["../../shared/learning"])],
   ["src/client/learning/problem-breakdown.ts", new Set(["../../shared/learning"])]
 ]);
 const CHILD_UI_IMPORT_ALLOWLIST = new Map<string, ReadonlySet<string>>([
@@ -54,6 +57,7 @@ const CHILD_UI_IMPORT_ALLOWLIST = new Map<string, ReadonlySet<string>>([
   ])],
   ["src/client/companions/companion-avatar.tsx", new Set(["react"])],
   ["src/client/companions/friend-stage.tsx", new Set(["react"])],
+  ["src/client/companions/chanaping.tsx", new Set(["react"])],
   ["src/client/delight/star-celebration.tsx", new Set(["react"])]
 ]);
 
@@ -677,5 +681,10 @@ describe("approved magical companion seed content", () => {
       key: `audit:${moment}`,
       subject: "korean"
     }).tone).not.toBe("humor");
+  });
+
+  it("keeps the local coach outside network, audio, LLM, and reward authority", () => {
+    expect(auditPureDisplaySideEffects("src/client/companions/chanaping-cues.ts")).toEqual([]);
+    expect(auditChildUiSideEffects("src/client/companions/chanaping.tsx")).toEqual([]);
   });
 });

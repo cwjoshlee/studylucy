@@ -829,10 +829,10 @@ describe("가족 로그인과 학생 홈", () => {
     });
     expect(friendRoom).toBeVisible();
     const friendCast = within(friendRoom).getByRole("list");
-    expect(within(friendCast).getByText("별토끼 루미")).toBeVisible();
+    expect(within(friendCast).getByText("별토끼 버니")).toBeVisible();
     expect(within(friendCast).getByText("수달 또또")).toBeVisible();
     expect(within(friendCast).getByText("너구리 모모")).toBeVisible();
-    expect(within(friendCast).getByText("아기용 봉봉")).toBeVisible();
+    expect(within(friendCast).getByText("아기용 밀키")).toBeVisible();
     expect(screen.getAllByRole("status", { name: "마법 친구 말풍선" }))
       .toHaveLength(1);
     expect(screen.getByText("모은 별 7개")).toBeVisible();
@@ -901,7 +901,7 @@ describe("가족 로그인과 학생 홈", () => {
 
     await screen.findByRole("heading", { name: "오늘의 학습" });
     const currentFriend = screen.getByRole("listitem", { current: true });
-    expect(within(currentFriend).getByText("아기용 봉봉")).toBeVisible();
+    expect(within(currentFriend).getByText("아기용 밀키")).toBeVisible();
     expect(screen.getByText("마법 걸음 4/4")).toBeVisible();
     expect(screen.getAllByText("함께 해결했어요")).toHaveLength(4);
     expect(screen.getAllByText("★ 받은 별 1개")).toHaveLength(4);
@@ -922,8 +922,8 @@ describe("가족 로그인과 학생 홈", () => {
     expect(await screen.findByRole("heading", { name: "오늘의 학습" }))
       .toBeVisible();
     const currentFriend = screen.getByRole("listitem", { current: true });
-    expect(within(currentFriend).getByText("별토끼 루미")).toBeVisible();
-    expect(within(currentFriend).queryByText("아기용 봉봉"))
+    expect(within(currentFriend).getByText("별토끼 버니")).toBeVisible();
+    expect(within(currentFriend).queryByText("아기용 밀키"))
       .not.toBeInTheDocument();
     expect(screen.getByText("오늘은 쉬는 날이에요")).toBeVisible();
     expect(screen.getByText("마법 걸음 0/0")).toBeVisible();

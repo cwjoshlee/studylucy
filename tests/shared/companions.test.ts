@@ -3,12 +3,16 @@ import {
   CompanionIdSchema,
   LearningDelightSchema
 } from "../../src/shared/companions";
-import { LearningItemPayloadSchema } from "../../src/shared/learning";
+import {
+  LearningItemPayloadSchema,
+  type ChanaPingEvent
+} from "../../src/shared/learning";
 import { COMPANION_CAST } from "../../src/client/companions/cast";
 import {
   selectCompanionCue,
   type CompanionMoment
 } from "../../src/client/companions/cues";
+import { selectLocalChanaPingCue } from "../../src/client/companions/chanaping-cues";
 
 const delight = {
   companion: "toto" as const,
@@ -74,6 +78,30 @@ describe("magical companion contracts", () => {
     expect(Object.values(COMPANION_CAST).every((friend) =>
       /[가-힣]/.test(friend.alt) && friend.asset.startsWith("/assets/companions/")
     )).toBe(true);
+  });
+
+  it("keeps Bunny and Milky visible while preserving their companion ids", () => {
+    expect(COMPANION_CAST.lumi).toMatchObject({ id: "lumi", name: "별토끼 버니" });
+    expect(COMPANION_CAST.bongbong).toMatchObject({ id: "bongbong", name: "아기용 밀키" });
+    expect(CompanionIdSchema.parse("lumi")).toBe("lumi");
+    expect(CompanionIdSchema.parse("bongbong")).toBe("bongbong");
+  });
+
+  it.each([
+    "lesson-open", "speech-start", "speech-finish", "correct", "retry",
+    "thinking", "idle-confirm", "idle-paused", "next"
+  ] satisfies ChanaPingEvent[])("selects a short safe local coach cue for %s", (event) => {
+    const cue = selectLocalChanaPingCue({
+      event,
+      subject: "math",
+      retryCount: 1,
+      key: `math-01:${event}`
+    });
+
+    expect(cue).toMatch(/[가-힣]/);
+    expect(cue.length).toBeLessThanOrEqual(45);
+    expect(cue.split(/[.!?]/).filter(Boolean)).toHaveLength(2);
+    expect(cue).not.toMatch(/바보|느려|게으르|벌|별.*차감|못하|틀렸잖/);
   });
 
   it("selects the same cue for the same stable key", () => {

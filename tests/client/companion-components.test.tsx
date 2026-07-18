@@ -15,6 +15,7 @@ import {
   FriendStage,
   FriendTrail
 } from "../../src/client/companions/friend-stage";
+import { ChanaPingCoach } from "../../src/client/companions/chanaping";
 
 afterEach(cleanup);
 
@@ -57,8 +58,8 @@ describe("magical companion components", () => {
     />);
 
     const currentFriend = screen.getByRole("listitem", { current: true });
-    expect(within(currentFriend).getByText("별토끼 루미")).toBeVisible();
-    expect(within(currentFriend).queryByText("아기용 봉봉")).not.toBeInTheDocument();
+    expect(within(currentFriend).getByText("별토끼 버니")).toBeVisible();
+    expect(within(currentFriend).queryByText("아기용 밀키")).not.toBeInTheDocument();
     expect(screen.getByText("오늘은 쉬는 날이에요")).toBeVisible();
     expect(screen.getAllByRole("status", { name: "마법 친구 말풍선" }))
       .toHaveLength(1);
@@ -88,7 +89,7 @@ describe("magical companion components", () => {
 
     expect(screen.getByText("오늘은 쉬는 날")).toBeVisible();
     expect(screen.getByRole("list")).toBeEmptyDOMElement();
-    expect(screen.queryByText("아기용 봉봉")).not.toBeInTheDocument();
+    expect(screen.queryByText("아기용 밀키")).not.toBeInTheDocument();
     expect(screen.queryByText("마법 걸음 0/0")).not.toBeInTheDocument();
   });
 
@@ -121,5 +122,31 @@ describe("magical companion components", () => {
     for (const source of sources) {
       expect(source).not.toMatch(/[ \t]+$/mu);
     }
+  });
+
+  it("renders the local ChanaPing coach with Korean alt text and a 48px hide control", () => {
+    render(<ChanaPingCoach
+      event="lesson-open"
+      subject="korean"
+      retryCount={0}
+      cueKey="2026-07-18:ko-01"
+      hidden={false}
+      onHide={() => undefined}
+    />);
+
+    expect(screen.getByRole("img", { name: "누운 차나핑 학습 코치" }))
+      .toHaveAttribute("src", "/assets/companions/chanaping.svg");
+    expect(screen.getByRole("status", { name: "차나핑 코치" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "차나핑 코치 숨기기" }))
+      .toHaveClass("chanaping-coach__hide");
+  });
+
+  it("keeps the original local coach SVG small and free of external or executable content", async () => {
+    const source = await readFile(resolve("public/assets/companions/chanaping.svg"), "utf8");
+
+    expect(source).toContain('viewBox="0 0 240 240"');
+    expect(source).toMatch(/teal|#1f9d8b/i);
+    expect(source).not.toMatch(/<script|<foreignObject|onload=|(?:href|src)=["']https?:/i);
+    expect(Buffer.byteLength(source)).toBeLessThanOrEqual(120_000);
   });
 });

@@ -8,6 +8,10 @@ import {
 import { StudyDateSchema } from "./study-date";
 import { LearningDelightSchema } from "./companions";
 
+export type ChanaPingEvent =
+  | "lesson-open" | "speech-start" | "speech-finish" | "correct"
+  | "retry" | "thinking" | "idle-confirm" | "idle-paused" | "next";
+
 const BaseItem = z.object({
   id: z.string().min(1),
   subject: z.enum(["korean", "math"]),

@@ -63,6 +63,15 @@
     grid-template-columns: minmax(0, 1fr);
   }
   .guardian-sync-review li { grid-template-columns: minmax(0, 1fr); }
+  .chanaping-coach {
+    position: static;
+    width: 100%;
+    max-width: none;
+    grid-template-columns: 62px minmax(0, 1fr) auto;
+    margin-top: 4px;
+    box-sizing: border-box;
+  }
+  .chanaping-coach__art { width: 62px; height: 62px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

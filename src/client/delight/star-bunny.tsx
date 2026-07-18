@@ -8,7 +8,7 @@ export function StarBunny() {
         <span className="star-bunny__cape" />
         <span className="star-bunny__wand">★</span>
       </div>
-      <figcaption>별토끼가 오늘의 마법 학습을 응원해요.</figcaption>
+      <figcaption>별토끼 버니가 오늘의 마법 학습을 응원해요.</figcaption>
     </figure>
   );
 }

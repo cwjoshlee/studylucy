@@ -381,6 +381,30 @@ describe("LearningSession", () => {
     expect(bubble).toHaveTextContent(openingCue);
   });
 
+  it("updates the local coach for a receipt-confirmed retry, not a keypad digit", async () => {
+    const api = createLearningApi();
+    api.saveAttempt.mockResolvedValue(receipt({
+      completed: false,
+      mathPass: false
+    }));
+    const user = userEvent.setup();
+    render(<LearningSession
+      item={calculationPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+    />);
+
+    const coach = await screen.findByRole("status", { name: "차나핑 코치" });
+    const openingCue = coach.textContent;
+    await user.click(screen.getByRole("button", { name: "1" }));
+    expect(coach).toHaveTextContent(openingCue ?? "");
+
+    await user.click(screen.getByRole("button", { name: "답 확인" }));
+    await waitFor(() => expect(coach).not.toHaveTextContent(openingCue ?? ""));
+    expect(coach).not.toHaveTextContent(/별|차감|바보|느려|게으르|벌|못하|틀렸잖/);
+  });
+
   it("keeps reading retry supportive, names missed tokens, and never exposes PASS or FAIL", async () => {
     render(<LearningSession
       item={readingPlanItem}
@@ -456,14 +480,14 @@ describe("LearningSession", () => {
     });
 
     expect(companionBubble()).toHaveTextContent(readingItem.delight!.celebrationCue);
-    expect(companionBubble()).toHaveTextContent("아기용 봉봉");
+    expect(companionBubble()).toHaveTextContent("아기용 밀키");
     expect(screen.getAllByText("별 1개를 모았어요")).toHaveLength(1);
 
     act(() => vi.advanceTimersByTime(999));
     expect(companionBubble()).toHaveTextContent(readingItem.delight!.celebrationCue);
     act(() => vi.advanceTimersByTime(1));
     expect(companionBubble()).toHaveTextContent(
-      "다음 마법 걸음으로 가요. 루미가 도망간 양말을 잡아 둘게요."
+      "다음 마법 걸음으로 가요. 버니가 도망간 양말을 잡아 둘게요."
     );
     expect(screen.queryByText("별 1개를 모았어요")).not.toBeInTheDocument();
   });
@@ -508,12 +532,12 @@ describe("LearningSession", () => {
 
     expect(api.saveAttempt).toHaveBeenCalledTimes(2);
     expect(companionBubble()).not.toHaveTextContent(
-      "다음 마법 걸음으로 가요. 루미가 도망간 양말을 잡아 둘게요."
+      "다음 마법 걸음으로 가요. 버니가 도망간 양말을 잡아 둘게요."
     );
     expect(companionBubble()).toHaveTextContent(readingItem.delight!.openingCue);
     act(() => vi.advanceTimersByTime(2_000));
     expect(companionBubble()).not.toHaveTextContent(
-      "다음 마법 걸음으로 가요. 루미가 도망간 양말을 잡아 둘게요."
+      "다음 마법 걸음으로 가요. 버니가 도망간 양말을 잡아 둘게요."
     );
   });
 

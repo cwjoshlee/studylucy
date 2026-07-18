@@ -133,6 +133,28 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   color: var(--star);
   font-size: 1.15rem;
 }
+
+.chanaping-coach {
+  position: fixed;
+  z-index: 5;
+  right: 20px;
+  bottom: 20px;
+  display: grid;
+  grid-template-columns: 68px minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  width: min(calc(100vw - 40px), 340px);
+  padding: 10px;
+  border: 2px solid #276f64;
+  border-radius: var(--radius-medium);
+  background: #fffdf6;
+  box-shadow: var(--shadow);
+}
+.chanaping-coach__art { width: 68px; height: 68px; object-fit: contain; }
+.chanaping-coach__cue { display: grid; gap: 3px; margin: 0; color: var(--ink-soft); line-height: 1.45; }
+.chanaping-coach__cue strong { color: #155149; font-size: .86rem; }
+.chanaping-coach__cue span { font-size: .9rem; }
+.chanaping-coach__hide { min-width: 48px; min-height: 48px; padding: 6px; font-size: .78rem; }
 .manual-reading-check {
   padding: 12px 14px;
   border: 2px solid var(--line);

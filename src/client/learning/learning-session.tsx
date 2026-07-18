@@ -8,6 +8,7 @@ import {
 import type {
   AttemptInput,
   AttemptReceipt,
+  ChanaPingEvent,
   LearningItemPayload,
   LearningSessionReceipt,
   TodayPlan
@@ -16,6 +17,7 @@ import type { ReadingResult } from "../../shared/reading";
 import type { IdleEventInput, IdleEventResult } from "../../shared/stars";
 import type { ApiClient } from "../api/client";
 import { LearningCompanion } from "../companions/learning-companion";
+import { ChanaPingCoach } from "../companions/chanaping";
 import type { CompanionMoment } from "../companions/cues";
 import { StarCelebration } from "../delight/star-celebration";
 import {
@@ -142,6 +144,7 @@ function LearningSessionView({
   const [speechElapsedSeconds, setSpeechElapsedSeconds] = useState(0);
   const [speechUnavailable, setSpeechUnavailable] = useState(false);
   const [speechNotice, setSpeechNotice] = useState<string | null>(null);
+  const [chanaPingHidden, setChanaPingHidden] = useState(false);
   const controllerRef = useRef<InactivityController | null>(null);
   const speechRef = useRef<SpeechController | null>(null);
   const completionCueTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -598,6 +601,18 @@ function LearningSessionView({
     authority.phase === "offline-unissued" ? "offline" :
     "lesson-open";
 
+  const chanaPingEvent: ChanaPingEvent =
+    idleUi?.phase === "paused" ? "idle-paused" :
+    idleUi?.phase === "confirm" ? "idle-confirm" :
+    idleUi?.phase === "hint" ? "thinking" :
+    speechPhase === "listening" ? "speech-start" :
+    speechPhase === "finishing" ? "speech-finish" :
+    attemptReceipt?.completed && !attemptReceipt.duplicate && !showNextCue ? "correct" :
+    nextUnlocked && showNextCue ? "next" :
+    readingResult !== null && !readingResult.passed ? "retry" :
+    mathRetryCount > 0 && !nextUnlocked ? "retry" :
+    "lesson-open";
+
   return (
     <section
       className="learning-session"
@@ -615,6 +630,14 @@ function LearningSessionView({
         studyDate={studyDate}
         item={item}
         saveState={saveUiState === "idle" ? undefined : saveUiState}
+      />
+      <ChanaPingCoach
+        event={chanaPingEvent}
+        subject={item.subject}
+        retryCount={mathRetryCount + (readingResult !== null && !readingResult.passed ? 1 : 0)}
+        cueKey={`${planId}:${item.id}:${contentVersion}`}
+        hidden={chanaPingHidden}
+        onHide={() => setChanaPingHidden(true)}
       />
       <p className="subject-chip">{item.subject === "korean" ? "국어" : "수학"} · {item.unit}</p>
       <h2>{item.title}</h2>
