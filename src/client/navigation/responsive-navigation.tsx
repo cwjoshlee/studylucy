@@ -20,7 +20,8 @@ export function ResponsiveNavigation({
   expandedIds,
   onSelect,
   onToggle,
-  fabLabel
+  fabLabel,
+  getDrawerSelectionFocusTarget
 }: {
   label: string;
   entries: readonly NavigationEntry[];
@@ -29,17 +30,19 @@ export function ResponsiveNavigation({
   onSelect(id: string): void;
   onToggle(id: string): void;
   fabLabel: string;
+  getDrawerSelectionFocusTarget?(id: string): HTMLElement | null;
 }): JSX.Element {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const drawerId = useId();
   const drawerRef = useRef<HTMLDivElement>(null);
   const fabRef = useRef<HTMLButtonElement>(null);
   const railRef = useRef<HTMLElement>(null);
-  const closeFocusTarget = useRef<"fab" | "rail">("fab");
+  const closeFocusTarget = useRef<"fab" | "rail" | "destination">("fab");
+  const drawerSelectionId = useRef<string | null>(null);
   const drawerWasOpen = useRef(false);
   const expanded = new Set(expandedIds);
 
-  function closeDrawer(focusTarget: "fab" | "rail" = "fab"): void {
+  function closeDrawer(focusTarget: "fab" | "rail" | "destination" = "fab"): void {
     closeFocusTarget.current = focusTarget;
     setDrawerOpen(false);
   }
@@ -54,6 +57,15 @@ export function ResponsiveNavigation({
     }
     if (!drawerWasOpen.current) return;
     drawerWasOpen.current = false;
+    if (closeFocusTarget.current === "destination") {
+      const destination = drawerSelectionId.current === null
+        ? null
+        : getDrawerSelectionFocusTarget?.(drawerSelectionId.current);
+      if (destination !== null && destination !== undefined) {
+        destination.focus();
+        return;
+      }
+    }
     if (closeFocusTarget.current === "rail") {
       const railTarget = railRef.current?.querySelector<HTMLButtonElement>(
         '[aria-current="page"]'
@@ -118,7 +130,12 @@ export function ResponsiveNavigation({
               onClick={() => {
                 onSelect(entry.id);
                 if (hasChildren) onToggle(entry.id);
-                else if (shell === "drawer") closeDrawer();
+                else if (shell === "drawer") {
+                  drawerSelectionId.current = entry.id;
+                  closeDrawer(
+                    getDrawerSelectionFocusTarget === undefined ? "fab" : "destination"
+                  );
+                }
               }}
               type="button"
             >
