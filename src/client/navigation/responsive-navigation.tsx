@@ -1,4 +1,11 @@
-import { useId, useState, type JSX } from "react";
+import {
+  useEffect,
+  useId,
+  useRef,
+  useState,
+  type JSX,
+  type KeyboardEvent
+} from "react";
 
 export type NavigationEntry = {
   id: string;
@@ -25,7 +32,73 @@ export function ResponsiveNavigation({
 }): JSX.Element {
   const [drawerOpen, setDrawerOpen] = useState(false);
   const drawerId = useId();
+  const drawerRef = useRef<HTMLDivElement>(null);
+  const fabRef = useRef<HTMLButtonElement>(null);
+  const railRef = useRef<HTMLElement>(null);
+  const closeFocusTarget = useRef<"fab" | "rail">("fab");
+  const drawerWasOpen = useRef(false);
   const expanded = new Set(expandedIds);
+
+  function closeDrawer(focusTarget: "fab" | "rail" = "fab"): void {
+    closeFocusTarget.current = focusTarget;
+    setDrawerOpen(false);
+  }
+
+  useEffect(() => {
+    if (drawerOpen) {
+      drawerWasOpen.current = true;
+      drawerRef.current?.querySelector<HTMLButtonElement>(
+        "[data-drawer-close]"
+      )?.focus();
+      return;
+    }
+    if (!drawerWasOpen.current) return;
+    drawerWasOpen.current = false;
+    if (closeFocusTarget.current === "rail") {
+      const railTarget = railRef.current?.querySelector<HTMLButtonElement>(
+        '[aria-current="page"]'
+      ) ?? railRef.current?.querySelector<HTMLButtonElement>("button");
+      railTarget?.focus();
+      return;
+    }
+    fabRef.current?.focus();
+  }, [drawerOpen]);
+
+  useEffect(() => {
+    if (typeof window.matchMedia !== "function") return;
+    const landscapeRail = window.matchMedia(
+      "(min-width: 900px) and (orientation: landscape)"
+    );
+    const handleLayoutChange = (event: MediaQueryListEvent) => {
+      if (event.matches && drawerOpen) closeDrawer("rail");
+    };
+    landscapeRail.addEventListener("change", handleLayoutChange);
+    return () => landscapeRail.removeEventListener("change", handleLayoutChange);
+  }, [drawerOpen]);
+
+  function trapDrawerFocus(event: KeyboardEvent<HTMLDivElement>): void {
+    if (event.key === "Escape") {
+      event.preventDefault();
+      closeDrawer();
+      return;
+    }
+    if (event.key !== "Tab") return;
+    const buttons = Array.from(
+      drawerRef.current?.querySelectorAll<HTMLButtonElement>(
+        "button:not([disabled])"
+      ) ?? []
+    );
+    if (buttons.length === 0) return;
+    const first = buttons[0]!;
+    const last = buttons[buttons.length - 1]!;
+    if (event.shiftKey && document.activeElement === first) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
+  }
 
   const renderEntries = (
     shell: "rail" | "drawer",
@@ -45,7 +118,7 @@ export function ResponsiveNavigation({
               onClick={() => {
                 onSelect(entry.id);
                 if (hasChildren) onToggle(entry.id);
-                else if (shell === "drawer") setDrawerOpen(false);
+                else if (shell === "drawer") closeDrawer();
               }}
               type="button"
             >
@@ -63,18 +136,22 @@ export function ResponsiveNavigation({
 
   return (
     <div className="responsive-nav">
-      <nav aria-label={label} className="responsive-nav__rail">
+      <nav aria-label={label} className="responsive-nav__rail" ref={railRef}>
         {renderEntries("rail", entries)}
       </nav>
       <button
         aria-controls={drawerId}
         aria-expanded={drawerOpen}
-        aria-label={drawerOpen ? "메뉴 닫기" : fabLabel}
+        aria-label={fabLabel}
         className="responsive-nav__fab"
-        onClick={() => setDrawerOpen((open) => !open)}
+        onClick={() => {
+          closeFocusTarget.current = "fab";
+          setDrawerOpen((open) => !open);
+        }}
+        ref={fabRef}
         type="button"
       >
-        <span aria-hidden="true">{drawerOpen ? "×" : "☰"}</span>
+        <span aria-hidden="true">☰</span>
       </button>
       <div
         aria-label={label}
@@ -82,8 +159,20 @@ export function ResponsiveNavigation({
         className="responsive-nav__drawer"
         hidden={!drawerOpen}
         id={drawerId}
+        onKeyDown={trapDrawerFocus}
+        ref={drawerRef}
         role="dialog"
       >
+        <div className="responsive-nav__drawer-header">
+          <button
+            className="button-secondary responsive-nav__drawer-close"
+            data-drawer-close
+            onClick={() => closeDrawer()}
+            type="button"
+          >
+            메뉴 닫기
+          </button>
+        </div>
         {renderEntries("drawer", entries)}
       </div>
     </div>

@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -10,7 +10,10 @@ import {
 } from "../../src/client/navigation/responsive-navigation";
 import { StudentNavigation } from "../../src/client/home/student-navigation";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.unstubAllGlobals();
+});
 
 describe("ResponsiveNavigation", () => {
   const entries: readonly NavigationEntry[] = [
@@ -99,6 +102,67 @@ describe("ResponsiveNavigation", () => {
     expect(screen.getByRole("dialog", { name: "보호자 메뉴" })).toBeVisible();
   });
 
+  it("contains drawer focus, closes by keyboard or selection, and returns focus safely after rotation", async () => {
+    const user = userEvent.setup();
+    let landscape = false;
+    const listeners = new Set<(event: MediaQueryListEvent) => void>();
+    vi.stubGlobal("matchMedia", vi.fn().mockImplementation((query: string) => ({
+      matches: landscape,
+      media: query,
+      onchange: null,
+      addEventListener: (_type: string, listener: (event: MediaQueryListEvent) => void) => {
+        listeners.add(listener);
+      },
+      removeEventListener: (_type: string, listener: (event: MediaQueryListEvent) => void) => {
+        listeners.delete(listener);
+      },
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn()
+    })));
+    render(
+      <ResponsiveNavigation
+        activeId="progress"
+        entries={entries}
+        expandedIds={["ai", "ai/generation"]}
+        fabLabel="메뉴 열기"
+        label="보호자 메뉴"
+        onSelect={vi.fn()}
+        onToggle={vi.fn()}
+      />
+    );
+
+    const fab = screen.getByRole("button", { name: "메뉴 열기" });
+    await user.click(fab);
+    const drawer = screen.getByRole("dialog", { name: "보호자 메뉴" });
+    expect(within(drawer).getByRole("button", { name: "메뉴 닫기" })).toHaveFocus();
+
+    await user.tab({ shift: true });
+    expect(within(drawer).getByRole("button", { name: "기기 관리" })).toHaveFocus();
+    await user.tab();
+    expect(within(drawer).getByRole("button", { name: "메뉴 닫기" })).toHaveFocus();
+
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog", { name: "보호자 메뉴" })).not.toBeInTheDocument();
+    expect(fab).toHaveFocus();
+
+    await user.click(fab);
+    await user.click(within(screen.getByRole("dialog", { name: "보호자 메뉴" }))
+      .getByRole("button", { name: "진도" }));
+    expect(fab).toHaveFocus();
+
+    await user.click(fab);
+    landscape = true;
+    act(() => {
+      for (const listener of listeners) {
+        listener({ matches: true } as MediaQueryListEvent);
+      }
+    });
+    expect(screen.queryByRole("dialog", { name: "보호자 메뉴" })).not.toBeInTheDocument();
+    expect(within(screen.getByRole("navigation", { name: "보호자 메뉴" }))
+      .getByRole("button", { name: "진도" })).toHaveFocus();
+  });
+
   it("dispatches every student navigation action without replacing its mounted source", async () => {
     const user = userEvent.setup();
     const onExit = vi.fn();
@@ -131,7 +195,7 @@ describe("ResponsiveNavigation", () => {
       readFile(resolve("src/client/styles/responsive.css"), "utf8")
     ]);
 
-    expect(source).not.toMatch(/innerWidth|matchMedia|resize/);
+    expect(source).not.toMatch(/innerWidth|addEventListener\(["']resize/);
     expect(responsiveCss).toContain("@media (min-width: 900px) and (orientation: landscape)");
     expect(responsiveCss).toContain("grid-template-columns: minmax(248px, 300px) minmax(0, 1fr)");
   });

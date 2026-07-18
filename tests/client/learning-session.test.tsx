@@ -1876,9 +1876,10 @@ describe("LearningSession", () => {
     expect(api.sendIdleEvent).toHaveBeenCalledOnce();
   });
 
-  it("invokes student back navigation without clearing the current answer", async () => {
+  it("invokes student back navigation without exiting or clearing the current answer", async () => {
     const api = createLearningApi();
     const onExit = vi.fn();
+    const onNavigateToday = vi.fn();
     render(
       <LearningSession
         item={mathPlanItem}
@@ -1886,6 +1887,7 @@ describe("LearningSession", () => {
         planId="plan-daily-1"
         studyDate="2026-07-16"
         onExit={onExit}
+        onNavigateToday={onNavigateToday}
       />
     );
     await flushLearningSessionIssue();
@@ -1895,8 +1897,55 @@ describe("LearningSession", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "뒤로" }));
 
-    expect(onExit).toHaveBeenCalledOnce();
+    expect(onNavigateToday).toHaveBeenCalledOnce();
+    expect(onExit).not.toHaveBeenCalled();
     expect(screen.getByLabelText("답 쓰기")).toHaveValue("5");
+  });
+
+  it("pauses inactivity while a preserved session is behind the dashboard", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-16T01:00:00.000Z"));
+    const api = createLearningApi();
+    const { rerender } = render(
+      <LearningSession
+        active
+        item={mathPlanItem}
+        api={api}
+        planId="plan-daily-1"
+        studyDate="2026-07-16"
+      />
+    );
+    await flushLearningSessionIssue();
+
+    rerender(
+      <LearningSession
+        active={false}
+        item={mathPlanItem}
+        api={api}
+        planId="plan-daily-1"
+        studyDate="2026-07-16"
+      />
+    );
+    await act(async () => {
+      vi.advanceTimersByTime(900_000);
+      await Promise.resolve();
+    });
+    expect(api.sendIdleEvent).not.toHaveBeenCalled();
+
+    rerender(
+      <LearningSession
+        active
+        item={mathPlanItem}
+        api={api}
+        planId="plan-daily-1"
+        studyDate="2026-07-16"
+      />
+    );
+    await act(async () => {
+      vi.advanceTimersByTime(300_000);
+      await Promise.resolve();
+    });
+    expect(api.sendIdleEvent).toHaveBeenCalledOnce();
   });
 
   it("preserves screen lock while celebration ends then continues the 2/4/5-minute lifecycle", async () => {

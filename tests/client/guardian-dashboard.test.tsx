@@ -134,6 +134,13 @@ describe("GuardianDashboard", () => {
     expect(await screen.findByRole("heading", { name: "기기 관리" })).toBeVisible();
   });
 
+  it("labels guardian content as the main landmark without orphaned tabpanel semantics", async () => {
+    render(<GuardianDashboard api={createGuardianApi()} />);
+
+    expect(await screen.findByRole("main", { name: "진도" })).toBeVisible();
+    expect(screen.queryByRole("tabpanel")).not.toBeInTheDocument();
+  });
+
   it("expands the exact AI learning studio tree and blanks each saved provider key", async () => {
     const user = userEvent.setup();
     const updateAiStudioProvider = vi.fn(async (

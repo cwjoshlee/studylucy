@@ -82,6 +82,12 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
   box-shadow: var(--shadow);
 }
 .responsive-nav__drawer[hidden] { display: none; }
+.responsive-nav__drawer-header {
+  display: flex;
+  justify-content: flex-end;
+  margin-bottom: 12px;
+}
+.responsive-nav__drawer-close { min-height: 44px; }
 .responsive-nav__rail {
   padding: 18px;
   border: 2px solid rgb(255 255 255 / 78%);
