@@ -150,6 +150,35 @@ describe("AI coach privacy and budget boundaries", () => {
     db.close();
   });
 
+  it("uses the configured provider-row model instead of a hard-coded OpenAI model", async () => {
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(
+      openAiResponse("한 걸음씩 해 보자")
+    ), { status: 200 }));
+    const service = new AiCoachService({ db, encryptionKey: key, fetcher });
+    service.updateSettings({
+      enabled: true,
+      provider: "openai",
+      apiKey: "provider-secret",
+      monthlyBudgetWon: 1
+    });
+    db.prepare(`
+      UPDATE ai_provider_settings SET model = 'guardian-selected-openai-model'
+      WHERE provider = 'openai'
+    `).run();
+
+    await expect(service.message({
+      event: "retry", subject: "korean", retryCount: 1, hintStage: "step"
+    })).resolves.toMatchObject({ source: "llm" });
+
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toMatchObject({
+      model: "guardian-selected-openai-model",
+      store: false
+    });
+    db.close();
+  });
+
   it.each([
     { output: [{ type: "message", content: [{ type: "output_text" }] }] },
     {

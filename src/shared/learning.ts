@@ -72,6 +72,42 @@ export type AiProviderSettingsView = {
   hasApiKey: boolean;
 };
 
+export const AiBatchRequestSchema = z.object({
+  subject: z.enum(["korean", "math"]),
+  step: LearningStepSchema,
+  count: z.number().int().min(2).max(40),
+  difficulty: z.number().int().min(1).max(5),
+  weakTopics: z.array(z.string().trim().min(1).max(40)).max(8)
+}).strict();
+export type AiBatchRequest = z.infer<typeof AiBatchRequestSchema>;
+
+export type AiDraftItemView = {
+  id: string;
+  sourceProvider: AiCoachProvider;
+  payload: LearningItemPayload;
+  review: { accepted: boolean; reasons: string[] };
+  status: "accepted" | "rejected" | "edited" | "published";
+};
+
+export type AiDraftView = {
+  id: string;
+  subject: "korean" | "math";
+  step: LearningStep;
+  requestedCount: number;
+  difficulty: number;
+  weakTopics: string[];
+  status: "draft" | "failed" | "published";
+  items: AiDraftItemView[];
+};
+
+export type GuardianAiReport = {
+  source: "llm" | "local";
+  summary: string;
+  completionRate: number;
+  commonMistakes: string[];
+  challengePerfect: boolean;
+};
+
 export const KoreanDictationItemSchema = BaseItemSchema.extend({
   kind: z.literal("korean-dictation"),
   promptText: z.string().min(1),
