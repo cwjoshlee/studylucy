@@ -27,7 +27,23 @@ const STUDIO_PERSONA = [
   "개인정보, 의학적 진단, 폭력적이거나 수치심을 주는 표현을 사용하지 않는다.",
   "주어진 스키마와 덧셈·뺄셈 범위를 지킨다."
 ].join(" ");
-const UNSAFE_TEXT = /(?:https?:\/\/|www\.|\b\d{2,3}[- ]?\d{3,4}[- ]?\d{4}\b|@|\uBC14\uBCF4|\uBA4D\uCCAD|\uBABB\uD558|\uD63C\uB0B4|\uBC8C\s*\uBC1B|\uB54C\uB9AC|\uC8FD|\uD574\uCE58|\uC8FC\uC18C|\uC5F0\uB77D\uCC98|\uCE74\uD1A1)/iu;
+// This is a deterministic local guard for representative high-risk child content,
+// not an exhaustive moderation system. It runs before and after provider review.
+const CHILD_CONTENT_SAFETY_PATTERNS = [
+  /(?:자살|자해|죽고\s*싶|목숨을\s*끊|손목을\s*그어|suicide|self[- ]?harm|kill\s+yourself)/iu,
+  /(?:야동|음란|성관계|성행위|섹스|성기|알몸|나체|포르노|porn(?:ography)?|sexual\s+content|nude)/iu,
+  /(?:(?:칼|흉기).{0,16}(?:찌르|베기|죽이)|(?:총|권총).{0,16}(?:쏘|죽이)|(?:폭탄|무기).{0,16}(?:만들|제작)|(?:사람|동물).{0,16}(?:죽이|해치|때리).{0,8}방법|how\s+to.{0,24}(?:make\s+(?:a\s+)?bomb|kill|stab|shoot))/iu,
+  /(?:(?:전화번호|휴대폰\s*번호|연락처|집\s*주소|주소|카톡\s*(?:아이디|ID)|이메일|비밀번호|학교\s*이름|사진).{0,20}(?:알려|보내|적어|입력|주세요|줘)|(?:tell|send|share).{0,24}(?:phone\s+number|address|email|password|school\s+name|photo))/iu,
+  /(?:바보|멍청|쓸모없|못하|창피|망신|혼내|벌\s*받|학대|너\s*때문|실망이야|stupid|worthless|shame\s+on\s+you)/iu,
+  /(?:https?:\/\/|www\.|\[[^\]]{1,120}\]\([^)]{1,300}\)|\b(?:[a-z0-9-]+\.)+(?:com|net|org|kr|io|co)(?:\/[^\s]*)?\b|(?:링크|사이트).{0,12}(?:눌러|클릭|접속))/iu,
+  /\b\d{2,3}[- ]?\d{3,4}[- ]?\d{4}\b|\b[\w.+-]+@[\w.-]+\.[A-Za-z]{2,}\b/u
+] as const;
+
+function containsUnsafeChildContent(value: unknown): boolean {
+  const serialized = JSON.stringify(value);
+  return typeof serialized === "string" &&
+    CHILD_CONTENT_SAFETY_PATTERNS.some((pattern) => pattern.test(serialized));
+}
 
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -71,7 +87,10 @@ const ReviewResponseSchema = z.object({
     "DUPLICATE",
     "OTHER"
   ])).max(8)
-}).strict();
+}).strict().transform((review) => ({
+  accepted: review.accepted && review.reasons.length === 0,
+  reasons: review.reasons
+}));
 const ReportResponseSchema = z.object({
   summary: z.string().trim().min(4).max(500)
 }).strict();
@@ -229,7 +248,7 @@ function validateCandidate(
   if (payload.subject !== request.subject || payload.level !== `${request.difficulty}단계`) {
     reasons.push("OUT_OF_RANGE");
   }
-  if (UNSAFE_TEXT.test(JSON.stringify(payload))) reasons.push("UNSAFE_CONTENT");
+  if (containsUnsafeChildContent(payload)) reasons.push("UNSAFE_CONTENT");
   if (request.subject === "math") {
     if (payload.kind !== "math-story" || payload.calculation === undefined) {
       reasons.push("WRONG_FORMAT");
@@ -239,9 +258,13 @@ function validateCandidate(
   } else if (request.step !== "challenge" &&
       (payload.mode !== "word" || /\s/u.test(payload.answerText.trim()))) {
     reasons.push("WRONG_FORMAT");
-  } else if (request.step === "challenge" && payload.mode === "sentence" &&
-      (payload.answerText.length > 30 || payload.answerText.trim().split(/\s+/u).length > 8)) {
-    reasons.push("OUT_OF_RANGE");
+  } else if (request.step === "challenge") {
+    if (payload.mode !== "sentence") {
+      reasons.push("WRONG_FORMAT");
+    } else if (payload.answerText.length > 30 ||
+        payload.answerText.trim().split(/\s+/u).length > 8) {
+      reasons.push("OUT_OF_RANGE");
+    }
   }
   return { payload, reasons: [...new Set(reasons)] };
 }
@@ -330,11 +353,19 @@ export class AiStudioService {
       }))
     );
     const reviewed = await Promise.all(generated.flatMap(({ provider, items }) =>
-      items.map(async (candidate) => ({
-        provider,
-        candidate,
-        review: await this.review(otherProvider(provider), provider, candidate, request.data)
-      }))
+      items.map(async (candidate) => {
+        const preReviewReasons = containsUnsafeChildContent(candidate)
+          ? ["UNSAFE_CONTENT"]
+          : [];
+        return {
+          provider,
+          candidate,
+          preReviewReasons,
+          review: preReviewReasons.length === 0
+            ? await this.review(otherProvider(provider), provider, candidate, request.data)
+            : null
+        };
+      })
     ));
 
     const existingSignatures = this.activeContentSignatures(request.data.subject);
@@ -361,10 +392,14 @@ export class AiStudioService {
         ) VALUES (?, ?, ?, ?, ?, ?, ?)
       `);
       const seenSignatures = new Set(existingSignatures);
-      reviewed.forEach(({ provider, candidate, review }, sortOrder) => {
+      reviewed.forEach(({ provider, candidate, preReviewReasons, review }, sortOrder) => {
         const validation = validateCandidate(candidate, request.data);
-        const reasons = [...validation.reasons];
-        if (!review.accepted) reasons.push(...review.reasons.map((reason) => `REVIEW_${reason}`));
+        const reasons = [...preReviewReasons, ...validation.reasons];
+        if (review !== null && !review.accepted) {
+          reasons.push(...(review.reasons.length === 0
+            ? ["REVIEW_REJECTED"]
+            : review.reasons.map((reason) => `REVIEW_${reason}`)));
+        }
         if (validation.payload !== null) {
           const signature = contentSignature(validation.payload);
           if (seenSignatures.has(signature)) {
@@ -464,32 +499,32 @@ export class AiStudioService {
   }
 
   publishDraft(id: string): AiDraftView {
-    const draft = this.getDraft(id);
-    if (draft.status !== "draft") throw new AiStudioError("AI_STUDIO_NOT_REVIEWABLE");
-    const publishable = draft.items.filter((item) =>
-      item.status === "accepted" || item.status === "edited"
-    );
-    if (publishable.length === 0) {
-      throw new AiStudioError("AI_STUDIO_NO_PUBLISHABLE_ITEMS");
-    }
-    const request: AiBatchRequest = {
-      subject: draft.subject,
-      step: draft.step,
-      count: draft.requestedCount,
-      difficulty: draft.difficulty,
-      weakTopics: draft.weakTopics
-    };
-    const signatures = this.activeContentSignatures(draft.subject);
-    for (const item of publishable) {
-      const validation = validateCandidate(item.payload, request);
-      if (validation.payload === null || validation.reasons.length > 0) {
-        throw new AiStudioError("AI_STUDIO_INVALID_REQUEST");
-      }
-      const signature = contentSignature(validation.payload);
-      if (signatures.has(signature)) throw new AiStudioError("AI_STUDIO_INVALID_REQUEST");
-      signatures.add(signature);
-    }
     this.deps.db.transaction(() => {
+      const draft = this.getDraft(id);
+      if (draft.status !== "draft") throw new AiStudioError("AI_STUDIO_NOT_REVIEWABLE");
+      const publishable = draft.items.filter((item) =>
+        item.status === "accepted" || item.status === "edited"
+      );
+      if (publishable.length === 0) {
+        throw new AiStudioError("AI_STUDIO_NO_PUBLISHABLE_ITEMS");
+      }
+      const request: AiBatchRequest = {
+        subject: draft.subject,
+        step: draft.step,
+        count: draft.requestedCount,
+        difficulty: draft.difficulty,
+        weakTopics: draft.weakTopics
+      };
+      const signatures = this.activeContentSignatures(draft.subject);
+      for (const item of publishable) {
+        const validation = validateCandidate(item.payload, request);
+        if (validation.payload === null || validation.reasons.length > 0) {
+          throw new AiStudioError("AI_STUDIO_INVALID_REQUEST");
+        }
+        const signature = contentSignature(validation.payload);
+        if (signatures.has(signature)) throw new AiStudioError("AI_STUDIO_INVALID_REQUEST");
+        signatures.add(signature);
+      }
       const createdAt = this.now().toISOString();
       const insertItem = this.deps.db.prepare(`
         INSERT INTO content_items (
@@ -530,7 +565,7 @@ export class AiStudioService {
         }
       });
       const parsed = ReportResponseSchema.safeParse(value);
-      if (!parsed.success || UNSAFE_TEXT.test(parsed.data.summary)) return metrics;
+      if (!parsed.success || containsUnsafeChildContent(parsed.data.summary)) return metrics;
       return { ...metrics, source: "llm", summary: parsed.data.summary };
     } catch {
       return metrics;
@@ -569,7 +604,9 @@ export class AiStudioService {
         ? "calculation required; plus/minus only; no negative intermediate; answer 0..99"
         : undefined,
       koreanRules: input.subject === "korean"
-        ? input.step === "challenge" ? "word or short sentence" : "single word mode only"
+        ? input.step === "challenge"
+          ? "sentence mode only; answerText max 30 characters and 8 words"
+          : "single word mode only"
         : undefined
     });
     const parsed = GenerationResponseSchema.safeParse(value);
