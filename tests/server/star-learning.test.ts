@@ -28,7 +28,7 @@ async function authenticateStudent(
     password: FAMILY.password
   })).statusCode).toBe(204);
   expect((await student.request("POST", "/api/guardian/devices/current", {
-    name: "수아 갤럭시 탭"
+    name: "수아 갤럭시 탭", deviceType: "tablet"
   })).statusCode).toBe(201);
   expect((await student.request("PUT", "/api/auth/student-pin", {
     pin: "2580"
@@ -54,7 +54,7 @@ async function loginStudentOnNewDevice(
     password: FAMILY.password
   })).statusCode).toBe(204);
   expect((await student.request("POST", "/api/guardian/devices/current", {
-    name
+    name, deviceType: "tablet"
   })).statusCode).toBe(201);
   expect((await student.request("POST", "/api/auth/logout")).statusCode)
     .toBe(204);

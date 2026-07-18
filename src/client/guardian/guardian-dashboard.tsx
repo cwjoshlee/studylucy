@@ -1,5 +1,9 @@
 import { useEffect, useRef, useState } from "react";
-import type { TrustedDeviceView } from "../../shared/auth";
+import {
+  DEVICE_TYPE_LIMITS,
+  type DeviceType,
+  type TrustedDeviceView
+} from "../../shared/auth";
 import type {
   GuardianOfflineRejection,
   GuardianProgress
@@ -33,6 +37,7 @@ type GuardianDashboardApi = Pick<ApiClient,
   | "registerDevice"
   | "listTrustedDevices"
   | "revokeTrustedDevice"
+  | "updateTrustedDeviceType"
 >;
 
 type DashboardData = {
@@ -223,6 +228,8 @@ function DeviceManagement({
   const [revoking, setRevoking] = useState<string | null>(null);
   const [registering, setRegistering] = useState(false);
   const [deviceName, setDeviceName] = useState("수아 태블릿");
+  const [deviceType, setDeviceType] = useState<DeviceType>("tablet");
+  const [classifying, setClassifying] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -265,7 +272,7 @@ function DeviceManagement({
     setRegistering(true);
     setFailed(false);
     try {
-      await api.registerDevice(name);
+      await api.registerDevice(name, deviceType);
       setDevices(await api.listTrustedDevices());
     } catch {
       setFailed(true);
@@ -273,6 +280,27 @@ function DeviceManagement({
       setRegistering(false);
     }
   };
+
+  const classify = async (device: TrustedDeviceView, nextType: DeviceType) => {
+    setClassifying(device.publicId);
+    setFailed(false);
+    try {
+      const updated = await api.updateTrustedDeviceType(device.publicId, nextType);
+      setDevices((current) => current?.map((item) =>
+        item.publicId === updated.publicId ? updated : item
+      ) ?? null);
+    } catch {
+      setFailed(true);
+    } finally {
+      setClassifying(null);
+    }
+  };
+
+  const activeCounts = devices?.filter((device) => device.status === "active")
+    .reduce<Record<DeviceType, number>>((counts, device) => {
+      if (device.deviceType !== null) counts[device.deviceType] += 1;
+      return counts;
+    }, { tablet: 0, phone: 0, mac: 0, windows: 0 });
 
   return (
     <section className="device-management" aria-labelledby="device-management-title">
@@ -292,12 +320,26 @@ function DeviceManagement({
             value={deviceName}
           />
         </label>
+        <label>
+          기기 종류
+          <select onChange={(event) => setDeviceType(event.target.value as DeviceType)} value={deviceType}>
+            <option value="tablet">태블릿</option>
+            <option value="phone">휴대폰</option>
+            <option value="mac">Mac</option>
+            <option value="windows">Windows</option>
+          </select>
+        </label>
         <button disabled={registering || revoking !== null} type="submit">
           {registering ? "등록 중" : "현재 브라우저 등록"}
         </button>
       </form>
       {devices === null && !failed ? <p aria-busy="true">기기를 불러오고 있어요.</p> : null}
       {failed ? <p role="alert">기기 정보를 불러오지 못했어요.</p> : null}
+      {activeCounts !== undefined ? (
+        <p className="device-management__limits">
+          태블릿 {activeCounts.tablet}/{DEVICE_TYPE_LIMITS.tablet} · 휴대폰 {activeCounts.phone}/{DEVICE_TYPE_LIMITS.phone} · Mac {activeCounts.mac}/{DEVICE_TYPE_LIMITS.mac} · Windows {activeCounts.windows}/{DEVICE_TYPE_LIMITS.windows}
+        </p>
+      ) : null}
       {devices?.length === 0 ? <p>등록된 기기가 없어요.</p> : null}
       {devices !== null && devices.length > 0 ? (
         <ul className="device-management__list">
@@ -307,6 +349,7 @@ function DeviceManagement({
                 <strong>{device.name}</strong>
                 <span>{device.current ? "현재 기기" : "다른 기기"}</span>
                 <span>{device.status === "active" ? "사용 가능" : "해제됨"}</span>
+                <span>{device.deviceType === null ? "기기 종류 확인 필요" : deviceTypeLabel(device.deviceType)}</span>
                 <span>등록: {formatDeviceDate(device.createdAt)}</span>
                 <span>
                   마지막 사용: {device.lastUsedAt === null
@@ -314,6 +357,23 @@ function DeviceManagement({
                     : formatDeviceDate(device.lastUsedAt)}
                 </span>
               </div>
+              {device.status === "active" && device.deviceType === null ? (
+                <label>
+                  기존 기기 종류
+                  <select
+                    aria-label={`${device.name} 기기 종류`}
+                    disabled={classifying !== null}
+                    onChange={(event) => void classify(device, event.target.value as DeviceType)}
+                    value=""
+                  >
+                    <option disabled value="">선택하세요</option>
+                    <option value="tablet">태블릿</option>
+                    <option value="phone">휴대폰</option>
+                    <option value="mac">Mac</option>
+                    <option value="windows">Windows</option>
+                  </select>
+                </label>
+              ) : null}
               {device.status === "active" ? (
                 <button
                   aria-label={`${device.name} 기기 해제`}
@@ -330,6 +390,10 @@ function DeviceManagement({
       ) : null}
     </section>
   );
+}
+
+function deviceTypeLabel(type: DeviceType): string {
+  return ({ tablet: "태블릿", phone: "휴대폰", mac: "Mac", windows: "Windows" })[type];
 }
 
 function ProgressPanel({

@@ -360,8 +360,10 @@ describe("ApiClient", () => {
     const onDeviceRevoked = vi.fn();
     const api = new ApiClient(fetcher, { onSessionEnded, onDeviceRevoked });
 
-    await expect(api.registerDevice("수아 태블릿")).resolves.toEqual(device);
+    await expect(api.registerDevice("수아 태블릿", "tablet")).resolves.toEqual(device);
     await expect(api.listTrustedDevices()).resolves.toEqual([device]);
+    await expect(api.updateTrustedDeviceType("public-device-1", "phone"))
+      .resolves.toEqual(device);
     await expect(api.revokeTrustedDevice("public-device-1")).resolves.toEqual(device);
     await api.endSession();
 
@@ -373,9 +375,14 @@ describe("ApiClient", () => {
       {
         path: "/api/guardian/devices/current",
         method: "POST",
-        body: JSON.stringify({ name: "수아 태블릿" })
+        body: JSON.stringify({ name: "수아 태블릿", deviceType: "tablet" })
       },
       { path: "/api/guardian/devices", method: "GET", body: undefined },
+      {
+        path: "/api/guardian/devices/public-device-1/type",
+        method: "PUT",
+        body: JSON.stringify({ deviceType: "phone" })
+      },
       {
         path: "/api/guardian/devices/public-device-1/revoke",
         method: "POST",

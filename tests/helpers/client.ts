@@ -14,6 +14,7 @@ const trustedDevice = {
   name: "수아 갤럭시 탭",
   createdAt: "2026-07-15T03:00:00.000Z",
   lastUsedAt: null,
+  deviceType: "tablet" as const,
   status: "active" as const,
   current: true
 };
@@ -43,6 +44,7 @@ export function createFakeApi(overrides: Record<string, unknown> = {}) {
       ...trustedDevice,
       status: "revoked" as const
     }),
+    updateTrustedDeviceType: vi.fn().mockResolvedValue(trustedDevice),
     setStudentPin: vi.fn().mockResolvedValue(undefined),
     endSession: vi.fn().mockImplementation(async () => {
       guardianAuthenticated = false;

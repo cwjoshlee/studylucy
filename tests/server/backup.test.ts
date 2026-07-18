@@ -339,7 +339,7 @@ describe("guardian backup status", () => {
       password: "correct horse battery staple"
     })).statusCode).toBe(204);
     expect((await student.request("POST", "/api/guardian/devices/current", {
-      name: "수아 태블릿"
+      name: "수아 태블릿", deviceType: "tablet"
     })).statusCode).toBe(201);
     expect((await student.request("PUT", "/api/auth/student-pin", {
       pin: "2580"

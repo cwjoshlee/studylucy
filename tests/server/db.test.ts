@@ -37,7 +37,7 @@ describe("database bootstrap", () => {
     migrate(db);
 
     expect(db.prepare("select count(*) as count from schema_migrations").get())
-      .toEqual({ count: 4 });
+      .toEqual({ count: 5 });
   });
 
   it("seeds the exact ten Korean and ten math items", () => {
@@ -225,10 +225,18 @@ describe("database bootstrap", () => {
       migrate(versionTwo);
 
       expect(versionTwo.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get())
-        .toEqual({ count: 4 });
+        .toEqual({ count: 5 });
       const deviceColumns = versionTwo.prepare("PRAGMA table_info('trusted_devices')").all()
         .map((column) => (column as { name: string }).name);
-      expect(deviceColumns).toEqual(expect.arrayContaining(["public_id", "last_used_at"]));
+      expect(deviceColumns).toEqual(expect.arrayContaining([
+        "public_id", "last_used_at", "device_type"
+      ]));
+      expect(versionTwo.prepare(`
+        SELECT device_type AS deviceType FROM trusted_devices WHERE id = 'device-1'
+      `).get()).toEqual({ deviceType: null });
+      expect(() => versionTwo.prepare(`
+        UPDATE trusted_devices SET device_type = 'tv' WHERE id = 'device-1'
+      `).run()).toThrow();
       const attemptColumns = versionTwo.prepare("PRAGMA table_info('attempts')").all()
         .map((column) => (column as { name: string }).name);
       expect(attemptColumns).toEqual(expect.arrayContaining(["issued_plan_id", "occurred_at"]));
@@ -246,6 +254,7 @@ describe("database bootstrap", () => {
         id: "device-2",
         name: "호환 태블릿",
         tokenHash: "token-hash-2",
+        deviceType: "tablet",
         createdAt: "2026-07-16T00:04:00.000Z"
       });
       const publicIds = versionTwo.prepare(`
@@ -367,7 +376,7 @@ describe("database bootstrap", () => {
 
       expect(versionThree.prepare(`
         SELECT COUNT(*) AS count FROM schema_migrations
-      `).get()).toEqual({ count: 4 });
+      `).get()).toEqual({ count: 5 });
       expect(versionThree.prepare(`
         SELECT * FROM offline_activity_receipts
         WHERE client_event_id = 'event-v3-existing'

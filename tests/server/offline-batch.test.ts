@@ -34,7 +34,7 @@ async function bootstrapStudent(
   const registration = await client.request(
     "POST",
     "/api/guardian/devices/current",
-    { name: deviceName }
+    { name: deviceName, deviceType: "tablet" }
   );
   expect(registration.statusCode).toBe(201);
   expect((await client.request("PUT", "/api/auth/student-pin", {
@@ -58,7 +58,7 @@ async function loginStudentOnNewDevice(
   const registration = await client.request(
     "POST",
     "/api/guardian/devices/current",
-    { name: deviceName }
+    { name: deviceName, deviceType: "tablet" }
   );
   expect(registration.statusCode).toBe(201);
   expect((await client.request("POST", "/api/auth/logout")).statusCode)

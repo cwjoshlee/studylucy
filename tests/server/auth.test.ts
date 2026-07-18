@@ -1,9 +1,12 @@
 import { createHash } from "node:crypto";
 import { afterEach, beforeEach, describe, expect, expectTypeOf, it } from "vitest";
 import {
+  DEVICE_TYPE_LIMITS,
+  DeviceTypeSchema,
   RegisterDeviceRequest,
   RenameDeviceRequest,
   RevokeDeviceRequest,
+  UpdateDeviceTypeRequest,
   type StudentLoginResult,
   type TrustedDeviceView
 } from "../../src/shared/auth";
@@ -45,13 +48,18 @@ async function loginGuardian(client: TestClient) {
 
 describe("shared auth and study-date contracts", () => {
   it("keeps device requests bounded and exposes the exact additive wire contracts", () => {
-    expect(RegisterDeviceRequest.parse({ name: "  수아 태블릿  " }))
-      .toEqual({ name: "수아 태블릿" });
+    expect(RegisterDeviceRequest.parse({ name: "  수아 태블릿  ", deviceType: "tablet" }))
+      .toEqual({ name: "수아 태블릿", deviceType: "tablet" });
     expect(RenameDeviceRequest.parse({ name: "  새 태블릿  " }))
       .toEqual({ name: "새 태블릿" });
     expect(RevokeDeviceRequest.parse({ publicId: "device-public-1" }))
       .toEqual({ publicId: "device-public-1" });
+    expect(UpdateDeviceTypeRequest.parse({ deviceType: "windows" }))
+      .toEqual({ deviceType: "windows" });
     expect(RenameDeviceRequest.safeParse({ name: "" }).success).toBe(false);
+    expect(RegisterDeviceRequest.safeParse({ name: "태블릿" }).success).toBe(false);
+    expect(DeviceTypeSchema.options).toEqual(["tablet", "phone", "mac", "windows"]);
+    expect(DEVICE_TYPE_LIMITS).toEqual({ tablet: 3, phone: 3, mac: 1, windows: 2 });
     expect(RevokeDeviceRequest.safeParse({ publicId: "" }).success).toBe(false);
     expectTypeOf<StudentLoginResult>().toEqualTypeOf<{
       offlineAccessUntil: string;
@@ -61,9 +69,122 @@ describe("shared auth and study-date contracts", () => {
       name: string;
       createdAt: string;
       lastUsedAt: string | null;
+      deviceType: "tablet" | "phone" | "mac" | "windows" | null;
       status: "active" | "revoked";
       current: boolean;
     }>();
+  });
+
+  it("enforces typed capacity only for a new device and requires legacy classification", async () => {
+    const harness = await createTestHarness();
+    try {
+    const guardian = harness.client();
+    await bootstrapFamily(harness, guardian);
+    await loginGuardian(guardian);
+
+    let existingDeviceClient: TestClient | null = null;
+    for (const [index, deviceType, limit] of [
+      [1, "tablet", 3],
+      [2, "phone", 3],
+      [3, "mac", 1],
+      [4, "windows", 2]
+    ] as const) {
+      for (let count = 0; count < limit; count += 1) {
+        const client = harness.client();
+        await loginGuardian(client);
+        const registration = await client.request("POST", "/api/guardian/devices/current", {
+          name: `${deviceType}-${index}-${count}`,
+          deviceType
+        });
+        expect(registration.statusCode).toBe(201);
+        expect(registration.json()).toMatchObject({ deviceType });
+        if (existingDeviceClient === null) existingDeviceClient = client;
+      }
+    }
+
+    const tabletOverflow = harness.client();
+    await loginGuardian(tabletOverflow);
+    const rejected = await tabletOverflow.request("POST", "/api/guardian/devices/current", {
+      name: "태블릿 초과",
+      deviceType: "tablet"
+    });
+    expect(rejected.statusCode).toBe(409);
+    expect(rejected.json()).toEqual({ code: "DEVICE_TYPE_LIMIT_REACHED" });
+    expect(tabletOverflow.cookie("sua_device")).toBeUndefined();
+    expect((harness.db.prepare("SELECT COUNT(*) AS count FROM trusted_devices").get() as {
+      count: number;
+    }).count).toBe(9);
+
+    expect(existingDeviceClient).not.toBeNull();
+    const existingToken = existingDeviceClient!.cookie("sua_device")!;
+    const repeat = await existingDeviceClient!.request("POST", "/api/guardian/devices/current", {
+      name: "다른 이름",
+      deviceType: "tablet"
+    });
+    expect(repeat.statusCode).toBe(200);
+    expect(existingDeviceClient!.cookie("sua_device")).toBe(existingToken);
+
+    const legacyToken = "legacy-active-device";
+    harness.db.prepare(`
+      INSERT INTO trusted_devices (
+        id, public_id, name, token_hash, created_at, device_type
+      ) VALUES (?, ?, ?, ?, ?, NULL)
+    `).run("legacy-id", "legacy-public", "기존 기기", createHash("sha256")
+      .update(legacyToken + harness.config.sessionPepper).digest("hex"),
+    "2026-07-15T03:00:00.000Z");
+    const legacy = harness.client();
+    legacy.setCookie("sua_device", legacyToken);
+    await guardian.request("PUT", "/api/auth/student-pin", { pin: "2580" });
+    expect((await legacy.request("POST", "/api/auth/student/login", { pin: "2580" })).statusCode)
+      .toBe(200);
+
+    const blocked = harness.client();
+    await loginGuardian(blocked);
+    const classificationRequired = await blocked.request("POST", "/api/guardian/devices/current", {
+      name: "새 휴대폰",
+      deviceType: "phone"
+    });
+    expect(classificationRequired.statusCode).toBe(409);
+    expect(classificationRequired.json()).toEqual({ code: "DEVICE_TYPE_CLASSIFICATION_REQUIRED" });
+
+    const releasedPhone = harness.db.prepare(`
+      SELECT public_id AS publicId FROM trusted_devices
+      WHERE device_type = 'phone' AND revoked_at IS NULL
+      LIMIT 1
+    `).get() as { publicId: string };
+    expect((await guardian.request(
+      "POST",
+      `/api/guardian/devices/${releasedPhone.publicId}/revoke`
+    )).statusCode).toBe(200);
+
+    const classified = await guardian.request(
+      "PUT",
+      "/api/guardian/devices/legacy-public/type",
+      { deviceType: "phone" }
+    );
+    expect(classified.statusCode).toBe(200);
+    expect(classified.json()).toMatchObject({
+      publicId: "legacy-public",
+      deviceType: "phone"
+    });
+
+    const releasedMac = harness.db.prepare(`
+      SELECT public_id AS publicId FROM trusted_devices
+      WHERE device_type = 'mac' AND revoked_at IS NULL
+      LIMIT 1
+    `).get() as { publicId: string };
+    expect((await guardian.request(
+      "POST",
+      `/api/guardian/devices/${releasedMac.publicId}/revoke`
+    )).statusCode).toBe(200);
+    const afterClassification = await blocked.request("POST", "/api/guardian/devices/current", {
+      name: "새 Mac",
+      deviceType: "mac"
+    });
+    expect(afterClassification.statusCode).toBe(201);
+    } finally {
+      await harness.close();
+    }
   });
 
   it.each([
@@ -179,7 +300,7 @@ describe("family authentication", () => {
     expect(guardianLogin.headers["set-cookie"]).toContain("Path=/");
 
     const register = await studentClient.request("POST", "/api/guardian/devices/current", {
-      name: "수아 갤럭시 탭"
+      name: "수아 갤럭시 탭", deviceType: "tablet"
     });
     expect(register.statusCode).toBe(201);
     expect(register.json()).toMatchObject({
@@ -354,11 +475,11 @@ describe("family authentication", () => {
     await bootstrapFamily(harness, guardian);
     await loginGuardian(guardian);
 
-    await guardian.request("POST", "/api/guardian/devices/current", { name: "태블릿 A" });
+    await guardian.request("POST", "/api/guardian/devices/current", { name: "태블릿 A", deviceType: "tablet" });
     const deviceA = guardian.cookie("sua_device");
     expect(deviceA).toBeDefined();
     guardian.setCookie("sua_device", "different-device-cookie");
-    await guardian.request("POST", "/api/guardian/devices/current", { name: "태블릿 B" });
+    await guardian.request("POST", "/api/guardian/devices/current", { name: "태블릿 B", deviceType: "tablet" });
     const deviceB = guardian.cookie("sua_device");
     expect(deviceB).toBeDefined();
     await guardian.request("PUT", "/api/auth/student-pin", { pin: "2580" });
@@ -413,7 +534,7 @@ describe("family authentication", () => {
     const registered = await guardian.request(
       "POST",
       "/api/guardian/devices/current",
-      { name: "해제할 수아 태블릿" }
+      { name: "해제할 수아 태블릿", deviceType: "tablet" }
     );
     const registeredView = registered.json() as TrustedDeviceView;
     const deviceCookie = guardian.cookie("sua_device");
@@ -480,7 +601,7 @@ describe("family authentication", () => {
         .digest("hex")
     );
 
-    await client.request("POST", "/api/guardian/devices/current", { name: "해시 검증" });
+    await client.request("POST", "/api/guardian/devices/current", { name: "해시 검증", deviceType: "tablet" });
     const rawDevice = client.cookie("sua_device");
     const deviceRow = harness.db.prepare(`
       SELECT token_hash AS tokenHash FROM trusted_devices
@@ -504,7 +625,7 @@ describe("family authentication", () => {
     expect(login.headers["set-cookie"]).toContain("Secure");
 
     const device = await client.request("POST", "/api/guardian/devices/current", {
-      name: "운영 태블릿"
+      name: "운영 태블릿", deviceType: "tablet"
     });
     expect(device.statusCode).toBe(201);
     expect(device.headers["set-cookie"]).toContain("Secure");
@@ -522,7 +643,7 @@ describe("family authentication", () => {
     const registered = await guardian.request(
       "POST",
       "/api/guardian/devices/current",
-      { name: "수아 태블릿" }
+      { name: "수아 태블릿", deviceType: "tablet" }
     );
     expect(registered.statusCode).toBe(201);
     expect(registered.headers["set-cookie"]).toContain("sua_device=");
@@ -532,6 +653,7 @@ describe("family authentication", () => {
       name: "수아 태블릿",
       createdAt: "2026-07-15T03:00:00.000Z",
       lastUsedAt: null,
+      deviceType: "tablet",
       status: "active",
       current: true
     });
@@ -554,7 +676,7 @@ describe("family authentication", () => {
     const repeatedRegister = await guardian.request(
       "POST",
       "/api/guardian/devices/current",
-      { name: "무시되는 새 이름" }
+      { name: "무시되는 새 이름", deviceType: "tablet" }
     );
     expect(repeatedRegister.statusCode).toBe(200);
     expect(repeatedRegister.json()).toMatchObject({
@@ -744,7 +866,7 @@ describe("family authentication", () => {
     const registered = await guardian.request(
       "POST",
       "/api/guardian/devices/current",
-      { name: "권한 구분 태블릿" }
+      { name: "권한 구분 태블릿", deviceType: "tablet" }
     );
     const publicId = (registered.json() as TrustedDeviceView).publicId;
     const deviceToken = guardian.cookie("sua_device")!;

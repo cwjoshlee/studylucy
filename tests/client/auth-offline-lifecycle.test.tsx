@@ -249,7 +249,7 @@ describe("browser auth/offline lifecycle", () => {
           void auth.guardianLogin("correct horse battery staple");
         }}>guardian login</button>
         <button type="button" onClick={() => {
-          void auth.registerDevice("Galaxy Tab A 재등록");
+          void auth.registerDevice("Galaxy Tab A 재등록", "tablet");
         }}>register</button>
         <button type="button" onClick={() => void auth.studentLogin("2580")}>student login</button>
       </div>;

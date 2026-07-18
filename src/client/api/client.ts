@@ -1,5 +1,6 @@
 import type {
   CurrentUser,
+  DeviceType,
   StudentLoginResult,
   TrustedDeviceView
 } from "../../shared/auth";
@@ -148,8 +149,8 @@ export class ApiClient {
     return this.request("POST", "/api/auth/guardian/login", { password });
   }
 
-  registerDevice(name: string): Promise<TrustedDeviceView> {
-    return this.request("POST", "/api/guardian/devices/current", { name });
+  registerDevice(name: string, deviceType: DeviceType): Promise<TrustedDeviceView> {
+    return this.request("POST", "/api/guardian/devices/current", { name, deviceType });
   }
 
   async listTrustedDevices(): Promise<TrustedDeviceView[]> {
@@ -167,6 +168,17 @@ export class ApiClient {
     );
     if (device.current) await this.callbacks.onDeviceRevoked?.(publicId);
     return device;
+  }
+
+  updateTrustedDeviceType(
+    publicId: string,
+    deviceType: DeviceType
+  ): Promise<TrustedDeviceView> {
+    return this.request(
+      "PUT",
+      `/api/guardian/devices/${encodeURIComponent(publicId)}/type`,
+      { deviceType }
+    );
   }
 
   setStudentPin(pin: string): Promise<void> {
@@ -303,6 +315,7 @@ export type ClientApi = Pick<ApiClient,
   | "registerDevice"
   | "listTrustedDevices"
   | "revokeTrustedDevice"
+  | "updateTrustedDeviceType"
   | "setStudentPin"
   | "studentLogin"
   | "endSession"

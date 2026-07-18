@@ -51,7 +51,7 @@ async function authenticateFamily(harness: Harness): Promise<{
     password: FAMILY.password
   })).statusCode).toBe(204);
   expect((await guardian.request("POST", "/api/guardian/devices/current", {
-    name: "수아 갤럭시 탭"
+    name: "수아 갤럭시 탭", deviceType: "tablet"
   })).statusCode).toBe(201);
   expect((await guardian.request("PUT", "/api/auth/student-pin", {
     pin: "2580"

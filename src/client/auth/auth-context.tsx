@@ -6,7 +6,7 @@ import {
   useState,
   type ReactNode
 } from "react";
-import type { CurrentUser } from "../../shared/auth";
+import type { CurrentUser, DeviceType } from "../../shared/auth";
 import {
   ApiError,
   type ClientApi,
@@ -45,7 +45,7 @@ type AuthContextValue = AuthState & {
   api: ClientApi;
   setup(input: SetupInput): Promise<void>;
   guardianLogin(password: string): Promise<void>;
-  registerDevice(name: string): Promise<void>;
+  registerDevice(name: string, deviceType: DeviceType): Promise<void>;
   setStudentPin(pin: string): Promise<void>;
   studentLogin(pin: string): Promise<void>;
   showGuardianLogin(): void;
@@ -171,10 +171,10 @@ export function AuthProvider({
       const user = await api.me();
       setState({ phase: "authenticated", user, offlineSession: null });
     },
-    registerDevice: async (name) => {
+    registerDevice: async (name, deviceType) => {
       const recovering = state.phase === "device-recovery-registration";
       try {
-        await api.registerDevice(name);
+        await api.registerDevice(name, deviceType);
       } catch (error) {
         if (recovering && error instanceof ApiError && error.status === 401) {
           await applyAuthorityFailure("DEVICE_NOT_TRUSTED")

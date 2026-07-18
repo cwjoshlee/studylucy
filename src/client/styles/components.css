@@ -348,7 +348,10 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .device-management__heading h2 { margin: 0; }
 .device-management__register { display: grid; gap: 10px; }
 .device-management__register label { display: grid; gap: 7px; font-weight: 800; }
-.device-management__register input { width: 100%; padding: 8px 12px; background: white; }
+.device-management__register input,
+.device-management__register select,
+.device-management__list select { width: 100%; padding: 8px 12px; background: white; }
+.device-management__limits { margin: 0; color: var(--ink-soft); font-weight: 800; }
 .device-management__list { display: grid; gap: 12px; margin: 0; padding: 0; list-style: none; }
 .device-management__list li {
   display: flex;

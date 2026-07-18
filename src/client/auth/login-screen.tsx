@@ -1,4 +1,5 @@
 import { useState, type FormEvent, type ReactNode } from "react";
+import type { DeviceType } from "../../shared/auth";
 import { ApiError } from "../api/client";
 import { useAuth } from "./auth-context";
 
@@ -27,10 +28,20 @@ function Field({ label, children }: { label: string; children: ReactNode }) {
   return <label><span>{label}</span>{children}</label>;
 }
 
+export function suggestDeviceType(userAgent: string): DeviceType {
+  if (/android|ipad|tablet/i.test(userAgent) && !/mobile/i.test(userAgent)) return "tablet";
+  if (/iphone|ipod|android.*mobile/i.test(userAgent)) return "phone";
+  if (/windows/i.test(userAgent)) return "windows";
+  return "mac";
+}
+
 export function LoginScreen({ phase }: { phase: LoginPhase }) {
   const auth = useAuth();
   const [pending, setPending] = useState(false);
   const [message, setMessage] = useState<string | null>(null);
+  const [deviceType, setDeviceType] = useState<DeviceType>(() => suggestDeviceType(
+    typeof navigator === "undefined" ? "" : navigator.userAgent
+  ));
 
   async function submit(
     event: FormEvent<HTMLFormElement>,
@@ -42,9 +53,11 @@ export function LoginScreen({ phase }: { phase: LoginPhase }) {
     try {
       await action(new FormData(event.currentTarget));
     } catch (error) {
-      setMessage(error instanceof ApiError
-        ? `확인이 필요해요. (${error.code})`
-        : "잠시 후 다시 시도해 주세요.");
+      setMessage(error instanceof ApiError && error.code === "DEVICE_TYPE_LIMIT_REACHED" && deviceType === "tablet"
+        ? "태블릿은 최대 3대예요. 사용하지 않는 기기를 먼저 해제해 주세요."
+        : error instanceof ApiError
+          ? `확인이 필요해요. (${error.code})`
+          : "잠시 후 다시 시도해 주세요.");
     } finally {
       setPending(false);
     }
@@ -88,9 +101,17 @@ export function LoginScreen({ phase }: { phase: LoginPhase }) {
         ) : null}
         {phase === "device-registration" || phase === "device-recovery-registration" ? (
           <form onSubmit={(event) => void submit(event, (data) =>
-            auth.registerDevice(String(data.get("deviceName"))))}>
+            auth.registerDevice(String(data.get("deviceName")), deviceType))}>
             <p>수아가 안전하게 들어올 수 있도록 현재 기기만 등록해요.</p>
             <Field label="기기 이름"><input name="deviceName" defaultValue="수아 갤럭시 탭" required maxLength={60} /></Field>
+            <Field label="기기 종류">
+              <select onChange={(event) => setDeviceType(event.target.value as DeviceType)} value={deviceType}>
+                <option value="tablet">태블릿</option>
+                <option value="phone">휴대폰</option>
+                <option value="mac">Mac</option>
+                <option value="windows">Windows</option>
+              </select>
+            </Field>
             <button disabled={pending} type="submit">
               {phase === "device-recovery-registration"
                 ? "현재 기기 다시 등록"

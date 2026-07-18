@@ -66,11 +66,13 @@ function createGuardianApi(overrides: Record<string, unknown> = {}) {
       name: "현재 태블릿",
       createdAt: "2026-07-15T03:00:00.000Z",
       lastUsedAt: null,
+      deviceType: "tablet" as const,
       status: "active" as const,
       current: true
     }),
     listTrustedDevices: vi.fn().mockResolvedValue([]),
     revokeTrustedDevice: vi.fn(),
+    updateTrustedDeviceType: vi.fn(),
     ...overrides
   };
 }
@@ -255,13 +257,57 @@ describe("GuardianDashboard", () => {
     const register = screen.getByRole("button", { name: "현재 브라우저 등록" });
     await user.click(register);
 
-    await waitFor(() => expect(registerDevice).toHaveBeenCalledWith("다시 등록한 태블릿"));
+    await waitFor(() => expect(registerDevice).toHaveBeenCalledWith("다시 등록한 태블릿", "tablet"));
     await waitFor(() => expect(listTrustedDevices).toHaveBeenCalledTimes(2));
     const newCurrent = (await screen.findByText("다시 등록한 태블릿")).closest("li")!;
     const oldDevice = screen.getByText("기존 태블릿").closest("li")!;
     expect(within(newCurrent).getByText("현재 기기")).toBeVisible();
     expect(within(oldDevice).getByText("다른 기기")).toBeVisible();
     confirm.mockRestore();
+  });
+
+  it("shows typed limits and lets a guardian classify a legacy device without exposing secrets", async () => {
+    const user = userEvent.setup();
+    const legacy = {
+      publicId: "legacy-device",
+      name: "기존 태블릿",
+      createdAt: "2026-07-15T03:00:00.000Z",
+      lastUsedAt: null,
+      deviceType: null,
+      status: "active" as const,
+      current: false
+    };
+    const tablet = {
+      publicId: "tablet-device",
+      name: "현재 태블릿",
+      createdAt: "2026-07-16T03:00:00.000Z",
+      lastUsedAt: null,
+      deviceType: "tablet" as const,
+      status: "active" as const,
+      current: true
+    };
+    const updateTrustedDeviceType = vi.fn().mockResolvedValue({
+      ...legacy,
+      deviceType: "phone" as const
+    });
+    const api = createGuardianApi({
+      listTrustedDevices: vi.fn().mockResolvedValue([legacy, tablet]),
+      updateTrustedDeviceType
+    });
+
+    render(<GuardianDashboard api={api} />);
+    await user.click(screen.getByRole("button", { name: "계정 메뉴" }));
+    await user.click(screen.getByRole("button", { name: "기기 관리" }));
+
+    expect(await screen.findByText("태블릿 1/3 · 휴대폰 0/3 · Mac 0/1 · Windows 0/2"))
+      .toBeVisible();
+    expect(screen.getByText("기기 종류 확인 필요")).toBeVisible();
+    await user.selectOptions(screen.getByLabelText("기존 태블릿 기기 종류"), "phone");
+    await waitFor(() => expect(updateTrustedDeviceType)
+      .toHaveBeenCalledWith("legacy-device", "phone"));
+    expect(within(screen.getByText("기존 태블릿").closest("li")!)
+      .getByText("휴대폰")).toBeVisible();
+    expect(document.body.textContent).not.toMatch(/token|hash|internal|cookie/i);
   });
 
   it("confirms a deduction approval and shows requested, approved, and applied stars", async () => {

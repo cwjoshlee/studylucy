@@ -273,7 +273,7 @@ describe("가족 로그인과 학생 홈", () => {
     await user.type(screen.getByLabelText("기기 이름"), "수아 갤럭시 탭 복구");
     await user.click(screen.getByRole("button", { name: "현재 기기 다시 등록" }));
 
-    expect(api.registerDevice).toHaveBeenCalledWith("수아 갤럭시 탭 복구");
+    expect(api.registerDevice).toHaveBeenCalledWith("수아 갤럭시 탭 복구", "mac");
     expect(endSession).toHaveBeenCalledOnce();
     expect(await screen.findByRole("heading", {
       name: "수아 PIN으로 들어가기"
@@ -506,7 +506,7 @@ describe("가족 로그인과 학생 홈", () => {
     await user.clear(screen.getByLabelText("기기 이름"));
     await user.type(screen.getByLabelText("기기 이름"), "수아 갤럭시 탭");
     await user.click(screen.getByRole("button", { name: "현재 기기 등록" }));
-    expect(api.registerDevice).toHaveBeenCalledWith("수아 갤럭시 탭");
+    expect(api.registerDevice).toHaveBeenCalledWith("수아 갤럭시 탭", "mac");
     expect(await screen.findByRole("heading", { name: "수아 PIN 만들기" })).toBeVisible();
 
     await user.type(screen.getByLabelText("수아의 새 4자리 PIN"), "2580");

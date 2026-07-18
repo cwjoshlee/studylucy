@@ -4,6 +4,7 @@ import {
   GuardianLoginRequest,
   RegisterDeviceRequest,
   RevokeDeviceRequest,
+  UpdateDeviceTypeRequest,
   SetupRequest,
   StudentPinRequest,
   type CurrentUser
@@ -126,8 +127,10 @@ export function registerAuthRoutes(
       if (body === null) {
         return;
       }
+      try {
       const registration = service.registerDevice(
         body.name,
+        body.deviceType,
         request.cookies.sua_device
       );
       if (registration.rawToken !== null) {
@@ -136,9 +139,29 @@ export function registerAuthRoutes(
           maxAge: 365 * 86_400
         });
       }
-      await reply
-        .code(registration.created ? 201 : 200)
-        .send(registration.device);
+      await reply.code(registration.created ? 201 : 200).send(registration.device);
+    } catch (error) {
+      await handleAuthError(error, reply);
+    }
+    }
+  );
+
+  app.put(
+    "/api/guardian/devices/:publicId/type",
+    { preHandler: requireRole("guardian") },
+    async (request, reply) => {
+      const params = parseBody(RevokeDeviceRequest, request.params, reply);
+      const body = parseBody(UpdateDeviceTypeRequest, request.body, reply);
+      if (params === null || body === null) return;
+      try {
+        await reply.send(service.setDeviceType(
+          params.publicId,
+          body.deviceType,
+          request.currentTrustedDeviceId
+        ));
+      } catch (error) {
+        await handleAuthError(error, reply);
+      }
     }
   );
 

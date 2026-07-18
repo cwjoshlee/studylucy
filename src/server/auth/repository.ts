@@ -1,5 +1,9 @@
 import type Database from "better-sqlite3";
-import type { CurrentUser, TrustedDeviceView } from "../../shared/auth";
+import type {
+  CurrentUser,
+  DeviceType,
+  TrustedDeviceView
+} from "../../shared/auth";
 
 type UserRecord = CurrentUser & {
   credentialHash: string | null;
@@ -10,6 +14,7 @@ export type TrustedDeviceRecord = {
   name: string;
   publicId: string;
   status: "active" | "revoked";
+  deviceType: DeviceType | null;
 };
 
 export type RequestAuthContext = {
@@ -101,24 +106,26 @@ export class AuthRepository {
     publicId?: string;
     name: string;
     tokenHash: string;
+    deviceType: DeviceType;
     createdAt: string;
   }): void {
     this.db.prepare(`
       INSERT INTO trusted_devices (
-        id, public_id, name, token_hash, created_at
-      ) VALUES (?, ?, ?, ?, ?)
+        id, public_id, name, token_hash, created_at, device_type
+      ) VALUES (?, ?, ?, ?, ?, ?)
     `).run(
       input.id,
       input.publicId ?? null,
       input.name,
       input.tokenHash,
-      input.createdAt
+      input.createdAt,
+      input.deviceType
     );
   }
 
   findTrustedDevice(tokenHash: string): TrustedDeviceRecord | null {
     const row = this.db.prepare(`
-      SELECT id, name, public_id AS publicId,
+      SELECT id, name, public_id AS publicId, device_type AS deviceType,
              CASE WHEN revoked_at IS NULL THEN 'active' ELSE 'revoked' END AS status
       FROM trusted_devices
       WHERE token_hash = ?
@@ -126,10 +133,44 @@ export class AuthRepository {
     return row ?? null;
   }
 
+  findTrustedDeviceByPublicId(publicId: string): TrustedDeviceRecord | null {
+    const row = this.db.prepare(`
+      SELECT id, name, public_id AS publicId, device_type AS deviceType,
+             CASE WHEN revoked_at IS NULL THEN 'active' ELSE 'revoked' END AS status
+      FROM trusted_devices
+      WHERE public_id = ?
+    `).get(publicId) as TrustedDeviceRecord | undefined;
+    return row ?? null;
+  }
+
+  countActiveDevicesByType(deviceType: DeviceType): number {
+    const row = this.db.prepare(`
+      SELECT COUNT(*) AS count
+      FROM trusted_devices
+      WHERE revoked_at IS NULL AND device_type = ?
+    `).get(deviceType) as { count: number };
+    return row.count;
+  }
+
+  hasActiveUnclassifiedDevice(): boolean {
+    return this.db.prepare(`
+      SELECT 1 FROM trusted_devices
+      WHERE revoked_at IS NULL AND device_type IS NULL
+      LIMIT 1
+    `).get() !== undefined;
+  }
+
+  setTrustedDeviceType(id: string, deviceType: DeviceType): void {
+    this.db.prepare(`
+      UPDATE trusted_devices SET device_type = ? WHERE id = ?
+    `).run(deviceType, id);
+  }
+
   listTrustedDevices(currentTrustedDeviceId: string | null): TrustedDeviceView[] {
     const rows = this.db.prepare(`
       SELECT public_id AS publicId, name, created_at AS createdAt,
              last_used_at AS lastUsedAt,
+             device_type AS deviceType,
              CASE WHEN revoked_at IS NULL THEN 'active' ELSE 'revoked' END AS status,
              id
       FROM trusted_devices
@@ -148,6 +189,7 @@ export class AuthRepository {
     const row = this.db.prepare(`
       SELECT public_id AS publicId, name, created_at AS createdAt,
              last_used_at AS lastUsedAt,
+             device_type AS deviceType,
              CASE WHEN revoked_at IS NULL THEN 'active' ELSE 'revoked' END AS status
       FROM trusted_devices
       WHERE id = ?

@@ -75,7 +75,7 @@ describe("predeployment authority integration", () => {
     const registeredA = await guardian.request(
       "POST",
       "/api/guardian/devices/current",
-      { name: "Galaxy Tab A" }
+      { name: "Galaxy Tab A", deviceType: "tablet" }
     );
     expect(registeredA.statusCode).toBe(201);
     const deviceA = registeredA.json() as { publicId: string };
@@ -85,7 +85,7 @@ describe("predeployment authority integration", () => {
     const registeredB = await guardian.request(
       "POST",
       "/api/guardian/devices/current",
-      { name: "Galaxy Tab B" }
+      { name: "Galaxy Tab B", deviceType: "tablet" }
     );
     expect(registeredB.statusCode).toBe(201);
     const tokenB = guardian.cookie("sua_device")!;
@@ -224,7 +224,7 @@ describe("predeployment authority integration", () => {
     const replacement = await guardian.request(
       "POST",
       "/api/guardian/devices/current",
-      { name: "Galaxy Tab A 재등록" }
+      { name: "Galaxy Tab A 재등록", deviceType: "tablet" }
     );
     expect(replacement.statusCode).toBe(201);
     const replacementToken = guardian.cookie("sua_device")!;
@@ -431,7 +431,7 @@ describe("predeployment authority integration", () => {
     const registration = await guardian.request(
       "POST",
       "/api/guardian/devices/current",
-      { name: "거절 조회 태블릿" }
+      { name: "거절 조회 태블릿", deviceType: "tablet" }
     );
     const deviceToken = guardian.cookie("sua_device")!;
     expect((await guardian.request("PUT", "/api/auth/student-pin", {
@@ -574,7 +574,7 @@ describe("predeployment authority integration", () => {
       password: FAMILY.password
     })).statusCode).toBe(204);
     expect((await client.request("POST", "/api/guardian/devices/current", {
-      name: "KST 경계 태블릿"
+      name: "KST 경계 태블릿", deviceType: "tablet"
     })).statusCode).toBe(201);
     expect((await client.request("PUT", "/api/auth/student-pin", {
       pin: "2580"
