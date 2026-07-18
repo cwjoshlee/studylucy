@@ -55,9 +55,11 @@ function monthAt(now: Date): string {
 function safeMessage(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const message = value.trim();
-  if (message.length === 0 || message.length > 45 || !/[가-힣]/.test(message)) return null;
-  if ((message.match(/[.!?。！？]/g) ?? []).length > 2) return null;
-  if (/바보|멍청|벌|혼나|정답|답은|죽|해치|욕|비밀|개인정보|링크|https?:/i.test(message)) return null;
+  if (message.length < 4 || message.length > 45) return null;
+  if (!/^[가-힣]+(?: [가-힣]+){1,8}$/.test(message)) return null;
+  if (/바보|멍청|못하|틀렸|느려|게으르|벌|혼나|실패|포기|정답|답은|죽|해치|욕|비밀|개인정보|연락|전화|번호|카톡|메일|주소|링크/.test(message)) {
+    return null;
+  }
   return message;
 }
 

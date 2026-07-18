@@ -40,6 +40,11 @@ export function ChanaPingCoach({
   const abortRef = useRef<AbortController | null>(null);
   const generationRef = useRef(0);
   const lastRequestRef = useRef<{ key: string; at: number } | null>(null);
+  const requestMessageRef = useRef(requestMessage);
+
+  useEffect(() => {
+    requestMessageRef.current = requestMessage;
+  }, [requestMessage]);
 
   useEffect(() => {
     const nextCue = selectLocalChanaPingCue({ event, subject, retryCount, key: cueKey });
@@ -53,7 +58,8 @@ export function ChanaPingCoach({
   }, [cueKey, event, retryCount, subject]);
 
   useEffect(() => {
-    if (requestMessage === undefined) return;
+    const send = requestMessageRef.current;
+    if (send === undefined) return;
     const input = { event, subject, retryCount, hintStage };
     const key = JSON.stringify(input);
     const now = Date.now();
@@ -64,13 +70,13 @@ export function ChanaPingCoach({
     abortRef.current = controller;
     const generation = ++generationRef.current;
     setRemoteCue(null);
-    void requestMessage(input, controller.signal).then((response) => {
+    void send(input, controller.signal).then((response) => {
       if (!controller.signal.aborted && generation === generationRef.current && response.source === "llm") {
         setRemoteCue(response.message);
       }
     }).catch(() => undefined);
     return () => controller.abort();
-  }, [event, hintStage, requestMessage, retryCount, subject]);
+  }, [event, hintStage, retryCount, subject]);
 
   if (hidden) return null;
 

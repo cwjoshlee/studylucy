@@ -279,6 +279,40 @@ describe("LearningSession", () => {
     expect(JSON.stringify(api.coachMessage.mock.calls)).not.toMatch(/plan-private|answer|transcript|cookie|device/i);
   });
 
+  it("keeps an in-flight current coach request through an ordinary session rerender", async () => {
+    const api = createLearningApi();
+    api.saveAttempt.mockResolvedValue(receipt({ completed: false, mathPass: false }));
+    api.coachMessage.mockResolvedValueOnce({ message: "", source: "local" });
+    const pending = deferred<{ message: string; source: "llm" }>();
+    const user = userEvent.setup();
+    const props: LearningSessionProps = {
+      item: calculationPlanItem,
+      api,
+      planId: "plan-daily-1",
+      studyDate: "2026-07-16"
+    };
+    const { rerender } = render(<LearningSession {...props} />);
+
+    await screen.findByRole("status", { name: "차나핑 코치" });
+    await waitFor(() => expect(api.coachMessage).toHaveBeenCalledOnce());
+    api.coachMessage.mockClear();
+    api.coachMessage.mockReturnValue(pending.promise);
+    await user.click(screen.getByRole("button", { name: "1" }));
+    await user.click(screen.getByRole("button", { name: "답 확인" }));
+    await waitFor(() => expect(api.coachMessage).toHaveBeenCalledOnce());
+    const signal = api.coachMessage.mock.calls[0]?.[1] as AbortSignal;
+
+    rerender(<LearningSession {...props} reducedMotion />);
+
+    expect(signal.aborted).toBe(false);
+    expect(api.coachMessage).toHaveBeenCalledOnce();
+    await act(async () => {
+      pending.resolve({ message: "천천히 다시 해 보자", source: "llm" });
+      await pending.promise;
+    });
+    expect(await screen.findByText("천천히 다시 해 보자")).toBeVisible();
+  });
+
   it.each([
     [readingPlanItem, "읽기 판정하기", readingItem.delight!.openingCue],
     [mathPlanItem, "답 확인", mathItem.delight!.openingCue]

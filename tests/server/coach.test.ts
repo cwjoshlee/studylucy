@@ -39,14 +39,14 @@ describe("AI coach privacy and budget boundaries", () => {
     const db = openDatabase(":memory:");
     migrate(db);
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      candidates: [{ content: { parts: [{ text: JSON.stringify({ message: "천천히 다시 해 볼까?" }) }] } }]
+      candidates: [{ content: { parts: [{ text: JSON.stringify({ message: "천천히 다시 해 보자" }) }] } }]
     }), { status: 200 }));
     const service = new AiCoachService({ db, encryptionKey: key, fetcher });
     service.updateSettings({ enabled: true, apiKey: "provider-secret" });
 
     await expect(service.message({
       event: "retry", subject: "math", retryCount: 1, hintStage: "first"
-    })).resolves.toEqual({ message: "천천히 다시 해 볼까?", source: "llm" });
+    })).resolves.toEqual({ message: "천천히 다시 해 보자", source: "llm" });
 
     expect(fetcher).toHaveBeenCalledOnce();
     const [url, init] = fetcher.mock.calls[0] as [string, RequestInit];
@@ -58,11 +58,32 @@ describe("AI coach privacy and budget boundaries", () => {
     db.close();
   });
 
+  it.each([
+    "가 010-1234-5678로 연락해!",
+    "여기 https://example.test 를 눌러 봐",
+    "천천히 again 해 보자",
+    "바보야 벌 받아",
+    "천천히! 다시 해 보자"
+  ])("fails closed for unsafe provider message %s", async (message) => {
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{ text: JSON.stringify({ message }) }] } }]
+    }), { status: 200 }));
+    const service = new AiCoachService({ db, encryptionKey: key, fetcher });
+    service.updateSettings({ enabled: true, apiKey: "provider-secret" });
+
+    await expect(service.message({
+      event: "retry", subject: "korean", retryCount: 1, hintStage: "first"
+    })).resolves.toMatchObject({ source: "local" });
+    db.close();
+  });
+
   it("uses OpenAI Responses gpt-5-nano and makes no request after the cap is exhausted", async () => {
     const db = openDatabase(":memory:");
     migrate(db);
     const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      output_text: JSON.stringify({ message: "한 걸음씩 해 보자!" }),
+      output_text: JSON.stringify({ message: "한 걸음씩 해 보자" }),
       usage: { input_tokens: 10, output_tokens: 10 }
     }), { status: 200 }));
     const service = new AiCoachService({ db, encryptionKey: key, fetcher });
