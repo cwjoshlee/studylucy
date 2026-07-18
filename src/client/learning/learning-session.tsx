@@ -482,7 +482,7 @@ function LearningSessionView({
       setMathFeedback("숫자로 답을 써 보세요.");
       return;
     }
-    await saveMathAnswer(readingResult, Number(mathAnswer));
+    await saveMathAnswer(readingResult, Number(mathAnswer), item.answer);
   }
 
   async function checkCalculationAnswer(): Promise<void> {
@@ -491,10 +491,18 @@ function LearningSessionView({
       learningControlsPaused ||
       !/^\d+$/.test(mathAnswer)
     ) return;
-    await saveMathAnswer({ score: 100, passed: true, missedTokens: [] }, Number(mathAnswer));
+    await saveMathAnswer(
+      { score: 100, passed: true, missedTokens: [] },
+      Number(mathAnswer),
+      item.answer
+    );
   }
 
-  async function saveMathAnswer(result: ReadingResult, answer: number): Promise<void> {
+  async function saveMathAnswer(
+    result: ReadingResult,
+    answer: number,
+    expectedAnswer: number
+  ): Promise<void> {
     recordActivity("answer");
     controllerRef.current?.pause("server-wait");
     setSaveUiState("saving");
@@ -520,7 +528,7 @@ function LearningSessionView({
       }
       const queued = await preserveFailedAttempt(error, input).catch(() => false);
       setSaveUiState(queued ? "queued" : "failed");
-      const locallyComplete = queued && answer === item.answer;
+      const locallyComplete = queued && answer === expectedAnswer;
       if (!locallyComplete) setMathRetryCount((count) => count + 1);
       setNextUnlocked(locallyComplete);
       setProvisional(locallyComplete);
