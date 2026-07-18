@@ -395,6 +395,132 @@ describe("ApiClient", () => {
     expect(JSON.stringify(fetcher.mock.calls)).not.toContain("/api/auth/devices");
   });
 
+  it("maps every guardian AI studio operation to its protected route", async () => {
+    const settings = [
+      { provider: "gemini", enabled: true, model: "gemini-2.5-flash", hasApiKey: true },
+      { provider: "openai", enabled: true, model: "gpt-5-mini", hasApiKey: true }
+    ];
+    const draft = {
+      id: "draft/private 1",
+      subject: "math",
+      step: "current",
+      requestedCount: 8,
+      difficulty: 4,
+      weakTopics: ["받아올림"],
+      status: "draft",
+      items: []
+    };
+    const report = {
+      source: "local",
+      summary: "이번 주 학습 요약이에요.",
+      completionRate: 80,
+      commonMistakes: ["받아올림"],
+      challengePerfect: false
+    };
+    const responses = [
+      settings,
+      settings[0],
+      draft,
+      draft,
+      draft,
+      { ...draft, status: "published" },
+      report
+    ];
+    const fetcher = vi.fn().mockImplementation(() => Promise.resolve(new Response(
+      JSON.stringify(responses.shift()),
+      { status: 200, headers: { "content-type": "application/json" } }
+    )));
+    const api = new ApiClient(fetcher);
+    const batch = {
+      subject: "math" as const,
+      step: "current" as const,
+      count: 8,
+      difficulty: 4,
+      weakTopics: ["받아올림"]
+    };
+    const payload = {
+      id: "item/private 1",
+      kind: "math-story" as const,
+      subject: "math" as const,
+      unit: "받아올림과 받아내림",
+      title: "받아올림 더하기",
+      level: "4단계",
+      readLabel: "식을 읽고 계산하기",
+      text: "28에 7을 더해요.",
+      hint: "일의 자리부터 계산해요.",
+      tokens: ["28", "7"],
+      question: "28 + 7은 얼마일까요?",
+      answer: 35,
+      unitLabel: "",
+      checkHint: "받아올림을 확인해요.",
+      calculation: {
+        operands: [28, 7] as [number, number],
+        operators: ["+"] as ["+"],
+        layout: "vertical" as const
+      }
+    };
+
+    await expect(api.getAiStudioSettings()).resolves.toEqual(settings);
+    await expect(api.updateAiStudioProvider("gemini", {
+      enabled: true,
+      model: "gemini-2.5-flash",
+      apiKey: "submitted-once"
+    })).resolves.toEqual(settings[0]);
+    await expect(api.createAiDraft(batch)).resolves.toEqual(draft);
+    await expect(api.getAiDraft("draft/private 1")).resolves.toEqual(draft);
+    await expect(api.updateAiDraftItem(
+      "draft/private 1",
+      "item/private 1",
+      payload
+    )).resolves.toEqual(draft);
+    await expect(api.publishAiDraft("draft/private 1"))
+      .resolves.toEqual({ ...draft, status: "published" });
+    await expect(api.getGuardianAiReport("2026-07-12", "2026-07-18"))
+      .resolves.toEqual(report);
+
+    expect(fetcher.mock.calls.map(([path, init]) => ({
+      path,
+      method: init?.method,
+      body: init?.body
+    }))).toEqual([
+      { path: "/api/guardian/ai-studio/settings", method: "GET", body: undefined },
+      {
+        path: "/api/guardian/ai-studio/settings/gemini",
+        method: "PUT",
+        body: JSON.stringify({
+          enabled: true,
+          model: "gemini-2.5-flash",
+          apiKey: "submitted-once"
+        })
+      },
+      {
+        path: "/api/guardian/ai-studio/drafts",
+        method: "POST",
+        body: JSON.stringify(batch)
+      },
+      {
+        path: "/api/guardian/ai-studio/drafts/draft%2Fprivate%201",
+        method: "GET",
+        body: undefined
+      },
+      {
+        path: "/api/guardian/ai-studio/drafts/draft%2Fprivate%201/items/item%2Fprivate%201",
+        method: "PATCH",
+        body: JSON.stringify({ payload })
+      },
+      {
+        path: "/api/guardian/ai-studio/drafts/draft%2Fprivate%201/publish",
+        method: "POST",
+        body: undefined
+      },
+      {
+        path: "/api/guardian/ai-studio/report?from=2026-07-12&to=2026-07-18",
+        method: "GET",
+        body: undefined
+      }
+    ]);
+  });
+
   it("reports authority failures through the injected no-op policy boundary", async () => {
     const onAuthorityFailure = vi.fn();
     const api = new ApiClient(

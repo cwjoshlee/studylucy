@@ -57,6 +57,10 @@ function createGuardianApi(overrides: Record<string, unknown> = {}) {
       koreanTarget: 2,
       mathTarget: 2,
       isRestDay: false,
+      subjectSettings: {
+        korean: { difficulty: 3, challengeBonusStars: 1 },
+        math: { difficulty: 3, challengeBonusStars: 1 }
+      },
       requiredItemIds: ["ko-private", "math-private"]
     }),
     updateGuardianDailyPlan: vi.fn(),
@@ -70,6 +74,16 @@ function createGuardianApi(overrides: Record<string, unknown> = {}) {
       hasApiKey: false
     }),
     updateAiCoachSettings: vi.fn(),
+    getAiStudioSettings: vi.fn().mockResolvedValue([
+      { provider: "gemini" as const, enabled: true, model: "gemini-2.5-flash", hasApiKey: true },
+      { provider: "openai" as const, enabled: true, model: "gpt-5-mini", hasApiKey: true }
+    ]),
+    updateAiStudioProvider: vi.fn(),
+    createAiDraft: vi.fn(),
+    getAiDraft: vi.fn(),
+    updateAiDraftItem: vi.fn(),
+    publishAiDraft: vi.fn(),
+    getGuardianAiReport: vi.fn(),
     registerDevice: vi.fn().mockResolvedValue({
       publicId: "public-current",
       name: "현재 태블릿",
@@ -97,45 +111,186 @@ function deferred<T>() {
 }
 
 describe("GuardianDashboard", () => {
-  it("saves AI coach settings without rendering the provider key", async () => {
+  it("expands the exact AI learning studio tree and blanks each saved provider key", async () => {
     const user = userEvent.setup();
-    const updateAiCoachSettings = vi.fn().mockResolvedValue({
-      enabled: true,
-      provider: "openai",
-      model: "gpt-5-nano",
-      monthlyBudgetWon: 300,
-      monthSpentWon: 1,
-      hasApiKey: true
-    });
+    const updateAiStudioProvider = vi.fn(async (
+      provider: "gemini" | "openai",
+      input: { enabled?: boolean; model?: string; apiKey?: string }
+    ) => ({
+      provider,
+      enabled: input.enabled ?? false,
+      model: input.model ?? "model",
+      hasApiKey: input.apiKey !== undefined
+    }));
     const api = createGuardianApi({
-      getAiCoachSettings: vi.fn().mockResolvedValue({
-        enabled: false,
-        provider: "gemini",
-        model: "gemini-2.5-flash-lite",
-        monthlyBudgetWon: 1000,
-        monthSpentWon: 0,
-        hasApiKey: false
-      }),
-      updateAiCoachSettings
+      getAiStudioSettings: vi.fn().mockResolvedValue([
+        { provider: "gemini", enabled: false, model: "gemini-2.5-flash", hasApiKey: false },
+        { provider: "openai", enabled: false, model: "gpt-5-mini", hasApiKey: false }
+      ]),
+      updateAiStudioProvider
     });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "AI 코치" }));
-    const key = await screen.findByLabelText("API 키");
-    await user.type(key, "provider-secret-never-rendered");
-    await user.selectOptions(screen.getByLabelText("제공자"), "openai");
-    await user.clear(screen.getByLabelText("월 예산"));
-    await user.type(screen.getByLabelText("월 예산"), "300");
-    await user.click(screen.getByRole("button", { name: "AI 코치 저장" }));
+    const studioTab = screen.getByRole("tab", { name: "AI 학습실" });
+    expect(studioTab).toBeVisible();
+    await user.click(studioTab);
+    await user.click(screen.getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("button", { name: "보고서" }));
+    for (const label of [
+      "제공자·모델 선택", "API 키 관리", "월 예산·사용량",
+      "수학 문제 배치", "국어·받아쓰기 배치", "오늘의 학습 요약", "주간 변화"
+    ]) {
+      expect(screen.getByRole("treeitem", { name: label })).toBeVisible();
+    }
 
-    await waitFor(() => expect(updateAiCoachSettings).toHaveBeenCalledWith({
-      enabled: false,
-      provider: "openai",
-      monthlyBudgetWon: 300,
-      apiKey: "provider-secret-never-rendered"
+    await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
+    expect(screen.getByRole("button", { name: "초안 만들기" })).toBeDisabled();
+    expect(screen.getByText(
+      "Gemini와 OpenAI를 모두 켜고 두 API 키를 저장해야 초안을 만들 수 있어요."
+    )).toBeVisible();
+
+    await user.click(screen.getByRole("treeitem", { name: "제공자·모델 선택" }));
+    expect(screen.getAllByText("API 키 저장되지 않음")).toHaveLength(2);
+    await user.click(screen.getByLabelText("Gemini 사용"));
+    const geminiKey = screen.getByLabelText("Gemini API 키");
+    await user.type(geminiKey, "gemini-secret-never-rendered");
+    await user.click(screen.getByRole("button", { name: "Gemini 설정 저장" }));
+    await waitFor(() => expect(updateAiStudioProvider).toHaveBeenCalledWith("gemini", {
+      enabled: true,
+      model: "gemini-2.5-flash",
+      apiKey: "gemini-secret-never-rendered"
     }));
-    expect(screen.getByLabelText("API 키")).toHaveValue("");
-    expect(document.body.textContent).not.toContain("provider-secret-never-rendered");
+    expect(geminiKey).toHaveValue("");
+
+    await user.click(screen.getByLabelText("OpenAI 사용"));
+    const openAiKey = screen.getByLabelText("OpenAI API 키");
+    await user.type(openAiKey, "openai-secret-never-rendered");
+    await user.click(screen.getByRole("button", { name: "OpenAI 설정 저장" }));
+    await waitFor(() => expect(updateAiStudioProvider).toHaveBeenCalledWith("openai", {
+      enabled: true,
+      model: "gpt-5-mini",
+      apiKey: "openai-secret-never-rendered"
+    }));
+    expect(openAiKey).toHaveValue("");
+    expect(screen.getAllByText("API 키 저장됨")).toHaveLength(2);
+    expect(document.body.textContent).not.toMatch(/gemini-secret|openai-secret/);
+    expect(document.documentElement.outerHTML).not.toMatch(/gemini-secret|openai-secret/);
+  });
+
+  it("creates, edits, and publishes only reviewed math draft items", async () => {
+    const user = userEvent.setup();
+    const acceptedPayload = {
+      id: "accepted-1",
+      kind: "math-story" as const,
+      subject: "math" as const,
+      unit: "받아올림과 받아내림",
+      title: "받아올림 더하기",
+      level: "4단계",
+      readLabel: "식을 읽고 계산하기",
+      text: "28에 7을 더해요.",
+      hint: "일의 자리부터 계산해요.",
+      tokens: ["28", "7"],
+      question: "28 + 7은 얼마일까요?",
+      answer: 35,
+      unitLabel: "",
+      checkHint: "받아올림을 확인해요.",
+      calculation: { operands: [28, 7] as [number, number], operators: ["+"] as ["+"], layout: "vertical" as const }
+    };
+    const rejectedPayload = { ...acceptedPayload, id: "rejected-1", title: "중복 문제" };
+    const draft = {
+      id: "draft-1",
+      subject: "math" as const,
+      step: "current" as const,
+      requestedCount: 8,
+      difficulty: 4,
+      weakTopics: ["받아올림"],
+      status: "draft" as const,
+      items: [
+        { id: "accepted-1", sourceProvider: "gemini" as const, payload: acceptedPayload, review: { accepted: true, reasons: [] }, status: "accepted" as const },
+        { id: "rejected-1", sourceProvider: "openai" as const, payload: rejectedPayload, review: { accepted: false, reasons: ["REVIEW_DUPLICATE"] }, status: "rejected" as const }
+      ]
+    };
+    const createAiDraft = vi.fn().mockResolvedValue(draft);
+    const updateAiDraftItem = vi.fn().mockImplementation(async (
+      _draftId: string,
+      _itemId: string,
+      payload: typeof acceptedPayload
+    ) => ({
+      ...draft,
+      items: [{ ...draft.items[0], payload, status: "edited" as const }, draft.items[1]]
+    }));
+    const publishAiDraft = vi.fn().mockResolvedValue({
+      ...draft,
+      status: "published",
+      items: [{ ...draft.items[0], status: "published" }, draft.items[1]]
+    });
+    const api = createGuardianApi({ createAiDraft, updateAiDraftItem, publishAiDraft });
+    render(<GuardianDashboard api={api} />);
+
+    await user.click(screen.getByRole("tab", { name: "AI 학습실" }));
+    await user.click(screen.getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
+    await user.type(screen.getByLabelText("자주 틀린 유형"), "받아올림");
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+    await waitFor(() => expect(createAiDraft).toHaveBeenCalledWith({
+      subject: "math",
+      step: "current",
+      count: 8,
+      difficulty: 4,
+      weakTopics: ["받아올림"]
+    }));
+
+    const accepted = await screen.findByRole("article", { name: "받아올림 더하기 초안" });
+    const rejected = screen.getByRole("article", { name: "중복 문제 초안" });
+    expect(within(rejected).getByText("감리 탈락 · 발행 제외")).toBeVisible();
+    expect(within(rejected).queryByRole("button", { name: "수정 저장" })).not.toBeInTheDocument();
+    const answer = within(accepted).getByLabelText("정답");
+    await user.clear(answer);
+    await user.type(answer, "36");
+    await user.click(within(accepted).getByRole("button", { name: "수정 저장" }));
+    expect(await within(accepted).findByText("문제 형식을 다시 확인해 주세요.")).toBeVisible();
+    expect(updateAiDraftItem).not.toHaveBeenCalled();
+    await user.clear(answer);
+    await user.type(answer, "35");
+    const title = within(accepted).getByLabelText("문제 제목");
+    await user.clear(title);
+    await user.type(title, "받아올림 더하기 연습");
+    await user.click(within(accepted).getByRole("button", { name: "수정 저장" }));
+    await waitFor(() => expect(updateAiDraftItem).toHaveBeenCalledWith(
+      "draft-1",
+      "accepted-1",
+      expect.objectContaining({ title: "받아올림 더하기 연습" })
+    ));
+
+    await user.click(screen.getByRole("button", { name: "초안 발행" }));
+    await waitFor(() => expect(publishAiDraft).toHaveBeenCalledWith("draft-1"));
+    expect(await screen.findByText("발행을 완료했어요.")).toBeVisible();
+  });
+
+  it("restores the selected AI panel and exposes a keyboard-operable tree hierarchy", async () => {
+    const user = userEvent.setup();
+    render(<GuardianDashboard api={createGuardianApi()} />);
+
+    await user.click(screen.getByRole("tab", { name: "AI 학습실" }));
+    const tree = screen.getByRole("tree", { name: "AI 학습실 메뉴" });
+    expect(within(tree).getByRole("treeitem", { name: "AI 설정" }))
+      .toHaveAttribute("aria-expanded", "true");
+    const generationBranch = within(tree).getByRole("treeitem", { name: "문제 생성" });
+    generationBranch.focus();
+    await user.keyboard("{ArrowRight}");
+    expect(generationBranch).toHaveAttribute("aria-expanded", "true");
+    await user.keyboard("{ArrowDown}");
+    expect(screen.getByRole("treeitem", { name: "수학 문제 배치" })).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("heading", { name: "수학 문제 배치" })).toBeVisible();
+
+    await user.click(screen.getByRole("tab", { name: "진도" }));
+    await user.click(screen.getByRole("tab", { name: "AI 학습실" }));
+    expect(screen.getByRole("heading", { name: "수학 문제 배치" })).toBeVisible();
+    expect(screen.getByRole("treeitem", { name: "수학 문제 배치" }))
+      .toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("treeitem", { name: "문제 생성" }))
+      .toHaveAttribute("aria-expanded", "true");
   });
 
   it("shows guardian progress and star status without protected or internal data", async () => {
@@ -149,7 +304,7 @@ describe("GuardianDashboard", () => {
     expect(screen.getByText("읽기 통과율 83%")).toBeVisible();
     expect(screen.getByText("수학 통과율 75%")).toBeVisible();
     expect(screen.getByText("꽃잎 · 2회")).toBeVisible();
-    for (const tab of ["진도", "별 기록", "차감 승인", "학습 계획", "백업"]) {
+    for (const tab of ["진도", "별 기록", "차감 승인", "학습 계획", "AI 학습실", "백업"]) {
       expect(screen.getByRole("tab", { name: tab })).toBeVisible();
     }
     expect(document.body.textContent).not.toMatch(
@@ -1278,13 +1433,17 @@ describe("GuardianDashboard", () => {
     confirm.mockRestore();
   });
 
-  it("updates future 2/2 targets and can turn the date into a rest day", async () => {
+  it("saves Korean and math difficulty 1–5 with perfect bonuses 0–5", async () => {
     const user = userEvent.setup();
     const plan = {
       studyDate: "2026-07-17",
       koreanTarget: 2,
       mathTarget: 2,
       isRestDay: false,
+      subjectSettings: {
+        korean: { difficulty: 3, challengeBonusStars: 1 },
+        math: { difficulty: 3, challengeBonusStars: 1 }
+      },
       requiredItemIds: ["ko-private", "math-private"]
     };
     const getGuardianDailyPlan = vi.fn().mockResolvedValue(plan);
@@ -1307,12 +1466,24 @@ describe("GuardianDashboard", () => {
     await waitFor(() => expect(getGuardianDailyPlan).toHaveBeenLastCalledWith("2026-07-17"));
     expect(screen.getByLabelText("국어 목표")).toHaveValue(2);
     expect(screen.getByLabelText("수학 목표")).toHaveValue(2);
+    await user.selectOptions(screen.getByLabelText("국어 난이도"), "5");
+    await user.selectOptions(screen.getByLabelText("국어 만점 보너스"), "0");
+    await user.selectOptions(screen.getByLabelText("수학 난이도"), "1");
+    await user.selectOptions(screen.getByLabelText("수학 만점 보너스"), "5");
     await user.click(screen.getByLabelText("쉬는 날"));
     await user.click(screen.getByRole("button", { name: "학습 계획 저장" }));
 
     await waitFor(() => expect(updateGuardianDailyPlan).toHaveBeenCalledWith(
       "2026-07-17",
-      { koreanTarget: 2, mathTarget: 2, isRestDay: true }
+      {
+        koreanTarget: 2,
+        mathTarget: 2,
+        isRestDay: true,
+        subjectSettings: {
+          korean: { difficulty: 5, challengeBonusStars: 0 },
+          math: { difficulty: 1, challengeBonusStars: 5 }
+        }
+      }
     ));
     expect(await screen.findByText("쉬는 날 계획을 저장했어요.")).toBeVisible();
   });
@@ -1453,6 +1624,9 @@ describe("GuardianDashboard", () => {
     );
     expect(components).toMatch(
       /\.account-menu button,\s*\.device-management button\s*\{[^}]*min-height:\s*48px/s
+    );
+    expect(components).toMatch(
+      /\.guardian-tabs button\s*\{[^}]*min-width:\s*0[^}]*white-space:\s*normal/s
     );
     expect(layout).toContain(".guardian-shell");
     expect(layout).toContain(".guardian-tabs");
