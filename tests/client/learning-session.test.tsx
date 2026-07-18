@@ -590,7 +590,7 @@ describe("LearningSession", () => {
     }));
   });
 
-  it("shows one authoritative Bunny reward cue then the Milky next cue at one second", async () => {
+  it("shows one authoritative Bunny reward cue then the Toto reading cue at one second", async () => {
     vi.useFakeTimers();
     const api = createLearningApi();
     api.saveAttempt.mockResolvedValue(receipt({
@@ -626,9 +626,9 @@ describe("LearningSession", () => {
     act(() => vi.advanceTimersByTime(999));
     expect(companionBubble()).toHaveTextContent(readingItem.delight!.celebrationCue);
     act(() => vi.advanceTimersByTime(1));
-    expect(companionBubble()).toHaveTextContent(
-      "다음 걸음으로 가요. 밀키가 공부 도구를 챙길게요."
-    );
+    expect(companionBubble()).toHaveTextContent("수달 또또");
+    expect(companionBubble()).not.toHaveTextContent("아기용 밀키");
+    expect(companionBubble()).not.toHaveTextContent("별토끼 버니");
     expect(screen.queryByText("별 1개를 모았어요")).not.toBeInTheDocument();
   });
 
@@ -860,6 +860,9 @@ describe("LearningSession", () => {
     await submitManualTranscript(readingItem.text);
 
     expect(companionBubble()).toHaveTextContent(readingItem.delight!.celebrationCue);
+    expect(companionBubble()).toHaveTextContent("수달 또또");
+    expect(companionBubble()).not.toHaveTextContent("별토끼 버니");
+    expect(companionBubble()).not.toHaveTextContent("아기용 밀키");
     expect(screen.queryByText(/별 1개를 모았어요/)).not.toBeInTheDocument();
   });
 
@@ -1359,6 +1362,30 @@ describe("LearningSession", () => {
     await expect(listQueuedAttempts()).resolves.toEqual([]);
   });
 
+  it("shows an accessible connection error when offline dictation cannot be queued", async () => {
+    const rawText = "봄 비";
+    const api = createLearningApi();
+    api.saveAttempt.mockRejectedValue(new TypeError("offline"));
+    const user = userEvent.setup();
+
+    render(<LearningSession
+      item={currentDictationPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      idFactory={offlineId}
+    />);
+
+    await user.type(await screen.findByLabelText("받아쓰기 답"), rawText);
+    await user.click(screen.getByRole("button", { name: "받아쓰기 확인" }));
+
+    expect(await screen.findByRole("alert")).toHaveTextContent(
+      "받아쓰기는 연결된 상태에서 다시 확인해 주세요."
+    );
+    await expect(listQueuedAttempts()).resolves.toEqual([]);
+    expect(JSON.stringify(await listActivities())).not.toContain(rawText);
+  });
+
   it("advances a receipt-completed wrong challenge but leaves an ordinary wrong dictation retryable", async () => {
     const challengeApi = createLearningApi();
     challengeApi.saveAttempt.mockResolvedValue(receipt({
@@ -1420,6 +1447,9 @@ describe("LearningSession", () => {
     await user.click(screen.getByRole("button", { name: "6" }));
     await user.click(screen.getByRole("button", { name: "답 확인" }));
     expect(await screen.findByText("도전 만점 보너스 별 2개")).toBeVisible();
+    expect(companionBubble()).toHaveTextContent("별토끼 버니");
+    expect(screen.getByRole("status", { name: "차나핑 코치" }))
+      .toHaveTextContent(/칭찬하는 것도 귀찮은데|살짝 기분이 좋아졌어|작은 반짝임으로 기록/);
   });
 
   it("never fabricates completion for a wrong challenge while its receipt is offline", async () => {

@@ -87,6 +87,54 @@ describe("magical companion components", () => {
     expect(screen.queryByText("별토끼 버니")).not.toBeInTheDocument();
     expect(screen.queryByText("차나핑")).not.toBeInTheDocument();
   });
+
+  it("keeps generic reading transitions with Toto and uses Bunny only for an authoritative reward", () => {
+    for (const moment of [
+      "next", "offline", "save-wait", "idle-confirm", "idle-paused"
+    ] as const) {
+      const view = render(<LearningCompanion
+        moment={moment}
+        studyDate="2026-07-19"
+        item={{
+          id: "reading-role-boundary",
+          kind: "korean-reading",
+          subject: "korean",
+          unit: "읽기",
+          title: "역할 확인",
+          level: "1단계",
+          readLabel: "읽기",
+          text: "봄비가 내려요.",
+          hint: "천천히 읽어요.",
+          tokens: ["봄비"]
+        }}
+      />);
+      expect(screen.getByRole("status", { name: "마법 친구 말풍선" }))
+        .toHaveTextContent("수달 또또");
+      expect(screen.queryByText("별토끼 버니")).not.toBeInTheDocument();
+      expect(screen.queryByText("아기용 밀키")).not.toBeInTheDocument();
+      view.unmount();
+    }
+
+    render(<LearningCompanion
+      moment="correct"
+      studyDate="2026-07-19"
+      item={{
+        id: "reading-reward-boundary",
+        kind: "korean-reading",
+        subject: "korean",
+        unit: "읽기",
+        title: "보상 확인",
+        level: "1단계",
+        readLabel: "읽기",
+        text: "봄비가 내려요.",
+        hint: "천천히 읽어요.",
+        tokens: ["봄비"]
+      }}
+      bunnyMoment="reward"
+    />);
+    expect(screen.getByRole("status", { name: "마법 친구 말풍선" }))
+      .toHaveTextContent("별토끼 버니");
+  });
   it.each(["lumi", "toto", "momo", "bongbong"] as const)(
     "renders accessible original art and a text fallback for %s",
     async (id) => {
