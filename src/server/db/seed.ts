@@ -444,7 +444,7 @@ const CALCULATION_ITEMS: LearningItemPayload[] = ([
   ["math-01", [13, 9, 4], ["+", "+"], "horizontal", 26,
     "숫자 카드 세 장이 기차처럼 이어졌어요.",
     "버니가 첫 카드부터 차례로 보자고 속삭였어요.",
-    "세 수를 모두 더했어요! 밀키가 손뽉을 쳤어요."],
+    "세 수를 모두 더했어요! 밀키가 손뼉을 쳤어요."],
   ["math-02", [21, 2, 8], ["+", "+"], "horizontal", 31,
     "두 번째 숫자가 숨바꼭질을 하려고 숨었어요.",
     "밀키가 숨은 숫자를 찾아 제자리에 놓았어요.",
@@ -480,7 +480,7 @@ const CALCULATION_ITEMS: LearningItemPayload[] = ([
   ["math-10", [56, 8], ["-"], "vertical", 48,
     "빼기 표시가 숫자 사이에서 길을 잃었어요.",
     "밀키가 표시를 제자리에 놓고 차분히 빼 보자고 했어요.",
-    "세로셍 마지막 답을 찾았어요! 버니가 완성 표시를 붙였어요."]
+    "세로셈 마지막 답을 찾았어요! 버니가 완성 표시를 붙였어요."]
 ] satisfies CalculationSeed[]).map(([
   id, operands, operators, layout, answer,
   mishap, openingCue, celebrationCue

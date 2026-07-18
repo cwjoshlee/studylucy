@@ -86,6 +86,26 @@ function parseJsonMessage(value: unknown): string | null {
   }
 }
 
+function parseOpenAiOutputText(value: unknown): string | null {
+  if (value === null || typeof value !== "object" || !("output" in value)) return null;
+  const output = (value as { output?: unknown }).output;
+  if (!Array.isArray(output)) return null;
+  const texts: string[] = [];
+  for (const item of output) {
+    if (item === null || typeof item !== "object" || !("content" in item)) continue;
+    const content = (item as { content?: unknown }).content;
+    if (!Array.isArray(content)) return null;
+    for (const entry of content) {
+      if (entry === null || typeof entry !== "object" || !("type" in entry)) return null;
+      const candidate = entry as { type?: unknown; text?: unknown };
+      if (candidate.type !== "output_text") continue;
+      if (typeof candidate.text !== "string") return null;
+      texts.push(candidate.text);
+    }
+  }
+  return texts.length === 1 ? texts[0]! : null;
+}
+
 export class AiCoachService {
   private readonly fetcher: Fetcher;
   private readonly now: () => Date;
@@ -266,14 +286,14 @@ export class AiCoachService {
       signal
     });
     if (!response.ok) throw new Error("provider request failed");
-    const body = await response.json() as {
-      output_text?: unknown;
-      usage?: { input_tokens?: number; output_tokens?: number };
-    };
+    const body: unknown = await response.json();
+    const usage = body !== null && typeof body === "object" && "usage" in body
+      ? (body as { usage?: { input_tokens?: number; output_tokens?: number } }).usage
+      : undefined;
     return {
-      text: body.output_text,
-      inputTokens: body.usage?.input_tokens ?? 0,
-      outputTokens: body.usage?.output_tokens ?? 0
+      text: parseOpenAiOutputText(body),
+      inputTokens: usage?.input_tokens ?? 0,
+      outputTokens: usage?.output_tokens ?? 0
     };
   }
 

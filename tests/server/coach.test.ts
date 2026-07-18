@@ -6,6 +6,21 @@ import { migrate } from "../../src/server/db/migrate";
 
 const key = Buffer.alloc(32, 7);
 
+function openAiResponse(message: string, inputTokens = 10, outputTokens = 10) {
+  return {
+    output: [{
+      type: "message",
+      role: "assistant",
+      content: [{
+        type: "output_text",
+        text: JSON.stringify({ message }),
+        annotations: []
+      }]
+    }],
+    usage: { input_tokens: inputTokens, output_tokens: outputTokens }
+  };
+}
+
 describe("AI coach privacy and budget boundaries", () => {
   it("uses randomized authenticated encryption and rejects a modified ciphertext", () => {
     const first = encryptApiKey("provider-secret", key);
@@ -105,16 +120,17 @@ describe("AI coach privacy and budget boundaries", () => {
   it("uses OpenAI Responses gpt-5-nano and makes no request after the cap is exhausted", async () => {
     const db = openDatabase(":memory:");
     migrate(db);
-    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      output_text: JSON.stringify({ message: "한 걸음씩 해 보자" }),
-      usage: { input_tokens: 10, output_tokens: 10 }
-    }), { status: 200 }));
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(
+      openAiResponse("한 걸음씩 해 보자")
+    ), { status: 200 }));
     const service = new AiCoachService({ db, encryptionKey: key, fetcher });
     service.updateSettings({
       enabled: true, provider: "openai", apiKey: "provider-secret", monthlyBudgetWon: 1
     });
 
-    await service.message({ event: "retry", subject: "korean", retryCount: 1, hintStage: "step" });
+    await expect(service.message({
+      event: "retry", subject: "korean", retryCount: 1, hintStage: "step"
+    })).resolves.toMatchObject({ source: "llm" });
     const fallback = await service.message({ event: "retry", subject: "korean", retryCount: 2, hintStage: "step" });
 
     expect(fetcher).toHaveBeenCalledOnce();
@@ -127,6 +143,34 @@ describe("AI coach privacy and budget boundaries", () => {
     db.close();
   });
 
+  it.each([
+    { output: [{ type: "message", content: [{ type: "output_text" }] }] },
+    {
+      output: [{
+        type: "message",
+        content: [
+          { type: "output_text", text: JSON.stringify({ message: "한 걸음씩 해 보자" }) },
+          { type: "output_text", text: JSON.stringify({ message: "차근차근 다시 해 보자" }) }
+        ]
+      }]
+    }
+  ])("falls back locally for malformed or ambiguous OpenAI raw output", async (providerBody) => {
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(providerBody), {
+      status: 200
+    }));
+    const service = new AiCoachService({ db, encryptionKey: key, fetcher });
+    service.updateSettings({ enabled: true, provider: "openai", apiKey: "provider-secret" });
+
+    await expect(service.message({
+      event: "retry", subject: "korean", retryCount: 1, hintStage: "step"
+    })).resolves.toMatchObject({ source: "local" });
+
+    expect(fetcher).toHaveBeenCalledOnce();
+    db.close();
+  });
+
   it("keeps the conservative reservation when observed token usage is higher", async () => {
     const db = openDatabase(":memory:");
     migrate(db);
@@ -135,10 +179,9 @@ describe("AI coach privacy and budget boundaries", () => {
         (month, provider, model, input_tokens, output_tokens, estimated_won, created_at)
       VALUES ('2026-07', 'openai', 'gpt-5-nano', 0, 0, 999, '2026-07-18T00:00:00.000Z')
     `).run();
-    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
-      output_text: JSON.stringify({ message: "한 걸음씩 해 보자" }),
-      usage: { input_tokens: 50_000, output_tokens: 50_000 }
-    }), { status: 200 }));
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(
+      openAiResponse("한 걸음씩 해 보자", 50_000, 50_000)
+    ), { status: 200 }));
     const service = new AiCoachService({
       db,
       encryptionKey: key,

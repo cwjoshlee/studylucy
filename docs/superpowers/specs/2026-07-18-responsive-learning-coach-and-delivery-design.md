@@ -28,7 +28,7 @@
 
 - 국어 음성 인식 UX와 자동 다음 문제 전환
 - 기존 친구 이름을 `별토끼 버니`, `아기용 밀키`로 변경
-- `math-calculation` 콘텐츠 모델, 계산 화면, 큰 숫자 키패드와 초기 연산 콘텐츠
+- 기존 `math-story`와 호환되는 계산 확장, 계산 화면, 큰 숫자 키패드와 초기 연산 콘텐츠
 - 사용자 제공 참고 이미지와 페르소나를 바탕으로 한 차나핑 하단 플로팅 코치
 - 선택적 저비용 LLM 차나핑 문구 생성과 안전한 로컬 대체 문구
 - 신뢰 기기의 유형별 등록 한도와 관리 화면
@@ -78,33 +78,42 @@
 
 ### 콘텐츠 모델
 
-기존 `korean-reading`, `math-story`와 별도로 다음 payload를 추가한다.
+초기 승인안은 새 판별자인 `kind: "math-calculation"`을 제안했지만, 이전 이미지가
+version 3 콘텐츠를 읽을 수 없어 이미지 롤백을 깨뜨리므로 이 결정은 폐기되었다.
+현재 계약은 기존 `math-story`의 모든 필드를 유지하고, 엄격한 선택적 `calculation`
+확장만 더한다.
 
 ```ts
-type MathCalculationPayload = {
-  kind: "math-calculation";
-  subject: "math";
-  unit: "받아올림과 받아내림" | "세 수의 혼합 계산";
-  title: string;
-  level: string;
-  operands: readonly number[];
-  operators: readonly ("+" | "-")[];
+type CalculationExtension = {
+  operands: readonly [number, number] | readonly [number, number, number];
+  operators: readonly ["+" | "-"] | readonly ["+" | "-", "+" | "-"];
   layout: "horizontal" | "vertical";
+};
+
+type MathStoryPayload = {
+  kind: "math-story";
+  subject: "math";
+  // 기존 question, unitLabel, text, readLabel, tokens, hint 필드도 그대로 유지한다.
   answer: number;
-  hint: string;
   checkHint: string;
+  calculation?: CalculationExtension;
   delight?: LearningDelight;
 };
 ```
 
 - `operands.length = operators.length + 1`, 2~3개의 수만 허용한다.
+- `calculation` 객체는 선언된 세 필드 외 값을 거부하며, 현재 이미지는
+  `isCalculationItem(payload)`로 `math-story` 중 계산형만 식별한다.
 - 서버는 payload의 `answer`만 정답 권위로 사용하고 클라이언트가 식을 계산해
   정답을 주장하지 못하게 한다.
-- `math-calculation`은 읽기 점수·전사문·읽기 통과를 요구하지 않는다. 기존
+- 계산형 `math-story`는 읽기 점수·전사문·읽기 통과를 요구하지 않는다. 기존
   저장 구조의 읽기 필드는 내부 호환 값으로만 유지하고, 국어 읽기 통계에는
   계산 시도를 포함하지 않는다.
 - 이전 문장제 `math-story`와 과거 시도는 계속 읽고 재생할 수 있다. 새로운
   기본 seed와 이후 LLM 생성은 계산형을 사용한다.
+- 이전 이미지는 선택적 확장을 무시하고 보존된 문장제 필드로 version 3 레코드를
+  계속 읽을 수 있다. 따라서 실패 배포에서는 DB나 콘텐츠를 되돌리지 않고
+  이미지만 되돌리는 롤백을 보장한다.
 
 ### 화면
 
@@ -244,6 +253,9 @@ main 병합
 ### GitHub Actions
 
 - 모든 PR과 `main` push에서 Node 22의 `npm run check`를 실행한다.
+- workflow 전체에 workflow/ref별 concurrency를 적용한다. 새 `main` push는 실행
+  시작 시점부터 이전 `main` workflow 전체를 취소하고, 서로 다른 PR/ref는 같은
+  그룹을 공유하거나 서로 취소하지 않는다.
 - 이미지는 검사 성공 뒤 `main` push에서만 GHCR에 게시한다.
 - `linux/amd64`와 `linux/arm64` manifest를 함께 게시해 NAS CPU에 맞는 이미지를
   선택한다.
@@ -272,7 +284,7 @@ main 병합
 - 차나핑과 LLM은 별을 주거나 빼지 않고, 5분 차감 사유를 변경하거나 숨기지 않는다.
 - 여러 신뢰 기기의 plan·cursor 충돌 규칙과 오프라인 순서 충돌 차감 면제는 그대로
   적용한다.
-- 콘텐츠 버전은 새 math payload와 이름 변경을 새 버전으로 승격한다. 과거 시도와
+- 콘텐츠 버전은 호환 가능한 math `calculation` 확장과 이름 변경을 새 버전으로 승격한다. 과거 시도와
   발급 계획은 당시 버전을 계속 참조한다.
 - 자동 배포 전 backup은 새로운 시도·별 원장·학습 내용을 지우는 롤백 수단이 아니며,
   데이터 복원은 기존 보호자 승인 절차로만 수행한다.
@@ -285,7 +297,8 @@ main 병합
 - 국어 서버 정답과 오프라인 로컬 정답의 단 한 번 자동 다음 문제 이동
 - 계산형은 음성·읽기 UI 없이 즉시 큰 키패드를 표시하고, 정답·오답·힌트·별 영수증을
   기존 권위 규칙으로 처리
-- 새 payload 스키마의 식·연산자·답 검증, 과거 math-story 호환, 국어 통계에서 계산
+- 엄격한 선택적 `calculation` 확장의 식·연산자·답 검증, 과거 math-story 호환,
+  `isCalculationItem` 식별, 국어 통계에서 계산
   시도 제외
 - 버니·밀키 이름이 홈·학습·콘텐츠·대체 설명에 일관되게 표시
 - 차나핑 각 사건, 말풍선 길이·안전 필터·쿨다운·reduced-motion·로컬 fallback

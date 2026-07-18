@@ -13,6 +13,7 @@
 - 기준 설계는 `docs/superpowers/specs/2026-07-18-responsive-learning-coach-and-delivery-design.md`다.
 - Node 명령은 `npx --yes -p node@22 -p npm@11.11.0 -- npm ...`로 실행한다.
 - `korean-reading`, `math-story`, version 1/2 콘텐츠, 과거 시도, 발급 계획, 별 원장과 오프라인 큐는 계속 읽힌다. 콘텐츠 버전을 낮추거나 `data`를 초기화하지 않는다.
+- 계산형도 `kind: "math-story"`와 모든 기존 필드를 유지하고 엄격한 선택적 `calculation` 확장으로만 식별한다. 이전 이미지로 이미지만 되돌리는 롤백에서도 version 3을 읽을 수 있어야 한다.
 - 음성 파일·전체 전사문·PIN·쿠키·기기 토큰·LLM API 키를 브라우저 저장소, LLM 요청, 앱 로그, 배포 로그에 넣지 않는다.
 - 수학 통과·별은 서버 영수증만 확정한다. 오프라인 통과는 `동기화 대기`로만 표시한다.
 - 새 터치 대상은 최소 48px이며 Galaxy Tab 가로 1368×912/1600×900, 세로 800×1280과 200% 확대를 검증한다.
@@ -24,7 +25,7 @@
 ## File Structure
 
 - `src/server/db/seed-v2.ts`: 현재 version 2 payload 보존본
-- `src/shared/learning.ts`: calculation payload 및 AI coach DTO
+- `src/shared/learning.ts`: 호환 가능한 `math-story` calculation 확장, `isCalculationItem` 및 AI coach DTO
 - `src/client/learning/calculation-keypad.tsx`: 계산 전용 숫자 키패드
 - `src/client/companions/chanaping-cues.ts`: 안전한 로컬 차나핑 문구
 - `src/client/companions/chanaping.tsx`: 플로팅 코치 표시
@@ -51,17 +52,28 @@ Tasks 1–3 land before Task 4 because the coach needs final learning events. Ta
 **Interfaces:**
 
 ```ts
-type MathCalculationPayload = {
-  kind: "math-calculation";
-  subject: "math";
-  unit: "받아올림과 받아내림" | "세 수의 혼합 계산";
+type CalculationExtension = {
   operands: [number, number] | [number, number, number];
   operators: ["+"] | ["-"] | ["+", "+"] | ["+", "-"] | ["-", "+"] | ["-", "-"];
   layout: "horizontal" | "vertical";
+};
+
+type MathStoryPayload = {
+  kind: "math-story";
+  subject: "math";
+  unit: "받아올림과 받아내림" | "세 수의 혼합 계산";
+  // 기존 text, readLabel, tokens, question, unitLabel, hint 필드도 그대로 유지한다.
   answer: number;
   checkHint: string;
+  calculation?: CalculationExtension;
 };
+
+type CalculationItem = MathStoryPayload & { calculation: CalculationExtension };
+declare function isCalculationItem(payload: LearningItemPayload): payload is CalculationItem;
 ```
+
+초기 승인안의 별도 `kind: "math-calculation"` 결정은 이전 이미지가 version 3을
+파싱하지 못하는 문제가 확인되어 폐기되었다. 위 호환 계약이 현재 구현 기준이다.
 
 - [ ] **Step 1: Write the failing test**
 
@@ -77,7 +89,7 @@ Expected: FAIL because calculation union, v3 seed, and subject-aware progress qu
 
 - [ ] **Step 3: Write minimal implementation**
 
-Copy current `INITIAL_ITEMS` unchanged to `seed-v2.ts` as `INITIAL_ITEMS_V2`. Make `seed.ts` insert v1/v2/v3 payloads, set version 3, and only promote with `active_version < 3`. Add math calculation curriculum nodes with `INSERT OR IGNORE`.
+Copy current `INITIAL_ITEMS` unchanged to `seed-v2.ts` as `INITIAL_ITEMS_V2`. Make `seed.ts` insert v1/v2/v3 payloads, set version 3, and only promote with `active_version < 3`. Add math calculation curriculum nodes with `INSERT OR IGNORE`. Every v3 calculation remains a valid legacy `math-story` with `question`, `unitLabel`, `text`, `readLabel`, `tokens`, `hint`, `answer`, and `checkHint`; add only the strict optional `calculation` object. This retained shape guarantees that an older image can ignore the extension during an image-only rollback without a data/content rollback.
 
 Use this exact v3 math sequence with Korean title/hint/cue text:
 
@@ -99,11 +111,11 @@ Use this exact v3 math sequence with Korean title/hint/cue text:
 For calculation attempts retain the existing wire shape but enforce:
 
 ```ts
-const isCalculation = payload.kind === "math-calculation";
+const isCalculation = isCalculationItem(payload);
 const readingPass = isCalculation
   ? true
   : input.readingScore >= 85 && input.missedTokens.length === 0;
-const mathPass = payload.kind === "math-story" || isCalculation
+const mathPass = payload.kind === "math-story"
   ? input.mathAnswer !== null && input.mathAnswer === payload.answer
   : null;
 const completed = isCalculation ? mathPass === true : readingPass && (mathPass ?? true);
@@ -141,7 +153,7 @@ export function CalculationKeypad(props: {
 }): JSX.Element;
 
 export function calculationExpression(
-  item: Extract<LearningItemPayload, { kind: "math-calculation" }>
+  item: CalculationItem
 ): string;
 ```
 
@@ -390,7 +402,7 @@ git commit -m "feat: add bounded ai coach settings"
 
 - [ ] **Step 1: Write the failing test**
 
-Assert workflow runs `npm run check` for PR/main, only main gets packages-write, builds amd64/arm64, tags main + SHA. Production Compose uses image/no build, preserves data mount/loopback 8787; smoke stays build/isolated. Dockerfile healthchecks health. Script uses mkdir lock/trap, backup-before-replace, image comparison, Docker+HTTP health, rollback, and contains no rm/data delete/port bind/webhook/.env print.
+Assert workflow runs `npm run check` for PR/main, only main gets packages-write, builds amd64/arm64, tags main + SHA. Assert workflow-level workflow/ref concurrency cancels the entire older `main` run from its start while unrelated PR refs do not share a group or cancel each other. Production Compose uses image/no build, preserves data mount/loopback 8787; smoke stays build/isolated. Dockerfile healthchecks health. Script uses mkdir lock/trap, backup-before-replace, image comparison, Docker+HTTP health, rollback, and contains no rm/data delete/port bind/webhook/.env print.
 
 - [ ] **Step 2: Run test to verify it fails**
 
@@ -402,7 +414,7 @@ Expected: FAIL because CI/pull script are absent and production Compose builds l
 
 - [ ] **Step 3: Write minimal implementation**
 
-Workflow checks out, Node 22, npm ci/check, Buildx/GHCR login/build-push only on main, amd64/arm64, main + immutable SHA tags, OCI revision/source labels. Dockerfile uses Node-fetch healthcheck; Compose uses an APP_IMAGE environment interpolation with default GHCR main tag.
+Workflow checks out, Node 22, npm ci/check, Buildx/GHCR login/build-push only on main, amd64/arm64, main + immutable SHA tags, OCI revision/source labels. Put `group: ${{ github.workflow }}-${{ github.ref }}` and conditional main-push `cancel-in-progress` at workflow scope, never only on `publish-image`, so a newer main run cancels an older verify/publish chain. Dockerfile uses Node-fetch healthcheck; Compose uses an APP_IMAGE environment interpolation with default GHCR main tag.
 
 `pull-deploy.sh` atomically creates deployment lock, pulls, compares `docker inspect --format '{{.Image}}'`, skips unchanged, backs up with `docker compose exec -T app npm run backup`, replaces app, polls Docker health + loopback API twelve times at five-second intervals. Failure overrides APP_IMAGE to prior image ID, starts prior app, checks once, and never restores/deletes data.
 

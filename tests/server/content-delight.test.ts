@@ -1,3 +1,4 @@
+import { readFileSync } from "node:fs";
 import { resolve } from "node:path";
 import * as ts from "typescript/unstable/ast";
 import { API } from "typescript/unstable/sync";
@@ -633,6 +634,47 @@ describe("approved magical companion seed content", () => {
     expect(INITIAL_CONTENT_VERSION).toBe(3);
     expect(INITIAL_ITEMS.filter((item) => item.subject === "korean")).toHaveLength(10);
     expect(INITIAL_ITEMS.filter((item) => item.subject === "math")).toHaveLength(10);
+  });
+
+  it("keeps corrected child-visible calculation delight copy distinct", () => {
+    const childCopy = INITIAL_ITEMS.flatMap(activeItemChildCopy).join("\n");
+
+    expect(childCopy).toContain("손뼉");
+    expect(childCopy).toContain("세로셈");
+    expect(childCopy).not.toMatch(/손뽉|세로셍/);
+  });
+
+  it("documents the rollback-compatible calculation payload contract", () => {
+    const documents = [
+      "docs/superpowers/specs/2026-07-18-responsive-learning-coach-and-delivery-design.md",
+      "docs/superpowers/plans/2026-07-18-responsive-learning-coach-and-delivery.md"
+    ].map((path) => readFileSync(resolve(path), "utf8"));
+
+    for (const document of documents) {
+      expect(document).toContain('kind: "math-story"');
+      expect(document).toContain("calculation?:");
+      expect(document).toContain("isCalculationItem");
+      expect(document).toContain("이미지만 되돌리는 롤백");
+      expect(document).not.toContain('kind: "math-calculation";');
+    }
+  });
+
+  it("keeps tablet and speech guides aligned with current reading and calculation behavior", () => {
+    const guides = [
+      "docs/android-tablet.md",
+      "docs/browser-speech-reading-judge.md"
+    ].map((path) => readFileSync(resolve(path), "utf8"));
+
+    for (const guide of guides) {
+      expect(guide).toContain("3초");
+      expect(guide).toContain("15초");
+      expect(guide).toContain("45초");
+      expect(guide).toContain("읽기 멈추기");
+      expect(guide).toContain("1.5초");
+      expect(guide).toContain("큰 숫자 키패드");
+      expect(guide).toContain("읽기 통과를 요구하지");
+      expect(guide).not.toMatch(/최대 1분|1분 제한|꼭 ["`]읽기 완료/);
+    }
   });
 
   it("gives every item distinct Korean delight copy and no commercial names", () => {

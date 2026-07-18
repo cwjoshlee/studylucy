@@ -127,7 +127,10 @@ describe("GHCR pull deployment configuration", () => {
     expect(workflow).toContain("type=sha");
     expect(workflow).toContain("org.opencontainers.image.revision=${{ github.sha }}");
     expect(workflow).toContain("org.opencontainers.image.source=${{ github.server_url }}/${{ github.repository }}");
-    expect(workflow).toMatch(/publish-image:[\s\S]*concurrency:\s*\n\s+group: main-publish\s*\n\s+cancel-in-progress: true/);
+    expect(workflow).toMatch(
+      /on:[\s\S]*\nconcurrency:\s*\n\s+group: \$\{\{ github\.workflow \}\}-\$\{\{ github\.ref \}\}\s*\n\s+cancel-in-progress: \$\{\{ github\.event_name == 'push' && github\.ref == 'refs\/heads\/main' \}\}\s*\n\njobs:/
+    );
+    expect(workflow).not.toMatch(/publish-image:[\s\S]*\n\s{4}concurrency:/);
   });
 
   it("documents a non-printed 32-byte base64 AI encryption key for production", async () => {
