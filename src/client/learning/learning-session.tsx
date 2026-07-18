@@ -22,6 +22,7 @@ import { LearningCompanion } from "../companions/learning-companion";
 import { ChanaPingCoach } from "../companions/chanaping";
 import type { CompanionMoment } from "../companions/cues";
 import { StarCelebration } from "../delight/star-celebration";
+import { StudentNavigation } from "../home/student-navigation";
 import {
   preserveFailedAttempt,
   preserveFailedIdleEvent
@@ -163,6 +164,8 @@ function LearningSessionView({
   const [speechUnavailable, setSpeechUnavailable] = useState(false);
   const [speechNotice, setSpeechNotice] = useState<string | null>(null);
   const [chanaPingHidden, setChanaPingHidden] = useState(false);
+  const [breakPaused, setBreakPaused] = useState(false);
+  const [navigationHelpOpen, setNavigationHelpOpen] = useState(false);
   const controllerRef = useRef<InactivityController | null>(null);
   const speechRef = useRef<SpeechController | null>(null);
   const completionCueTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -176,7 +179,8 @@ function LearningSessionView({
       authority.phase !== "offline-unissued"
     ) ||
     waiting ||
-    idleUi?.phase === "paused";
+    idleUi?.phase === "paused" ||
+    breakPaused;
 
   useEffect(() => {
     let active = true;
@@ -636,6 +640,17 @@ function LearningSessionView({
     controllerRef.current?.resume("deduction");
   }
 
+  function pauseForBreak(): void {
+    if (breakPaused) return;
+    controllerRef.current?.pause("guardian-break");
+    setBreakPaused(true);
+  }
+
+  function resumeAfterBreak(): void {
+    setBreakPaused(false);
+    controllerRef.current?.resume("guardian-break");
+  }
+
   function toggleSpeech(): void {
     if (learningControlsPaused || speechUnavailable || speechPhase === "finishing") return;
     recordActivity("touch");
@@ -701,12 +716,21 @@ function LearningSessionView({
   const coachRetryCount = mathRetryCount + (readingResult !== null && !readingResult.passed ? 1 : 0);
 
   return (
-    <section
-      className="learning-session"
-      aria-label={`${item.title} 학습`}
-      onPointerDown={() => recordActivity("touch")}
-      onKeyDown={() => recordActivity("keyboard")}
-    >
+    <div className="responsive-shell learning-responsive-shell">
+      <StudentNavigation
+        activeId={breakPaused ? "break" : navigationHelpOpen ? "help" : "today"}
+        onExit={() => onExit?.()}
+        onHelp={() => setNavigationHelpOpen((open) => !open)}
+        onPauseForBreak={pauseForBreak}
+        onToday={() => onExit?.()}
+      />
+      <div className="responsive-shell__content">
+        <section
+          className="learning-session"
+          aria-label={`${item.title} 학습`}
+          onPointerDown={() => recordActivity("touch")}
+          onKeyDown={() => recordActivity("keyboard")}
+        >
       {onExit ? (
         <button type="button" className="button-secondary" onClick={onExit}>
           대시보드로 돌아가기
@@ -900,6 +924,17 @@ function LearningSessionView({
           <button type="button" onClick={() => resumeAfterIdle("continue")}>학습 계속하기</button>
         </aside>
       ) : null}
+      {navigationHelpOpen ? (
+        <aside role="status">
+          <p>문제를 천천히 읽고 힌트나 학습 친구의 도움을 받아 보세요.</p>
+        </aside>
+      ) : null}
+      {breakPaused ? (
+        <aside role="alert" aria-label="잠깐 쉬기">
+          <p>쉬는 동안에는 무반응 시간을 세거나 별을 차감하지 않아요.</p>
+          <button type="button" onClick={resumeAfterBreak}>학습 계속</button>
+        </aside>
+      ) : null}
       <StarCelebration
         starAward={attemptReceipt?.starAward ?? null}
         reducedMotion={reducedMotion}
@@ -918,7 +953,9 @@ function LearningSessionView({
       >
         다음 문제
       </button>
-    </section>
+        </section>
+      </div>
+    </div>
   );
 }
 

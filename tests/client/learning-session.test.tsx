@@ -1840,6 +1840,65 @@ describe("LearningSession", () => {
     expect(screen.getByRole("button", { name: "답 확인" })).toBeEnabled();
   });
 
+  it("pauses inactivity for a requested break without clearing the answer or deducting a star", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-07-16T01:00:00.000Z"));
+    const api = createLearningApi();
+    render(<LearningSession item={mathPlanItem} api={api} planId="plan-daily-1" studyDate="2026-07-16" />);
+    await flushLearningSessionIssue();
+
+    fireEvent.change(screen.getByLabelText("답 쓰기"), {
+      target: { value: "5" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "메뉴 열기" }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "학생 메뉴" }))
+      .getByRole("button", { name: "잠깐 쉬기" }));
+
+    expect(screen.getByRole("button", { name: "학습 계속" })).toBeVisible();
+    expect(screen.getByLabelText("답 쓰기")).toHaveValue("5");
+    expect(screen.getByLabelText("답 쓰기")).toBeDisabled();
+
+    await act(async () => {
+      vi.advanceTimersByTime(900_000);
+      await Promise.resolve();
+    });
+    expect(api.sendIdleEvent).not.toHaveBeenCalled();
+    expect(screen.getByLabelText("답 쓰기")).toHaveValue("5");
+
+    fireEvent.click(screen.getByRole("button", { name: "학습 계속" }));
+    expect(screen.getByLabelText("답 쓰기")).toBeEnabled();
+    expect(screen.getByLabelText("답 쓰기")).toHaveValue("5");
+
+    await act(async () => {
+      vi.advanceTimersByTime(300_000);
+      await Promise.resolve();
+    });
+    expect(api.sendIdleEvent).toHaveBeenCalledOnce();
+  });
+
+  it("invokes student back navigation without clearing the current answer", async () => {
+    const api = createLearningApi();
+    const onExit = vi.fn();
+    render(
+      <LearningSession
+        item={mathPlanItem}
+        api={api}
+        planId="plan-daily-1"
+        studyDate="2026-07-16"
+        onExit={onExit}
+      />
+    );
+    await flushLearningSessionIssue();
+
+    fireEvent.change(screen.getByLabelText("답 쓰기"), {
+      target: { value: "5" }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "뒤로" }));
+
+    expect(onExit).toHaveBeenCalledOnce();
+    expect(screen.getByLabelText("답 쓰기")).toHaveValue("5");
+  });
+
   it("preserves screen lock while celebration ends then continues the 2/4/5-minute lifecycle", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-07-16T01:00:00.000Z"));

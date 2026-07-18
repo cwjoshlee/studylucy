@@ -60,7 +60,8 @@ describe("InactivityController", () => {
     "document-hidden",
     "screen-lock",
     "server-wait",
-    "celebration"
+    "celebration",
+    "guardian-break"
   ])("does not count time while paused for %s", (reason) => {
     const events: string[] = [];
     const controller = createInactivityController({

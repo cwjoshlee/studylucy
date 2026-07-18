@@ -194,6 +194,9 @@ describe("가족 로그인과 학생 홈", () => {
     expect(await screen.findByText("오프라인 학습 중")).toBeVisible();
     expect(screen.getByRole("heading", { name: "오늘의 학습" })).toBeVisible();
     expect(screen.getByText("모은 별 7개")).toBeVisible();
+    for (const label of ["뒤로", "오늘 학습", "도움말", "잠깐 쉬기"]) {
+      expect(screen.getByRole("button", { name: label })).toBeVisible();
+    }
     expect(api.studentLogin).not.toHaveBeenCalled();
   });
 
@@ -587,7 +590,7 @@ describe("가족 로그인과 학생 홈", () => {
     render(<App api={api} />);
 
     expect(await screen.findByRole("heading", { name: "보호자 공간" })).toBeVisible();
-    expect(screen.getByRole("tab", { name: "진도" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("button", { name: "진도" })).toHaveAttribute("aria-current", "page");
     expect(await screen.findByText("별 잔액 12개")).toBeVisible();
     expect(api.getGuardianProgress).toHaveBeenCalledOnce();
     expect(api.getGuardianStars).toHaveBeenCalledOnce();

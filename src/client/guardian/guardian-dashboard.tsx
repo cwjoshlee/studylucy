@@ -23,6 +23,10 @@ import type {
 import { ApiError } from "../api/client";
 import { listGuardianOfflineRejections } from "../offline/db";
 import {
+  ResponsiveNavigation,
+  type NavigationEntry
+} from "../navigation/responsive-navigation";
+import {
   AiLearningStudio,
   type AiLearningStudioApi,
   initialAiStudioTreeState,
@@ -67,6 +71,72 @@ type DashboardData = {
 
 const TABS = ["진도", "별 기록", "차감 승인", "학습 계획", "AI 학습실", "백업"] as const;
 type GuardianTab = typeof TABS[number];
+
+const GUARDIAN_ENTRIES: readonly NavigationEntry[] = [
+  { id: "progress", label: "진도" },
+  { id: "star-ledger", label: "별 기록" },
+  { id: "adjustment-approval", label: "차감 승인" },
+  { id: "daily-plan", label: "학습 계획" },
+  {
+    id: "ai",
+    label: "AI 학습실",
+    children: [
+      {
+        id: "ai/settings",
+        label: "AI 설정",
+        children: [
+          { id: "ai/provider-model", label: "제공자·모델 선택" },
+          { id: "ai/api-keys", label: "API 키 관리" },
+          { id: "ai/budget", label: "월 예산·사용량" }
+        ]
+      },
+      {
+        id: "ai/generation",
+        label: "문제 생성",
+        children: [
+          { id: "ai/generate-math", label: "수학 문제 배치" },
+          { id: "ai/generate-korean", label: "국어·받아쓰기 배치" }
+        ]
+      },
+      {
+        id: "ai/reports",
+        label: "보고서",
+        children: [
+          { id: "ai/today-report", label: "오늘의 학습 요약" },
+          { id: "ai/weekly-report", label: "주간 변화" }
+        ]
+      }
+    ]
+  },
+  { id: "backup", label: "백업" },
+  { id: "devices", label: "기기 관리" }
+];
+
+const TAB_ENTRY_ID: Record<Exclude<GuardianTab, "AI 학습실">, string> = {
+  "진도": "progress",
+  "별 기록": "star-ledger",
+  "차감 승인": "adjustment-approval",
+  "학습 계획": "daily-plan",
+  "백업": "backup"
+};
+
+const ENTRY_TAB: Record<string, Exclude<GuardianTab, "AI 학습실">> = {
+  progress: "진도",
+  "star-ledger": "별 기록",
+  "adjustment-approval": "차감 승인",
+  "daily-plan": "학습 계획",
+  backup: "백업"
+};
+
+const AI_ENTRY_PANEL: Record<string, AiStudioPanel> = {
+  "ai/provider-model": "settings",
+  "ai/api-keys": "settings",
+  "ai/budget": "settings",
+  "ai/generate-math": "generate-math",
+  "ai/generate-korean": "generate-korean",
+  "ai/today-report": "today-report",
+  "ai/weekly-report": "weekly-report"
+};
 
 const ADJUSTMENT_STATUS_LABELS: Record<PendingStarAdjustment["status"], string> = {
   pending: "대기",
@@ -126,8 +196,48 @@ export function GuardianDashboard({
   const [activeTab, setActiveTab] = useState<GuardianTab>("진도");
   const [aiPanel, setAiPanel] = useState<AiStudioPanel>("settings");
   const [aiTreeState, setAiTreeState] = useState(() => initialAiStudioTreeState("settings"));
+  const [expandedNavigationIds, setExpandedNavigationIds] = useState<string[]>([]);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [deviceManagementOpen, setDeviceManagementOpen] = useState(false);
+
+  const activeNavigationId = deviceManagementOpen
+    ? "devices"
+    : activeTab === "AI 학습실"
+      ? `ai/${aiTreeState.selectedLeaf}`
+      : TAB_ENTRY_ID[activeTab];
+
+  const toggleNavigation = (id: string) => {
+    setExpandedNavigationIds((current) => current.includes(id)
+      ? current.filter((entryId) => entryId !== id)
+      : [...current, id]);
+  };
+
+  const selectNavigation = (id: string) => {
+    if (id === "devices") {
+      setDeviceManagementOpen(true);
+      return;
+    }
+    setDeviceManagementOpen(false);
+    const tab = ENTRY_TAB[id];
+    if (tab !== undefined) {
+      setActiveTab(tab);
+      return;
+    }
+    if (id === "ai" || id.startsWith("ai/")) setActiveTab("AI 학습실");
+    const panel = AI_ENTRY_PANEL[id];
+    if (panel === undefined) return;
+    const selectedLeaf = id.slice("ai/".length);
+    const groupId = id === "ai/generate-math" || id === "ai/generate-korean"
+      ? "generation"
+      : id === "ai/today-report" || id === "ai/weekly-report"
+        ? "reports"
+        : "settings";
+    setAiPanel(panel);
+    setAiTreeState((current) => ({
+      selectedLeaf,
+      openGroups: Array.from(new Set([...current.openGroups, groupId]))
+    }));
+  };
 
   useEffect(() => {
     let active = true;
@@ -180,15 +290,6 @@ export function GuardianDashboard({
             {accountMenuOpen ? (
               <div className="account-menu">
                 <button
-                  onClick={() => {
-                    setDeviceManagementOpen(true);
-                    setAccountMenuOpen(false);
-                  }}
-                  type="button"
-                >
-                  기기 관리
-                </button>
-                <button
                   onClick={() => void onEnterStudentMode?.()}
                   type="button"
                 >
@@ -205,45 +306,57 @@ export function GuardianDashboard({
           </div>
         </div>
       </header>
-      {deviceManagementOpen ? (
-        <DeviceManagement
-          api={api}
-          onClose={() => setDeviceManagementOpen(false)}
+      <div className="responsive-shell">
+        <ResponsiveNavigation
+          activeId={activeNavigationId}
+          entries={GUARDIAN_ENTRIES}
+          expandedIds={expandedNavigationIds}
+          fabLabel="메뉴 열기"
+          label="보호자 메뉴"
+          onSelect={selectNavigation}
+          onToggle={toggleNavigation}
         />
-      ) : null}
-      <nav className="guardian-tabs" aria-label="보호자 메뉴" role="tablist">
-        {TABS.map((tab) => (
-          <button
-            aria-selected={tab === activeTab}
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            role="tab"
-            type="button"
-          >
-            {tab}
-          </button>
-        ))}
-      </nav>
-      <main className="guardian-panel" role="tabpanel" aria-label={activeTab}>
-        {activeTab === "진도" ? (
-          <ProgressPanel data={data} failed={failed} />
-        ) : null}
-        {activeTab === "별 기록" ? <LedgerPanel api={api} /> : null}
-        {activeTab === "차감 승인" ? <AdjustmentsPanel api={api} /> : null}
-        {activeTab === "학습 계획" ? <DailyPlanPanel api={api} /> : null}
-        {activeTab === "AI 학습실" ? (
-          supportsAiLearningStudio(api) ? (
-            <AiLearningStudio
+        <main
+          className="guardian-panel responsive-shell__content"
+          role="tabpanel"
+          aria-label={deviceManagementOpen ? "기기 관리" : activeTab}
+        >
+          {deviceManagementOpen ? (
+            <DeviceManagement
               api={api}
-              onPanelChange={setAiPanel}
-              onTreeStateChange={setAiTreeState}
-              panel={aiPanel}
-              treeState={aiTreeState}
+              onClose={() => setDeviceManagementOpen(false)}
             />
-          ) : <p role="alert">AI 학습실을 사용할 수 없어요.</p>
-        ) : null}
-        {activeTab === "백업" ? <BackupPanel api={api} /> : null}
-      </main>
+          ) : (
+            <>
+              {activeTab === "진도" ? (
+                <ProgressPanel data={data} failed={failed} />
+              ) : null}
+              {activeTab === "별 기록" ? <LedgerPanel api={api} /> : null}
+              {activeTab === "차감 승인" ? <AdjustmentsPanel api={api} /> : null}
+              {activeTab === "학습 계획" ? <DailyPlanPanel api={api} /> : null}
+              {activeTab === "AI 학습실" ? (
+                supportsAiLearningStudio(api) ? (
+                  <AiLearningStudio
+                    api={api}
+                    onPanelChange={setAiPanel}
+                    onTreeStateChange={(next) => {
+                      setAiTreeState(next);
+                      setExpandedNavigationIds((current) => Array.from(new Set([
+                        ...current,
+                        "ai",
+                        ...next.openGroups.map((group) => `ai/${group}`)
+                      ])));
+                    }}
+                    panel={aiPanel}
+                    treeState={aiTreeState}
+                  />
+                ) : <p role="alert">AI 학습실을 사용할 수 없어요.</p>
+              ) : null}
+              {activeTab === "백업" ? <BackupPanel api={api} /> : null}
+            </>
+          )}
+        </main>
+      </div>
     </div>
   );
 }
