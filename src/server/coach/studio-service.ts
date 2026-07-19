@@ -234,6 +234,38 @@ function parseOpenAiOutputText(value: unknown): unknown {
   return text;
 }
 
+function parseGeminiOutputText(value: unknown): unknown {
+  if (value === null || typeof value !== "object" || !("candidates" in value)) {
+    throw new AiStudioError("AI_STUDIO_PROVIDER_FAILED");
+  }
+  const candidates = (value as { candidates?: unknown }).candidates;
+  if (!Array.isArray(candidates)) {
+    throw new AiStudioError("AI_STUDIO_PROVIDER_FAILED");
+  }
+  const first = candidates[0];
+  if (first === null || typeof first !== "object" || !("content" in first)) {
+    throw new AiStudioError("AI_STUDIO_PROVIDER_FAILED");
+  }
+  const content = (first as { content?: unknown }).content;
+  if (content === null || typeof content !== "object" || !("parts" in content)) {
+    throw new AiStudioError("AI_STUDIO_PROVIDER_FAILED");
+  }
+  const parts = (content as { parts?: unknown }).parts;
+  if (!Array.isArray(parts)) {
+    throw new AiStudioError("AI_STUDIO_PROVIDER_FAILED");
+  }
+  const text = parts.flatMap((part) =>
+    part !== null && typeof part === "object" &&
+      typeof (part as { text?: unknown }).text === "string"
+      ? [(part as { text: string }).text]
+      : []
+  ).join("");
+  if (text.trim().length === 0) {
+    throw new AiStudioError("AI_STUDIO_PROVIDER_FAILED");
+  }
+  return text;
+}
+
 function completeUsage(provider: AiCoachProvider, value: unknown): CompleteUsage | null {
   if (value === null || typeof value !== "object") return null;
   const body = value as {
@@ -803,8 +835,7 @@ export class AiStudioService {
       const usage = completeUsage(reservation.provider, body);
       if (usage !== null) this.reconcileBudget(reservation, usage);
       const text = reservation.provider === "gemini"
-        ? (body as { candidates?: Array<{ content?: { parts?: Array<{ text?: unknown }> } }> })
-            .candidates?.[0]?.content?.parts?.[0]?.text
+        ? parseGeminiOutputText(body)
         : parseOpenAiOutputText(body);
       if (typeof text === "string" && text.includes(apiKey)) {
         throw new AiStudioError("AI_STUDIO_PROVIDER_FAILED");

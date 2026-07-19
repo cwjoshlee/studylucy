@@ -26,6 +26,59 @@ async function today(client: TestClient): Promise<TodayPlan> {
   return response.json() as TodayPlan;
 }
 
+async function setupTwoStudentDevices(harness: Harness): Promise<{
+  deviceA: TestClient;
+  deviceB: TestClient;
+  planA: TodayPlan;
+  planB: TodayPlan;
+}> {
+  const guardian = harness.client();
+  expect((await guardian.request("POST", "/api/auth/setup", {
+    ...FAMILY,
+    setupSecret: harness.config.setupSecret
+  })).statusCode).toBe(201);
+  expect((await guardian.request("POST", "/api/auth/guardian/login", {
+    password: FAMILY.password
+  })).statusCode).toBe(204);
+
+  expect((await guardian.request(
+    "POST",
+    "/api/guardian/devices/current",
+    { name: "Galaxy Tab A", deviceType: "tablet" }
+  )).statusCode).toBe(201);
+  const tokenA = guardian.cookie("sua_device")!;
+
+  guardian.setCookie("sua_device", "new-browser-for-stage-device-b");
+  expect((await guardian.request(
+    "POST",
+    "/api/guardian/devices/current",
+    { name: "Galaxy Tab B", deviceType: "tablet" }
+  )).statusCode).toBe(201);
+  const tokenB = guardian.cookie("sua_device")!;
+  expect((await guardian.request("PUT", "/api/auth/student-pin", {
+    pin: "2580"
+  })).statusCode).toBe(204);
+
+  const deviceA = harness.client();
+  const deviceB = harness.client();
+  deviceA.setCookie("sua_device", tokenA);
+  deviceB.setCookie("sua_device", tokenB);
+  await studentLogin(deviceA);
+  await studentLogin(deviceB);
+  const planA = await today(deviceA);
+  const planB = await today(deviceB);
+  expect(planA.planId).not.toBe(planB.planId);
+  return { deviceA, deviceB, planA, planB };
+}
+
+function mathStage(plan: TodayPlan, step: "foundation" | "current") {
+  const item = plan.items.find((candidate) =>
+    candidate.payload.subject === "math" && candidate.step === step
+  );
+  expect(item).toBeDefined();
+  return item!;
+}
+
 function passingAttempt(
   plan: TodayPlan,
   item: TodayPlan["items"][number],
@@ -64,6 +117,83 @@ describe("predeployment authority integration", () => {
   afterEach(async () => {
     await harness.close();
   });
+
+  it("unlocks device B current after device A completes the same-day foundation", async () => {
+    const { deviceA, deviceB, planA, planB } = await setupTwoStudentDevices(harness);
+    const foundationA = mathStage(planA, "foundation");
+    const foundationB = mathStage(planB, "foundation");
+    const currentB = mathStage(planB, "current");
+    expect(foundationA.id).toBe(foundationB.id);
+    expect(foundationA.version).toBe(foundationB.version);
+
+    const completed = await deviceA.request(
+      "POST",
+      "/api/student/attempts",
+      passingAttempt(planA, foundationA, "cross-device-foundation-0001")
+    );
+    expect(completed.statusCode).toBe(201);
+    expect(completed.json()).toMatchObject({ completed: true });
+
+    const projected = await today(deviceB);
+    expect(projected.completedItemIds).toContain(foundationB.id);
+    const opened = await deviceB.request(
+      "POST",
+      "/api/student/learning-sessions",
+      { planId: planB.planId, itemId: currentB.id, contentVersion: currentB.version }
+    );
+    expect(opened.statusCode).toBe(201);
+    expect(opened.json()).toMatchObject({
+      learningSessionId: expect.any(String),
+      submitUntil: planB.submitUntil
+    });
+  });
+
+  it.each(["study-date", "content-version"] as const)(
+    "keeps device B current locked for a %s-mismatched historical completion",
+    async (mismatch) => {
+      const { deviceA, deviceB, planA, planB } = await setupTwoStudentDevices(harness);
+      const foundationA = mathStage(planA, "foundation");
+      const foundationB = mathStage(planB, "foundation");
+      const currentB = mathStage(planB, "current");
+      const clientAttemptId = `cross-device-${mismatch}-0001`;
+      expect((await deviceA.request(
+        "POST",
+        "/api/student/attempts",
+        passingAttempt(planA, foundationA, clientAttemptId)
+      )).statusCode).toBe(201);
+
+      if (mismatch === "study-date") {
+        harness.db.prepare(`
+          UPDATE attempts SET study_date = '2026-07-14'
+          WHERE client_attempt_id = ?
+        `).run(clientAttemptId);
+      } else {
+        const nextVersion = foundationA.version + 1;
+        harness.db.prepare(`
+          INSERT INTO content_versions (item_id, version, payload_json, created_at)
+          SELECT item_id, ?, payload_json, created_at
+          FROM content_versions WHERE item_id = ? AND version = ?
+        `).run(nextVersion, foundationA.id, foundationA.version);
+        harness.db.prepare(`
+          UPDATE issued_plan_items SET content_version = ?
+          WHERE plan_id = ? AND item_id = ?
+        `).run(nextVersion, planA.planId, foundationA.id);
+        harness.db.prepare(`
+          UPDATE attempts SET content_version = ?
+          WHERE client_attempt_id = ?
+        `).run(nextVersion, clientAttemptId);
+      }
+
+      expect((await today(deviceB)).completedItemIds).not.toContain(foundationB.id);
+      const locked = await deviceB.request(
+        "POST",
+        "/api/student/learning-sessions",
+        { planId: planB.planId, itemId: currentB.id, contentVersion: currentB.version }
+      );
+      expect(locked.statusCode).toBe(409);
+      expect(locked.json()).toEqual({ code: "STEP_LOCKED" });
+    }
+  );
 
   it("preserves stale A work, waives idle, recovers after revoke, and leaves B authoritative", async () => {
     const guardian = harness.client();
