@@ -33,6 +33,16 @@ Chrome 음성인식은 브라우저 기능에 의존합니다. 기기, 브라우
 
 실기기 인수에서는 Galaxy Tab을 가로로 두고 CSS viewport를 기록합니다. 핵심 버튼·입력칸의 실제 터치 영역 최솟값이 가로와 세로 모두 48px 이상인지 측정하고, 외부 키보드의 Tab/Shift+Tab 이동 순서와 `:focus-visible` 표시를 화면 캡처 또는 측정표로 남깁니다.
 
+## Step-up 인수 체크리스트
+
+- [ ] 1368×912 landscape: left navigation rail visible, floating menu hidden.
+- [ ] 800×1280 portrait: floating menu visible, left navigation rail hidden.
+- [ ] Resize/rotation keeps the current typed answer and AI menu leaf.
+- [ ] Wrong challenge response shows 도전 시도 완료 and next item opens.
+- [ ] All challenge responses correct: exactly one CHALLENGE_PERFECT ledger event appears.
+- [ ] A typed dictation can finish with the keyboard only.
+- [ ] An API key is never shown after saving.
+
 ## 실기기 증거 기록
 
 실제 측정 전에는 전부 `NOT RUN`으로 둡니다. 자동 브라우저 테스트를 실기기 PASS로 옮겨 적지 않습니다.
