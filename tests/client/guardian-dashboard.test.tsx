@@ -532,6 +532,119 @@ describe("GuardianDashboard", () => {
     expect(screen.queryByText(/서버 설정은 변경되지 않았어요/)).not.toBeInTheDocument();
   });
 
+  it("keeps the newest settings when an older budget reconciliation resolves last", async () => {
+    const user = userEvent.setup();
+    const initial = {
+      monthlyBudgetWon: 3000,
+      monthSpentWon: 1250,
+      providers: [
+        {
+          provider: "gemini" as const, enabled: true, model: "gemini-old",
+          hasApiKey: true, inputWonPer1K: 2, outputWonPer1K: 8
+        },
+        {
+          provider: "openai" as const, enabled: true, model: "gpt-old",
+          hasApiKey: true, inputWonPer1K: 3, outputWonPer1K: 12
+        }
+      ]
+    };
+    const older = { ...initial, monthlyBudgetWon: 4000, monthSpentWon: 1300 };
+    const newest = {
+      ...initial,
+      monthlyBudgetWon: 5000,
+      monthSpentWon: 2400,
+      providers: initial.providers.map((provider) => provider.provider === "gemini"
+        ? { ...provider, model: "gemini-new" }
+        : provider)
+    };
+    const oldRead = deferred<typeof initial>();
+    const newRead = deferred<typeof initial>();
+    const getAiStudioSettingsView = vi.fn()
+      .mockResolvedValueOnce(initial)
+      .mockReturnValueOnce(oldRead.promise)
+      .mockReturnValueOnce(newRead.promise);
+    const updateAiStudioProvider = vi.fn(async (
+      provider: "gemini" | "openai",
+      input: { model?: string; inputWonPer1K?: number; outputWonPer1K?: number }
+    ) => ({
+      ...initial.providers.find((value) => value.provider === provider)!,
+      ...input
+    }));
+    render(<GuardianDashboard api={createGuardianApi({
+      getAiStudioSettingsView,
+      updateAiStudioBudget: vi.fn().mockResolvedValue(older),
+      updateAiStudioProvider
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(screen.getByRole("treeitem", { name: "월 예산·사용량" }));
+    await user.click(await screen.findByRole("button", { name: "예산 저장" }));
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(2));
+
+    await user.click(screen.getByRole("treeitem", { name: "제공자·모델 선택" }));
+    const geminiModel = await screen.findByLabelText("Gemini 모델");
+    await user.clear(geminiModel);
+    await user.type(geminiModel, "gemini-new");
+    await user.click(screen.getByRole("button", { name: "Gemini 설정 저장" }));
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(3));
+
+    await act(async () => newRead.resolve(newest));
+    await waitFor(() => expect(screen.getByLabelText("Gemini 모델")).toHaveValue("gemini-new"));
+    await user.click(screen.getByRole("treeitem", { name: "월 예산·사용량" }));
+    expect(await screen.findByText("이번 달 사용 2,400원")).toBeVisible();
+
+    await act(async () => oldRead.resolve(older));
+    await waitFor(() => expect(screen.queryByText("이번 달 사용 1,300원")).not.toBeInTheDocument());
+    expect(screen.getByText("이번 달 사용 2,400원")).toBeVisible();
+  });
+
+  it("ignores an older settings rejection after a newer provider reconciliation succeeds", async () => {
+    const user = userEvent.setup();
+    const initial = {
+      monthlyBudgetWon: 3000,
+      monthSpentWon: 1250,
+      providers: [
+        {
+          provider: "gemini" as const, enabled: true, model: "gemini-current",
+          hasApiKey: true, inputWonPer1K: 2, outputWonPer1K: 8
+        },
+        {
+          provider: "openai" as const, enabled: true, model: "gpt-current",
+          hasApiKey: true, inputWonPer1K: 3, outputWonPer1K: 12
+        }
+      ]
+    };
+    const oldRead = deferred<typeof initial>();
+    const newRead = deferred<typeof initial>();
+    const getAiStudioSettingsView = vi.fn()
+      .mockResolvedValueOnce(initial)
+      .mockReturnValueOnce(oldRead.promise)
+      .mockReturnValueOnce(newRead.promise);
+    const updateAiStudioProvider = vi.fn(async (provider: "gemini" | "openai") =>
+      initial.providers.find((value) => value.provider === provider)!);
+    render(<GuardianDashboard api={createGuardianApi({
+      getAiStudioSettingsView,
+      updateAiStudioProvider
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await screen.findByLabelText("Gemini 모델");
+    await user.click(screen.getByRole("button", { name: "Gemini 설정 저장" }));
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(2));
+    await user.click(screen.getByRole("button", { name: "OpenAI 설정 저장" }));
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(3));
+
+    await act(async () => newRead.resolve(initial));
+    expect(await screen.findByText("설정을 저장했어요.")).toBeVisible();
+    await act(async () => oldRead.reject(new Error("older reload failed")));
+
+    await waitFor(() => expect(screen.queryByText(/현재 서버 상태를 확인하지 못했어요/))
+      .not.toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "최신 설정 다시 불러오기" }))
+      .not.toBeInTheDocument();
+    expect(screen.getByText("설정을 저장했어요.")).toBeVisible();
+  });
+
   it("clears an API key entry even when the save request fails", async () => {
     const user = userEvent.setup();
     const updateAiStudioProvider = vi.fn().mockRejectedValue(new Error("save failed"));
@@ -883,6 +996,58 @@ describe("GuardianDashboard", () => {
       items: [{ ...draft.items[0]!, payload: { ...acceptedPayload, title: "저장 중인 새 제목" }, status: "edited" }]
     });
     await waitFor(() => expect(screen.getByRole("button", { name: "초안 발행" })).toBeEnabled());
+  });
+
+  it("serializes accepted item saves so a full draft response cannot roll back another editor", async () => {
+    const user = userEvent.setup();
+    const draft = createAcceptedMathDraft();
+    draft.items.push({
+      ...draft.items[0]!,
+      id: "accepted-2",
+      payload: {
+        ...draft.items[0]!.payload,
+        id: "accepted-2",
+        title: "두 번째 받아올림"
+      }
+    });
+    const itemSave = deferred<AiDraftView>();
+    const updateAiDraftItem = vi.fn().mockReturnValue(itemSave.promise);
+    render(<GuardianDashboard api={createGuardianApi({
+      createAiDraft: vi.fn().mockResolvedValue(draft),
+      updateAiDraftItem
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+    const first = await screen.findByRole("article", { name: "받아올림 더하기 초안" });
+    const second = screen.getByRole("article", { name: "두 번째 받아올림 초안" });
+    const firstTitle = within(first).getByLabelText("문제 제목");
+    await user.clear(firstTitle);
+    await user.type(firstTitle, "서버가 확정한 최신 문제");
+    await user.click(within(first).getByRole("button", { name: "수정 저장" }));
+    await waitFor(() => expect(updateAiDraftItem).toHaveBeenCalledOnce());
+
+    expect(within(second).getByLabelText("문제 제목")).toBeDisabled();
+    expect(within(second).getByRole("button", { name: "수정 저장" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "초안 발행" })).toBeDisabled();
+    await user.click(within(second).getByRole("button", { name: "수정 저장" }));
+    expect(updateAiDraftItem).toHaveBeenCalledOnce();
+
+    const updated = createAcceptedMathDraft();
+    updated.items[0]!.payload = {
+      ...updated.items[0]!.payload,
+      title: "서버가 확정한 최신 문제"
+    };
+    updated.items[0]!.status = "edited";
+    updated.items.push(draft.items[1]!);
+    await act(async () => itemSave.resolve(updated));
+
+    expect(await screen.findByRole("article", { name: "서버가 확정한 최신 문제 초안" }))
+      .toBeVisible();
+    expect(updateAiDraftItem).toHaveBeenCalledOnce();
   });
 
   it("does not let an old edit replace a restarted same-identity generation", async () => {
