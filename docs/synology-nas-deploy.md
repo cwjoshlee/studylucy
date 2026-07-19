@@ -17,14 +17,28 @@
 
 릴리스 후보는 다음 여섯 하드닝 경계를 모두 만족해야 한다.
 
-- [ ] 기초를 마치기 전 현재·도전 문제를 직접 제출하면 `STEP_LOCKED`가 반환되고 시도·별·진도가 추가되지 않는다.
+- [ ] 기초 완료 전 현재 문제를 직접 제출하거나, 현재 완료 전 도전 문제를 직접 제출하면 각각 `STEP_LOCKED`가 반환되고 시도·별·진도가 추가되지 않는다.
 - [ ] 어느 기기에서든 해당 날짜의 일일 계획을 받은 뒤 보호자가 요구량을 바꾸면 `PLAN_LOCKED`가 반환된다.
 - [ ] 운영 환경의 HTTP API 키 저장은 `HTTPS_REQUIRED`로 거부되고, 어떤 응답에도 키 문자열이 포함되지 않는다.
-- [ ] 보호자 AI 학습실에서 이번 달 예상 예산·사용액과 제공자별 예상 입력·출력 단가를 확인하고 저장할 수 있다.
+- [ ] 보호자 AI 학습실에서 이번 달 예상 예산과 제공자별 예상 입력·출력 단가를 수정해 저장할 수 있고, 이번 달 사용액은 실제 사용 기록에서 계산된 읽기 전용 값으로 확인된다.
 - [ ] 생성 중 과목이나 단계를 바꾼 뒤 도착한 이전 AI 결과는 표시되거나 발행되지 않는다.
 - [ ] 숨겨진 정답 결과는 자동 진행하지 않고, 휴식 화면은 `학습 계속`에 초점을 둔 뒤 재개 시 보이는 호출 버튼으로 초점을 복원한다.
 
-릴리스 승인을 요청하기 전에 Node 22/npm 11.11.0으로 전체 `npm run check`를 통과시키고, `linux/amd64` production image를 로컬에서만 빌드한다. production 설정은 `SETUP_SECRET`과 `SESSION_PEPPER`가 각각 32자 이상이어야 하고 `APP_ORIGIN`은 HTTPS URL이어야 한다. `LLM_ENCRYPTION_KEY`는 생략할 수 있지만, 설정할 때는 정확히 32바이트를 표준 base64로 인코딩한 값이어야 한다. 아래 로컬 smoke는 암호화 설정 경로까지 확인하도록 고정된 비밀 아닌 32바이트 dummy key를 Node로 표준 base64 인코딩한다. 이 dummy 값은 실제 NAS `.env`에 사용하지 않는다.
+릴리스 승인을 요청하기 전에 Node 22/npm 11.11.0으로 전체 `npm run check`를 통과시키고, `linux/amd64` production image를 로컬에서만 빌드한다. 검토에서 승인된 정확한 commit SHA를 `RELEASE_SHA`로 지정한 뒤, 아래처럼 새 checkout에서 검증한다. 이 과정은 image를 로컬에만 만들며 publish하지 않는다.
+
+```bash
+set -eu
+: "${RELEASE_SHA:?검토에서 승인된 commit SHA를 RELEASE_SHA로 지정하세요}"
+git clone https://github.com/cwjoshlee/studylucy.git studylucy-release-check
+cd studylucy-release-check
+git checkout --detach "$RELEASE_SHA"
+[ "$(git rev-parse HEAD)" = "$RELEASE_SHA" ]
+[ -z "$(git status --porcelain)" ]
+npx --yes -p node@22 -p npm@11.11.0 -- npm run check
+docker build --platform linux/amd64 -t sua-learning:step-up-smoke .
+```
+
+production 설정은 `SETUP_SECRET`과 `SESSION_PEPPER`가 각각 32자 이상이어야 하고 `APP_ORIGIN`은 HTTPS URL이어야 한다. `LLM_ENCRYPTION_KEY`는 생략할 수 있지만, 설정할 때는 정확히 32바이트를 표준 base64로 인코딩한 값이어야 한다. 아래 로컬 smoke는 암호화 설정 경로까지 확인하도록 고정된 비밀 아닌 32바이트 dummy key를 Node로 표준 base64 인코딩한다. 이 dummy 값은 실제 NAS `.env`에 사용하지 않는다.
 
 ```bash
 set -eu
@@ -48,7 +62,7 @@ docker run --rm -d --platform linux/amd64 --name "$smoke_name" \
 health_body=
 attempt=0
 while [ "$attempt" -lt 30 ]; do
-  health_body="$(curl --fail --silent http://127.0.0.1:8787/api/health || true)"
+  health_body="$(curl --fail --silent --connect-timeout 2 --max-time 5 http://127.0.0.1:8787/api/health || true)"
   [ "$health_body" = '{"status":"ok"}' ] && break
   attempt=$((attempt + 1))
   sleep 1
