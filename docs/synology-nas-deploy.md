@@ -24,18 +24,31 @@
 - [ ] 생성 중 과목이나 단계를 바꾼 뒤 도착한 이전 AI 결과는 표시되거나 발행되지 않는다.
 - [ ] 숨겨진 정답 결과는 자동 진행하지 않고, 휴식 화면은 `학습 계속`에 초점을 둔 뒤 재개 시 보이는 호출 버튼으로 초점을 복원한다.
 
-릴리스 승인을 요청하기 전에 Node 22/npm 11.11.0으로 전체 `npm run check`를 통과시키고, `linux/amd64` production image를 로컬에서만 빌드한다. 검토에서 승인된 정확한 commit SHA를 `RELEASE_SHA`로 지정한 뒤, 아래처럼 새 checkout에서 검증한다. 이 과정은 image를 로컬에만 만들며 publish하지 않는다.
+릴리스 승인을 요청하기 전에 Node 22/npm 11.11.0으로 의존성을 새로 설치하고 전체 `npm run check`를 통과시킨 뒤, `linux/amd64` production image를 로컬에서만 빌드한다. 현재 사전 승인 단계의 HEAD는 아직 원격 GitHub에 push되지 않았으므로 원격 clone으로는 그 commit을 재현할 수 없다. 아래처럼 현재 로컬 저장소에서 정확한 HEAD를 읽어 분리된 임시 worktree를 만들고 검증한다. 원격 clone 검증은 명시적 릴리스 승인과 push가 끝나 해당 commit이 원격에서 조회될 때만 사용할 수 있다. 이 과정은 image를 로컬에만 만들며 publish하지 않는다.
 
 ```bash
 set -eu
-: "${RELEASE_SHA:?검토에서 승인된 commit SHA를 RELEASE_SHA로 지정하세요}"
-git clone https://github.com/cwjoshlee/studylucy.git studylucy-release-check
-cd studylucy-release-check
-git checkout --detach "$RELEASE_SHA"
+SOURCE_REPO="$(git rev-parse --show-toplevel)"
+RELEASE_SHA="$(git -C "$SOURCE_REPO" rev-parse HEAD)"
+CHECKOUT_ROOT="$(mktemp -d "${TMPDIR:-/tmp}/studylucy-release-check.XXXXXX")"
+CHECKOUT_DIR="$CHECKOUT_ROOT/worktree"
+cleanup_checkout() {
+  cd "$SOURCE_REPO" || true
+  git worktree remove --force "$CHECKOUT_DIR" >/dev/null 2>&1 || true
+  rmdir "$CHECKOUT_ROOT" >/dev/null 2>&1 || true
+}
+trap cleanup_checkout EXIT INT TERM
+
+git -C "$SOURCE_REPO" worktree add --detach "$CHECKOUT_DIR" "$RELEASE_SHA"
+cd "$CHECKOUT_DIR"
 [ "$(git rev-parse HEAD)" = "$RELEASE_SHA" ]
 [ -z "$(git status --porcelain)" ]
+npx --yes -p node@22 -p npm@11.11.0 -- npm ci
 npx --yes -p node@22 -p npm@11.11.0 -- npm run check
 docker build --platform linux/amd64 -t sua-learning:step-up-smoke .
+
+cleanup_checkout
+trap - EXIT INT TERM
 ```
 
 production 설정은 `SETUP_SECRET`과 `SESSION_PEPPER`가 각각 32자 이상이어야 하고 `APP_ORIGIN`은 HTTPS URL이어야 한다. `LLM_ENCRYPTION_KEY`는 생략할 수 있지만, 설정할 때는 정확히 32바이트를 표준 base64로 인코딩한 값이어야 한다. 아래 로컬 smoke는 암호화 설정 경로까지 확인하도록 고정된 비밀 아닌 32바이트 dummy key를 Node로 표준 base64 인코딩한다. 이 dummy 값은 실제 NAS `.env`에 사용하지 않는다.
