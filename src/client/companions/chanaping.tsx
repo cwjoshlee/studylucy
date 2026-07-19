@@ -41,7 +41,7 @@ export function ChanaPingCoach({
   const lastCueRef = useRef({ text: initialCue, at: Date.now() });
   const abortRef = useRef<AbortController | null>(null);
   const generationRef = useRef(0);
-  const lastRequestRef = useRef<{ key: string; at: number } | null>(null);
+  const lastSuccessfulRequestRef = useRef<{ key: string; at: number } | null>(null);
   const lastRemoteCueRef = useRef<{ text: string; at: number } | null>(null);
   const requestMessageRef = useRef(requestMessage);
 
@@ -74,16 +74,20 @@ export function ChanaPingCoach({
     const input = { event, subject, retryCount, hintStage };
     const key = JSON.stringify(input);
     const now = Date.now();
-    if (lastRequestRef.current?.key === key && now - lastRequestRef.current.at < REPEAT_WINDOW_MS) return;
-    lastRequestRef.current = { key, at: now };
+    if (
+      lastSuccessfulRequestRef.current?.key === key &&
+      now - lastSuccessfulRequestRef.current.at < REPEAT_WINDOW_MS
+    ) return;
     abortRef.current?.abort();
     const controller = new AbortController();
     abortRef.current = controller;
     const generation = ++generationRef.current;
     setRemoteCue(null);
     void send(input, controller.signal).then((response) => {
-      if (!controller.signal.aborted && generation === generationRef.current && response.source === "llm") {
+      if (!controller.signal.aborted && generation === generationRef.current) {
         const receivedAt = Date.now();
+        lastSuccessfulRequestRef.current = { key, at: receivedAt };
+        if (response.source !== "llm") return;
         if (
           lastRemoteCueRef.current?.text === response.message &&
           receivedAt - lastRemoteCueRef.current.at < REPEAT_WINDOW_MS
