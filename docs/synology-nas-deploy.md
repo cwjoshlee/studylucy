@@ -15,6 +15,15 @@
 
 ## Step-up 릴리스 인수
 
+릴리스 후보는 다음 여섯 하드닝 경계를 모두 만족해야 한다.
+
+- [ ] 기초를 마치기 전 현재·도전 문제를 직접 제출하면 `STEP_LOCKED`가 반환되고 시도·별·진도가 추가되지 않는다.
+- [ ] 어느 기기에서든 해당 날짜의 일일 계획을 받은 뒤 보호자가 요구량을 바꾸면 `PLAN_LOCKED`가 반환된다.
+- [ ] 운영 환경의 HTTP API 키 저장은 `HTTPS_REQUIRED`로 거부되고, 어떤 응답에도 키 문자열이 포함되지 않는다.
+- [ ] 보호자 AI 학습실에서 이번 달 예상 예산·사용액과 제공자별 예상 입력·출력 단가를 확인하고 저장할 수 있다.
+- [ ] 생성 중 과목이나 단계를 바꾼 뒤 도착한 이전 AI 결과는 표시되거나 발행되지 않는다.
+- [ ] 숨겨진 정답 결과는 자동 진행하지 않고, 휴식 화면은 `학습 계속`에 초점을 둔 뒤 재개 시 보이는 호출 버튼으로 초점을 복원한다.
+
 릴리스 승인을 요청하기 전에 Node 22/npm 11.11.0으로 전체 `npm run check`를 통과시키고, `linux/amd64` production image를 로컬에서만 빌드한다. production 설정은 `SETUP_SECRET`과 `SESSION_PEPPER`가 각각 32자 이상이어야 하고 `APP_ORIGIN`은 HTTPS URL이어야 한다. `LLM_ENCRYPTION_KEY`는 생략할 수 있지만, 설정할 때는 정확히 32바이트를 표준 base64로 인코딩한 값이어야 한다. 아래 로컬 smoke는 암호화 설정 경로까지 확인하도록 고정된 비밀 아닌 32바이트 dummy key를 Node로 표준 base64 인코딩한다. 이 dummy 값은 실제 NAS `.env`에 사용하지 않는다.
 
 ```bash
@@ -54,4 +63,4 @@ printf '%s\n' "$health_body"
 
 임시 컨테이너는 loopback `127.0.0.1:8787`에만 열고 HTTP `/api/health` 응답이 정확히 `{"status":"ok"}`인지 확인한 뒤 성공·실패와 관계없이 제거한다. 여기서 HTTPS `APP_ORIGIN`은 production 설정 검증용 정규 origin이고, loopback HTTP는 로컬 컨테이너 health probe다. 이 인수 과정에서는 image를 publish하지 않는다.
 
-로컬 전체 검증과 임시 컨테이너 health PASS는 배포 후보의 인수 증거일 뿐, NAS 배포 완료 증거가 아니다. 별도 릴리스 승인 전에는 push, merge 또는 NAS 자동 배포를 시작하지 않는다. 승인 후 `main` image가 발행되면 기존 5분 pull 작업이 새 image ID를 감지해 교체하도록 두고, 실제 NAS의 Docker `healthy`, loopback health 응답, image ID와 rollback/data 보존 증거를 따로 확인한다.
+로컬 전체 검증과 임시 컨테이너 health PASS는 배포 후보의 인수 증거일 뿐, NAS 배포 완료 증거가 아니다. **현재 전체 브랜치를 대상으로 한 새로운 최종 검토**와 그 결과를 확인한 뒤 받는 **새로운 명시적 릴리스 승인** 전에는 push, merge, image publish 또는 NAS 자동 배포를 시작하지 않는다. 승인 후 `main` image가 발행되면 기존 5분 pull 작업이 새 image ID를 감지해 교체하도록 두고, 실제 NAS의 Docker `healthy`, loopback health 응답, image ID와 rollback/data 보존 증거를 따로 확인한다.
