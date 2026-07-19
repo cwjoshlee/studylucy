@@ -69,7 +69,10 @@ export function DictationPanel({
             autoCapitalize="off"
             spellCheck={false}
             value={text}
-            onChange={(event) => setText(event.target.value)}
+            onChange={(event) => {
+              if (disabled) return;
+              setText(event.target.value);
+            }}
             disabled={disabled}
           />
         </label>
