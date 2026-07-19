@@ -147,25 +147,48 @@ export function AiLearningStudio({
   const openGroups = new Set(currentTreeState.openGroups);
   const selectedLeaf = currentTreeState.selectedLeaf;
   const [focusedItem, setFocusedItem] = useState(currentTreeState.selectedLeaf);
+  const focusedItemRef = useRef(focusedItem);
+  const previousSelectedLeafRef = useRef(selectedLeaf);
   const treeRef = useRef<HTMLElement>(null);
   const treeItemRefs = useRef(new Map<string, HTMLElement>());
   const focusRequested = useRef(false);
   const [settings, setSettings] = useState<AiStudioSettingsView | null>(null);
   const [settingsFailed, setSettingsFailed] = useState(false);
+  const visibleTreeItems = TREE_GROUPS.flatMap((group) => [
+    `group:${group.id}`,
+    ...(openGroups.has(group.id) ? group.leaves.map((leaf) => leaf.id) : [])
+  ]);
+  const selectedOwner = groupForLeaf(selectedLeaf);
+  const selectedVisibleItem = visibleTreeItems.includes(selectedLeaf)
+    ? selectedLeaf
+    : selectedOwner !== null && visibleTreeItems.includes(`group:${selectedOwner}`)
+      ? `group:${selectedOwner}`
+      : visibleTreeItems[0]!;
+  const rovingItem = visibleTreeItems.includes(focusedItem)
+    ? focusedItem
+    : selectedVisibleItem;
+  const openGroupsKey = currentTreeState.openGroups.join("|");
+  focusedItemRef.current = focusedItem;
 
   useEffect(() => {
     const activeElement = document.activeElement;
     const treeOwnsFocus = activeElement instanceof HTMLElement &&
       treeRef.current?.contains(activeElement) === true;
-    setFocusedItem(selectedLeaf);
-    if (treeOwnsFocus) treeItemRefs.current.get(selectedLeaf)?.focus();
-  }, [selectedLeaf]);
+    const selectionChanged = previousSelectedLeafRef.current !== selectedLeaf;
+    previousSelectedLeafRef.current = selectedLeaf;
+    const currentFocusedItem = focusedItemRef.current;
+    const nextFocusedItem = selectionChanged || !visibleTreeItems.includes(currentFocusedItem)
+      ? selectedVisibleItem
+      : currentFocusedItem;
+    setFocusedItem(nextFocusedItem);
+    if (treeOwnsFocus) treeItemRefs.current.get(nextFocusedItem)?.focus();
+  }, [openGroupsKey, selectedLeaf, selectedVisibleItem]);
 
   useEffect(() => {
     if (!focusRequested.current) return;
     focusRequested.current = false;
     treeItemRefs.current.get(focusedItem)?.focus();
-  }, [focusedItem, openGroups]);
+  }, [focusedItem, openGroupsKey]);
 
   useEffect(() => {
     let active = true;
@@ -203,11 +226,6 @@ export function AiLearningStudio({
     focusRequested.current = true;
     setFocusedItem(itemId);
   };
-
-  const visibleTreeItems = TREE_GROUPS.flatMap((group) => [
-    `group:${group.id}`,
-    ...(openGroups.has(group.id) ? group.leaves.map((leaf) => leaf.id) : [])
-  ]);
 
   const handleTreeKey = (
     event: ReactKeyboardEvent<HTMLElement>,
@@ -295,7 +313,7 @@ export function AiLearningStudio({
                 else treeItemRefs.current.set(branchId, element);
               }}
               role="treeitem"
-              tabIndex={focusedItem === branchId ? 0 : -1}
+              tabIndex={rovingItem === branchId ? 0 : -1}
             >
               <button
                 className="ai-studio-tree__branch"
@@ -322,7 +340,7 @@ export function AiLearningStudio({
                         else treeItemRefs.current.set(leaf.id, element);
                       }}
                       role="treeitem"
-                      tabIndex={focusedItem === leaf.id ? 0 : -1}
+                      tabIndex={rovingItem === leaf.id ? 0 : -1}
                       type="button"
                     >
                       {leaf.label}

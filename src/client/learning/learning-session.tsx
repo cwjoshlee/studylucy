@@ -178,6 +178,7 @@ function LearningSessionView({
   const completionCueTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const automaticNextTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const automaticNextReceiptIdRef = useRef<string | null>(null);
+  const consumedAutomaticNextReceiptIdsRef = useRef(new Set<string>());
   const automaticNextAllowedRef = useRef(active && !breakPaused);
   const breakDialogRef = useRef<HTMLElement>(null);
   const breakInvokerRef = useRef<HTMLElement | null>(null);
@@ -371,16 +372,21 @@ function LearningSessionView({
 
   const scheduleAutomaticNext = useCallback((receiptId: string, generation: number) => {
     clearAutomaticNext();
-    if (!automaticNextAllowedRef.current) return;
+    if (
+      !automaticNextAllowedRef.current ||
+      consumedAutomaticNextReceiptIdsRef.current.has(receiptId)
+    ) return;
     automaticNextReceiptIdRef.current = receiptId;
     automaticNextTimerRef.current = setTimeout(() => {
       automaticNextTimerRef.current = null;
       if (
         attemptGenerationRef.current === generation &&
         automaticNextReceiptIdRef.current === receiptId &&
-        automaticNextAllowedRef.current
+        automaticNextAllowedRef.current &&
+        !consumedAutomaticNextReceiptIdsRef.current.has(receiptId)
       ) {
         automaticNextReceiptIdRef.current = null;
+        consumedAutomaticNextReceiptIdsRef.current.add(receiptId);
         onNext?.();
       }
     }, 1_500);
@@ -398,6 +404,7 @@ function LearningSessionView({
       breakPaused ||
       !attemptReceipt?.completed ||
       attemptReceipt.duplicate ||
+      consumedAutomaticNextReceiptIdsRef.current.has(attemptReceipt.id) ||
       automaticNextReceiptIdRef.current === attemptReceipt.id
     ) return;
     scheduleAutomaticNext(attemptReceipt.id, attemptGenerationRef.current);
@@ -1088,6 +1095,9 @@ function LearningSessionView({
         onClick={() => {
           recordActivity("continue");
           clearAutomaticNext();
+          if (attemptReceipt?.completed && !attemptReceipt.duplicate) {
+            consumedAutomaticNextReceiptIdsRef.current.add(attemptReceipt.id);
+          }
           onNext?.();
         }}
       >

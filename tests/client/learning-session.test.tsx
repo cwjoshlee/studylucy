@@ -717,6 +717,81 @@ describe("LearningSession", () => {
     expect(onNext).toHaveBeenCalledOnce();
   });
 
+  it("consumes a completed receipt before parent callback identity churn can re-arm it", async () => {
+    vi.useFakeTimers();
+    const api = createLearningApi();
+    let advanceCount = 0;
+    const firstOnNext = vi.fn(() => { advanceCount += 1; });
+    const { rerender } = render(<LearningSession
+      item={mathPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      onNext={firstOnNext}
+    />);
+    await flushLearningSessionIssue();
+
+    fireEvent.change(screen.getByLabelText("답 쓰기"), { target: { value: "5" } });
+    fireEvent.submit(screen.getByLabelText("답 쓰기").closest("form")!);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    act(() => vi.advanceTimersByTime(1_500));
+    expect(advanceCount).toBe(1);
+
+    const replacementOnNext = vi.fn(() => { advanceCount += 1; });
+    rerender(<LearningSession
+      item={mathPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      onNext={replacementOnNext}
+    />);
+    act(() => vi.advanceTimersByTime(5_000));
+
+    expect(advanceCount).toBe(1);
+    expect(replacementOnNext).not.toHaveBeenCalled();
+  });
+
+  it("allows a later completed attempt receipt to auto-advance once", async () => {
+    vi.useFakeTimers();
+    const api = createLearningApi();
+    api.saveAttempt
+      .mockResolvedValueOnce(receipt({ id: "attempt-auto-next-consumed" }))
+      .mockResolvedValueOnce(receipt({ id: "attempt-auto-next-new" }));
+    const onNext = vi.fn();
+    render(<LearningSession
+      item={mathPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      onNext={onNext}
+    />);
+    await flushLearningSessionIssue();
+
+    const answer = screen.getByLabelText("답 쓰기");
+    fireEvent.change(answer, { target: { value: "5" } });
+    fireEvent.submit(answer.closest("form")!);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    act(() => vi.advanceTimersByTime(1_500));
+    expect(onNext).toHaveBeenCalledOnce();
+
+    fireEvent.submit(answer.closest("form")!);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    act(() => vi.advanceTimersByTime(1_500));
+    expect(onNext).toHaveBeenCalledTimes(2);
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(onNext).toHaveBeenCalledTimes(2);
+  });
+
   it("pauses a completed receipt auto-next while hidden and schedules it once on reopen", async () => {
     vi.useFakeTimers();
     const api = createLearningApi();
@@ -2438,6 +2513,62 @@ describe("ChanaPingCoach activity lifecycle", () => {
     });
 
     expect(screen.queryByText("보이면 안 되는 늦은 응답")).not.toBeInTheDocument();
+    expect(requestMessage).toHaveBeenCalledOnce();
+  });
+
+  it("retries the same coach input after pause aborts it and ignores the late first response", async () => {
+    const first = deferred<{ message: string; source: "llm" }>();
+    const requestMessage = vi.fn()
+      .mockReturnValueOnce(first.promise)
+      .mockResolvedValueOnce({ message: "다시 집중해 보자, 차나~", source: "llm" as const });
+    const common = {
+      cueKey: "pause-retry-same-input",
+      event: "retry" as const,
+      hidden: false,
+      onHide: vi.fn(),
+      requestMessage,
+      retryCount: 1,
+      subject: "korean" as const
+    };
+    const view = render(<ChanaPingCoach {...common} paused={false} />);
+    await waitFor(() => expect(requestMessage).toHaveBeenCalledOnce());
+    const firstSignal = requestMessage.mock.calls[0]?.[1] as AbortSignal;
+
+    view.rerender(<ChanaPingCoach {...common} paused />);
+    expect(firstSignal.aborted).toBe(true);
+    view.rerender(<ChanaPingCoach {...common} paused={false} />);
+
+    await waitFor(() => expect(requestMessage).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("다시 집중해 보자, 차나~")).toBeVisible();
+    first.resolve({ message: "보이면 안 되는 첫 응답", source: "llm" });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.queryByText("보이면 안 되는 첫 응답")).not.toBeInTheDocument();
+  });
+
+  it("keeps a successful coach input deduplicated across pause and resume", async () => {
+    const requestMessage = vi.fn().mockResolvedValue({
+      message: "한 번 잘 불렀으면 또 부르기 귀찮아, 차나~",
+      source: "llm" as const
+    });
+    const common = {
+      cueKey: "pause-success-same-input",
+      event: "retry" as const,
+      hidden: false,
+      onHide: vi.fn(),
+      requestMessage,
+      retryCount: 1,
+      subject: "math" as const
+    };
+    const view = render(<ChanaPingCoach {...common} paused={false} />);
+    expect(await screen.findByText("한 번 잘 불렀으면 또 부르기 귀찮아, 차나~")).toBeVisible();
+
+    view.rerender(<ChanaPingCoach {...common} paused />);
+    view.rerender(<ChanaPingCoach {...common} paused={false} />);
+    await act(async () => { await Promise.resolve(); });
+
     expect(requestMessage).toHaveBeenCalledOnce();
   });
 });

@@ -1167,6 +1167,71 @@ describe("GuardianDashboard", () => {
     expect(initialItem).toHaveAttribute("tabindex", "-1");
   });
 
+  it("moves controlled tree focus to the visible owner when its selected leaf is closed", async () => {
+    const api = createGuardianApi();
+    const initialTree: AiStudioTreeState = {
+      selectedLeaf: "api-keys",
+      openGroups: ["settings"]
+    };
+    const hiddenSelectionTree: AiStudioTreeState = {
+      selectedLeaf: "generate-math",
+      openGroups: ["settings"]
+    };
+    const view = (treeState: AiStudioTreeState) => (
+      <AiLearningStudio
+        api={api}
+        panel="settings"
+        onPanelChange={vi.fn()}
+        treeState={treeState}
+        onTreeStateChange={vi.fn()}
+      />
+    );
+    const { rerender } = render(view(initialTree));
+    screen.getByRole("treeitem", { name: "API 키 관리" }).focus();
+
+    rerender(view(hiddenSelectionTree));
+
+    const owner = screen.getByRole("treeitem", { name: "문제 생성" });
+    await waitFor(() => expect(owner).toHaveFocus());
+    expect(owner).toHaveAttribute("tabindex", "0");
+    expect(screen.getAllByRole("treeitem").filter((item) => item.tabIndex === 0))
+      .toEqual([owner]);
+  });
+
+  it("keeps input focus while a hidden controlled selection gets a visible roving owner", async () => {
+    const user = userEvent.setup();
+    const api = createGuardianApi();
+    const initialTree: AiStudioTreeState = {
+      selectedLeaf: "api-keys",
+      openGroups: ["settings"]
+    };
+    const hiddenSelectionTree: AiStudioTreeState = {
+      selectedLeaf: "today-report",
+      openGroups: ["settings"]
+    };
+    const view = (treeState: AiStudioTreeState) => (
+      <AiLearningStudio
+        api={api}
+        panel="settings"
+        onPanelChange={vi.fn()}
+        treeState={treeState}
+        onTreeStateChange={vi.fn()}
+      />
+    );
+    const { rerender } = render(view(initialTree));
+    const apiKey = await screen.findByLabelText("Gemini API 키");
+    await user.type(apiKey, "guardian-secret");
+
+    rerender(view(hiddenSelectionTree));
+
+    const owner = screen.getByRole("treeitem", { name: "보고서" });
+    expect(apiKey).toHaveFocus();
+    expect(apiKey).toHaveValue("guardian-secret");
+    expect(owner).toHaveAttribute("tabindex", "0");
+    expect(screen.getAllByRole("treeitem").filter((item) => item.tabIndex === 0))
+      .toEqual([owner]);
+  });
+
   it("retains the selected settings leaf and expanded groups after AI studio re-entry", async () => {
     const user = userEvent.setup();
     render(<GuardianDashboard api={createGuardianApi()} />);
