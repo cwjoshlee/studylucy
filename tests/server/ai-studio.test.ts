@@ -124,6 +124,22 @@ function responseFor(url: string, value: unknown): Response {
     : new Response(JSON.stringify(openAiOutput(value)), { status: 200 });
 }
 
+function multipartGeminiResponse(
+  value: unknown,
+  usage = { promptTokenCount: 10, candidatesTokenCount: 10 }
+): Response {
+  const text = JSON.stringify(value);
+  return new Response(JSON.stringify({
+    candidates: [{ content: { parts: [
+      { text: text.slice(0, 7) },
+      { inlineData: { mimeType: "image/png", data: "ignored" } },
+      { text: text.slice(7, 19) },
+      { text: text.slice(19) }
+    ] } }],
+    usageMetadata: usage
+  }), { status: 200 });
+}
+
 function studio(options: {
   fetcher?: typeof fetch;
   timeoutMs?: number;
@@ -513,6 +529,86 @@ describe("AI learning studio", () => {
     expect(() => service.updateDraftItem(saved.id, saved.items[0]!.id, {
       payload: saved.items[0]!.payload
     })).toThrowError(AiStudioError);
+    db.close();
+  });
+
+  it("parses multipart Gemini generation and review responses with exact usage", async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const prompt = promptFromRequest(url, init!);
+      const value = prompt.action === "generate"
+        ? { items: [mathItem(
+            url.includes("googleapis.com") ? "gemini" : "openai",
+            url.includes("googleapis.com") ? 31 : 32
+          )] }
+        : { accepted: true, reasons: [] };
+      return url.includes("googleapis.com")
+        ? multipartGeminiResponse(value, { promptTokenCount: 13, candidatesTokenCount: 7 })
+        : responseFor(url, value);
+    });
+    const { db, service } = studio({ fetcher });
+    service.updateProvider("gemini", { enabled: true, apiKey: secrets.gemini });
+    service.updateProvider("openai", { enabled: true, apiKey: secrets.openai });
+
+    const draft = await service.createDraft({
+      subject: "math", step: "current", count: 2, difficulty: 4, weakTopics: []
+    });
+
+    expect(draft.items).toHaveLength(2);
+    expect(draft.items.every((item) => item.review.accepted)).toBe(true);
+    expect(db.prepare(`
+      SELECT COUNT(*) AS calls, SUM(input_tokens) AS inputTokens,
+             SUM(output_tokens) AS outputTokens
+      FROM ai_coach_usage WHERE provider = 'gemini'
+    `).get()).toEqual({ calls: 2, inputTokens: 26, outputTokens: 14 });
+    db.close();
+  });
+
+  it("parses a multipart Gemini guardian report and rejects all-empty parts", async () => {
+    let empty = false;
+    const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>
+      empty
+        ? new Response(JSON.stringify({
+            candidates: [{ content: { parts: [
+              { inlineData: { mimeType: "image/png", data: "ignored" } },
+              { text: "  " }
+            ] } }],
+            usageMetadata: { promptTokenCount: 5, candidatesTokenCount: 2 }
+          }), { status: 200 })
+        : multipartGeminiResponse(
+            { summary: "도전까지 차근차근 잘 마쳤어요." },
+            { promptTokenCount: 11, candidatesTokenCount: 6 }
+          ));
+    const { db, service } = studio({ fetcher });
+    db.prepare(`
+      INSERT INTO users (id, role, display_name, created_at)
+      VALUES ('multipart-report-student', 'student', '수아', ?)
+    `).run(now().toISOString());
+    db.prepare(`
+      INSERT INTO attempts (
+        id, client_attempt_id, user_id, item_id, content_version, study_date,
+        reading_score, reading_pass, missed_tokens_json, math_answer_json,
+        math_pass, duration_ms, difficulty_feedback, created_at, completed
+      ) VALUES (
+        'multipart-report-attempt', 'multipart-report-client',
+        'multipart-report-student', 'math-01', 4, '2026-07-18',
+        100, 1, '[]', '10', 1, 1000, NULL, ?, 1
+      )
+    `).run(now().toISOString());
+    service.updateProvider("gemini", { enabled: true, apiKey: secrets.gemini });
+
+    await expect(service.getReport({ from: "2026-07-18", to: "2026-07-18" }))
+      .resolves.toMatchObject({
+        source: "llm", summary: "도전까지 차근차근 잘 마쳤어요."
+      });
+    empty = true;
+    await expect(service.getReport({ from: "2026-07-18", to: "2026-07-18" }))
+      .resolves.toMatchObject({ source: "local" });
+    expect(db.prepare(`
+      SELECT COUNT(*) AS calls, SUM(input_tokens) AS inputTokens,
+             SUM(output_tokens) AS outputTokens
+      FROM ai_coach_usage WHERE provider = 'gemini'
+    `).get()).toEqual({ calls: 2, inputTokens: 16, outputTokens: 8 });
     db.close();
   });
 

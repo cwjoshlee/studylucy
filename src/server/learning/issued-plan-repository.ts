@@ -97,13 +97,24 @@ export function assertIssuedStepUnlocked(
     SELECT ipi.item_id AS itemId, ipi.step,
            cv.payload_json AS payloadJson,
            EXISTS (
-             SELECT 1 FROM attempts AS a
+             SELECT 1
+             FROM attempts AS a
+             JOIN issued_daily_plans AS completed_plan
+               ON completed_plan.id = a.issued_plan_id
+              AND completed_plan.student_id = a.user_id
+              AND completed_plan.study_date = a.study_date
+             JOIN issued_plan_items AS completed_item
+               ON completed_item.plan_id = completed_plan.id
+              AND completed_item.item_id = a.item_id
+              AND completed_item.content_version = a.content_version
              WHERE a.user_id = ?
-               AND a.issued_plan_id = ipi.plan_id
+               AND a.study_date = requested.study_date
                AND a.item_id = ipi.item_id
+               AND a.content_version = ipi.content_version
                AND a.completed = 1
            ) AS completed
     FROM issued_plan_items AS ipi
+    JOIN issued_daily_plans AS requested ON requested.id = ipi.plan_id
     JOIN content_versions AS cv
       ON cv.item_id = ipi.item_id
      AND cv.version = ipi.content_version

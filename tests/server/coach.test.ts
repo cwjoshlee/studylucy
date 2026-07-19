@@ -143,6 +143,55 @@ describe("AI coach privacy and budget boundaries", () => {
     db.close();
   });
 
+  it("joins every Gemini text part in order and reconciles complete usage once", async () => {
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const json = JSON.stringify({ message: "한 걸음씩 해 보자" });
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      candidates: [{ content: { parts: [
+        { text: json.slice(0, 8) },
+        { inlineData: { mimeType: "image/png", data: "ignored" } },
+        { text: json.slice(8) }
+      ] } }],
+      usageMetadata: { promptTokenCount: 17, candidatesTokenCount: 9 }
+    }), { status: 200 }));
+    const service = new AiCoachService({ db, encryptionKey: key, fetcher });
+    service.updateSettings({ enabled: true, apiKey: "provider-secret" });
+
+    await expect(service.message({
+      event: "retry", subject: "math", retryCount: 1, hintStage: "first"
+    })).resolves.toEqual({ message: "한 걸음씩 해 보자", source: "llm" });
+    expect(db.prepare(`
+      SELECT provider, input_tokens AS inputTokens,
+             output_tokens AS outputTokens, estimated_won AS estimatedWon
+      FROM ai_coach_usage
+    `).all()).toEqual([{
+      provider: "gemini", inputTokens: 17, outputTokens: 9, estimatedWon: 1
+    }]);
+    db.close();
+  });
+
+  it("fails closed when Gemini returns no string text parts", async () => {
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      candidates: [{ content: { parts: [
+        { inlineData: { mimeType: "image/png", data: "ignored" } },
+        { text: "   " }
+      ] } }],
+      usageMetadata: { promptTokenCount: 8, candidatesTokenCount: 3 }
+    }), { status: 200 }));
+    const service = new AiCoachService({ db, encryptionKey: key, fetcher });
+    service.updateSettings({ enabled: true, apiKey: "provider-secret" });
+
+    await expect(service.message({
+      event: "retry", subject: "math", retryCount: 1, hintStage: "first"
+    })).resolves.toMatchObject({ source: "local" });
+    expect(db.prepare("SELECT COUNT(*) AS count FROM ai_coach_usage").get())
+      .toEqual({ count: 1 });
+    db.close();
+  });
+
   it.each([
     "천천히 다시 해 보자!",
     "한 걸음씩 해 보자. 잘하고 있어!",

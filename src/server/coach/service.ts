@@ -93,6 +93,31 @@ function parseOpenAiOutputText(value: unknown): string | null {
   return text.trim().length === 0 ? null : text;
 }
 
+function parseGeminiOutputText(value: unknown): string | null {
+  if (value === null || typeof value !== "object" || !("candidates" in value)) {
+    return null;
+  }
+  const candidates = (value as { candidates?: unknown }).candidates;
+  if (!Array.isArray(candidates)) return null;
+  const first = candidates[0];
+  if (first === null || typeof first !== "object" || !("content" in first)) {
+    return null;
+  }
+  const content = (first as { content?: unknown }).content;
+  if (content === null || typeof content !== "object" || !("parts" in content)) {
+    return null;
+  }
+  const parts = (content as { parts?: unknown }).parts;
+  if (!Array.isArray(parts)) return null;
+  const text = parts.flatMap((part) =>
+    part !== null && typeof part === "object" &&
+      typeof (part as { text?: unknown }).text === "string"
+      ? [(part as { text: string }).text]
+      : []
+  ).join("");
+  return text.trim().length === 0 ? null : text;
+}
+
 function estimatedInputTokens(input: CoachMessageRequest): number {
   return Math.max(1, Buffer.byteLength(`${PERSONA}\n${JSON.stringify(input)}`, "utf8"));
 }
@@ -369,7 +394,7 @@ export class AiCoachService {
         usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
       };
       return {
-        text: body.candidates?.[0]?.content?.parts?.[0]?.text,
+        text: parseGeminiOutputText(body),
         usage: completeUsage(
           body.usageMetadata?.promptTokenCount,
           body.usageMetadata?.candidatesTokenCount
