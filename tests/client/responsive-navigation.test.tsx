@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { act, cleanup, render, screen, within } from "@testing-library/react";
+import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -34,6 +34,143 @@ describe("ResponsiveNavigation", () => {
     { id: "devices", label: "기기 관리" }
   ];
 
+  function installLandscapeMedia(initialMatches: boolean): {
+    setMatches(matches: boolean): void;
+  } {
+    let matches = initialMatches;
+    const listeners = new Set<(event: MediaQueryListEvent) => void>();
+    const media = {
+      get matches() {
+        return matches;
+      },
+      media: "(min-width: 900px) and (orientation: landscape)",
+      onchange: null,
+      addEventListener: (
+        _type: string,
+        listener: (event: MediaQueryListEvent) => void
+      ) => listeners.add(listener),
+      removeEventListener: (
+        _type: string,
+        listener: (event: MediaQueryListEvent) => void
+      ) => listeners.delete(listener),
+      addListener: vi.fn(),
+      removeListener: vi.fn(),
+      dispatchEvent: vi.fn()
+    };
+    vi.stubGlobal("matchMedia", vi.fn().mockReturnValue(media));
+    return {
+      setMatches(nextMatches: boolean) {
+        matches = nextMatches;
+        act(() => {
+          for (const listener of listeners) {
+            listener({ matches: nextMatches } as MediaQueryListEvent);
+          }
+        });
+      }
+    };
+  }
+
+  it("makes underlying navigation and page content inert only while the compact drawer is modal", async () => {
+    const user = userEvent.setup();
+    installLandscapeMedia(false);
+    const onLesson = vi.fn();
+    const onAccount = vi.fn();
+    render(
+      <div className="guardian-shell">
+        <header data-testid="page-header">
+          <button onClick={onAccount} type="button">계정 메뉴</button>
+        </header>
+        <div className="responsive-shell">
+          <ResponsiveNavigation
+            activeId="progress"
+            entries={entries}
+            expandedIds={[]}
+            fabLabel="메뉴 열기"
+            label="보호자 메뉴"
+            onSelect={vi.fn()}
+            onToggle={vi.fn()}
+          />
+          <main data-testid="lesson-shell">
+            <button onClick={onLesson} type="button">학습 시작</button>
+          </main>
+        </div>
+      </div>
+    );
+
+    const fab = screen.getByRole("button", { name: "메뉴 열기" });
+    const lesson = screen.getByRole("button", { name: "학습 시작" });
+    const account = screen.getByRole("button", { name: "계정 메뉴" });
+    const rail = screen.getByRole("navigation", { name: "보호자 메뉴" });
+    await user.click(fab);
+
+    const drawer = screen.getByRole("dialog", { name: "보호자 메뉴" });
+    const lessonShell = screen.getByTestId("lesson-shell");
+    const pageHeader = screen.getByTestId("page-header");
+    expect(lessonShell).toHaveAttribute("inert");
+    expect(lessonShell).toHaveAttribute("aria-hidden", "true");
+    expect(pageHeader).toHaveAttribute("inert");
+    expect(pageHeader).toHaveAttribute("aria-hidden", "true");
+    expect(rail).toHaveAttribute("inert");
+    expect(rail).toHaveAttribute("aria-hidden", "true");
+    expect(drawer).not.toHaveAttribute("inert");
+    expect(fab).not.toHaveAttribute("inert");
+
+    lesson.click();
+    lesson.focus();
+    account.click();
+    expect(onLesson).not.toHaveBeenCalled();
+    expect(onAccount).not.toHaveBeenCalled();
+    expect(lesson).not.toHaveFocus();
+    expect(within(drawer).getByRole("button", { name: "메뉴 닫기" })).toHaveFocus();
+
+    await user.click(within(drawer).getByRole("button", { name: "메뉴 닫기" }));
+    expect(lessonShell).not.toHaveAttribute("inert");
+    expect(lessonShell).not.toHaveAttribute("aria-hidden");
+    expect(pageHeader).not.toHaveAttribute("inert");
+    expect(pageHeader).not.toHaveAttribute("aria-hidden");
+    expect(rail).not.toHaveAttribute("inert");
+    expect(rail).not.toHaveAttribute("aria-hidden");
+    lesson.focus();
+    lesson.click();
+    expect(lesson).toHaveFocus();
+    expect(onLesson).toHaveBeenCalledOnce();
+  });
+
+  it("moves focus from the landscape rail to the compact trigger after portrait rotation only", async () => {
+    const media = installLandscapeMedia(true);
+    render(
+      <div className="responsive-shell">
+        <ResponsiveNavigation
+          activeId="progress"
+          entries={entries}
+          expandedIds={[]}
+          fabLabel="메뉴 열기"
+          label="보호자 메뉴"
+          onSelect={vi.fn()}
+          onToggle={vi.fn()}
+        />
+        <main><button type="button">학습 시작</button></main>
+      </div>
+    );
+
+    const rail = screen.getByRole("navigation", { name: "보호자 메뉴" });
+    const railProgress = within(rail).getByRole("button", { name: "진도" });
+    const fab = screen.getByRole("button", { name: "메뉴 열기" });
+    railProgress.focus();
+    media.setMatches(false);
+    await waitFor(() => expect(fab).toHaveFocus());
+
+    const lesson = screen.getByRole("button", { name: "학습 시작" });
+    lesson.focus();
+    media.setMatches(true);
+    await Promise.resolve();
+    expect(lesson).toHaveFocus();
+
+    media.setMatches(false);
+    await Promise.resolve();
+    expect(lesson).toHaveFocus();
+  });
+
   it("renders one controlled tree in both mounted shells and shares callbacks", async () => {
     const user = userEvent.setup();
     const onSelect = vi.fn();
@@ -55,8 +192,9 @@ describe("ResponsiveNavigation", () => {
     expect(onSelect).toHaveBeenLastCalledWith("ai/generate-math");
 
     await user.click(screen.getByRole("button", { name: "메뉴 열기" }));
-    expect(screen.getAllByRole("button", { name: "AI 학습실" })).toHaveLength(2);
     const drawer = screen.getByRole("dialog", { name: "보호자 메뉴" });
+    expect(within(rail).getByRole("button", { name: "AI 학습실", hidden: true })).toBeInTheDocument();
+    expect(within(drawer).getByRole("button", { name: "AI 학습실" })).toBeInTheDocument();
     await user.click(within(drawer).getByRole("button", { name: "수학 문제 배치" }));
     expect(onSelect).toHaveBeenLastCalledWith("ai/generate-math");
 
@@ -82,6 +220,7 @@ describe("ResponsiveNavigation", () => {
       "aria-current",
       "page"
     );
+    const rail = screen.getByRole("navigation", { name: "보호자 메뉴" });
     await user.click(screen.getByRole("button", { name: "메뉴 열기" }));
     rerender(
       <ResponsiveNavigation
@@ -95,8 +234,11 @@ describe("ResponsiveNavigation", () => {
       />
     );
 
-    expect(screen.getAllByRole("button", { name: "기기 관리" })).toHaveLength(2);
-    for (const button of screen.getAllByRole("button", { name: "기기 관리" })) {
+    const drawer = screen.getByRole("dialog", { name: "보호자 메뉴" });
+    for (const button of [
+      within(rail).getByRole("button", { name: "기기 관리", hidden: true }),
+      within(drawer).getByRole("button", { name: "기기 관리" })
+    ]) {
       expect(button).toHaveAttribute("aria-current", "page");
     }
     expect(screen.getByRole("dialog", { name: "보호자 메뉴" })).toBeVisible();
