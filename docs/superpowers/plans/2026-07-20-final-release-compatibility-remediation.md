@@ -4,7 +4,7 @@
 
 **Goal:** Close the final whole-branch P2 findings for legacy progress consistency, complete Gemini billed usage, PWA rolling compatibility, and post-completion refresh recovery.
 
-**Architecture:** Public completion projection will use the same issued-plan provenance predicate as stage authority. Gemini complete usage will define billed output as candidate plus thinking tokens. The old AI Studio provider-array endpoint stays stable while a versioned full-settings endpoint serves the newer object contract. Student completion stays consumed but preserves a retryable refresh state instead of replacing the child lesson with a terminal load error.
+**Architecture:** Public completion projection will use the same issued-plan provenance predicate as stage authority. Gemini complete usage will define billed output as candidate plus thinking tokens. The unversioned AI Studio settings endpoint keeps the immediate predecessor's full-object contract, while a versioned full-settings endpoint makes the current contract explicit. The current client tries the versioned endpoint first and, only after a 404, runtime-validates the unversioned response as either the immediate-predecessor full object or an older provider array. Student completion stays consumed but preserves a retryable refresh state instead of replacing the child lesson with a terminal load error.
 
 **Tech Stack:** TypeScript, Fastify, better-sqlite3, React 19, Vitest, PWA service worker, Docker linux/amd64.
 
@@ -121,7 +121,7 @@ Use it in Coach and Studio completeUsage. A null total must leave reservation an
 
 **Interfaces:**
 
-- GET /api/guardian/ai-studio/settings remains the immediate predecessor's AiStudioSettingsView object for installed cached shells.
+- GET /api/guardian/ai-studio/settings remains the immediate predecessor's AiStudioSettingsView object for immediate-predecessor-compatible shells.
 - GET /api/guardian/ai-studio/settings/view returns the same AiStudioSettingsView object with providers, monthlyBudgetWon, and monthSpentWon for the current shell.
 - Current client reads the versioned endpoint first. On a 404 only, it runtime-validates the old unversioned response: a full object returns directly; an array is combined with actual coach budget/spend for an older array server. Provider save/delete uses stable existing mutation routes.
 
@@ -229,7 +229,7 @@ Add these statements to the appropriate guides:
 
     - Migrated attempts without trustworthy issued-plan provenance neither display complete nor unlock a later stage.
     - Gemini output budget includes candidate plus thinking tokens; malformed usage retains reservation.
-    - Old PWA shells use the provider-array settings endpoint and current shells use the versioned full-view endpoint during deploy or rollback.
+    - The unversioned settings endpoint stays on the immediate predecessor's full-object contract, and the versioned full-view endpoint is explicit for current shells. After a versioned 404, the current client runtime-validates the unversioned response as either that predecessor object or an older provider array; no single URL promises both unmodified response shapes.
     - A saved completion whose refresh fails stays visible with a retry that never resubmits it.
 
 - [ ] **Step 2: Run full verification**
