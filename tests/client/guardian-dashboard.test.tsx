@@ -6,7 +6,7 @@ import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GuardianDashboard } from "../../src/client/guardian/guardian-dashboard";
 import { ApiError } from "../../src/client/api/client";
-import type { GuardianOfflineRejection } from "../../src/shared/learning";
+import type { AiDraftView, GuardianOfflineRejection } from "../../src/shared/learning";
 import type {
   AppliedStarResult,
   ProcessedStarAdjustment
@@ -132,6 +132,41 @@ function deferred<T>() {
     reject = rejectPromise;
   });
   return { promise, reject, resolve };
+}
+
+function createAcceptedMathDraft(id = "draft-1"): AiDraftView {
+  return {
+    id,
+    subject: "math",
+    step: "current",
+    requestedCount: 8,
+    difficulty: 4,
+    weakTopics: [],
+    status: "draft",
+    items: [{
+      id: "accepted-1",
+      sourceProvider: "gemini",
+      payload: {
+        id: "accepted-1",
+        kind: "math-story",
+        subject: "math",
+        unit: "받아올림과 받아내림",
+        title: "받아올림 더하기",
+        level: "4단계",
+        readLabel: "식을 읽고 계산하기",
+        text: "28에 7을 더해요.",
+        hint: "일의 자리부터 계산해요.",
+        tokens: ["28", "7"],
+        question: "28 + 7은 얼마일까요?",
+        answer: 35,
+        unitLabel: "",
+        checkHint: "받아올림을 확인해요.",
+        calculation: { operands: [28, 7], operators: ["+"], layout: "vertical" }
+      },
+      review: { accepted: true, reasons: [] },
+      status: "accepted"
+    }]
+  };
 }
 
 describe("GuardianDashboard", () => {
@@ -314,6 +349,57 @@ describe("GuardianDashboard", () => {
     expect(screen.getByLabelText("월 예산 (원)")).toHaveValue(5000);
   });
 
+  it("reloads authoritative budget truth after a partial multi-call save failure", async () => {
+    const user = userEvent.setup();
+    const initial = {
+      monthlyBudgetWon: 3000,
+      monthSpentWon: 1250,
+      providers: [
+        {
+          provider: "gemini" as const, enabled: true, model: "gemini-2.5-flash",
+          hasApiKey: true, inputWonPer1K: 2, outputWonPer1K: 8
+        },
+        {
+          provider: "openai" as const, enabled: true, model: "gpt-5-mini",
+          hasApiKey: true, inputWonPer1K: 3, outputWonPer1K: 12
+        }
+      ]
+    };
+    const authoritativeAfterPartialSave = {
+      ...initial,
+      monthlyBudgetWon: 5000,
+      monthSpentWon: 1300
+    };
+    const getAiStudioSettingsView = vi.fn()
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(authoritativeAfterPartialSave);
+    const updateAiStudioBudget = vi.fn().mockResolvedValue(authoritativeAfterPartialSave);
+    const updateAiStudioProvider = vi.fn().mockImplementation(async (
+      provider: "gemini" | "openai"
+    ) => {
+      if (provider === "gemini") throw new Error("rate write failed");
+      return initial.providers[1];
+    });
+    render(<GuardianDashboard api={createGuardianApi({
+      getAiStudioSettingsView,
+      updateAiStudioBudget,
+      updateAiStudioProvider
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(screen.getByRole("treeitem", { name: "월 예산·사용량" }));
+    const budget = await screen.findByLabelText("월 예산 (원)");
+    await user.clear(budget);
+    await user.type(budget, "5000");
+    await user.click(screen.getByRole("button", { name: "예산 저장" }));
+
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(2));
+    expect(screen.getByLabelText("월 예산 (원)")).toHaveValue(5000);
+    expect(screen.getByText("이번 달 사용 1,300원")).toBeVisible();
+    expect(screen.getByText(/일부 설정이 저장되어 서버의 최신 값을 다시 불러왔어요/))
+      .toBeVisible();
+  });
+
   it("clears an API key entry even when the save request fails", async () => {
     const user = userEvent.setup();
     const updateAiStudioProvider = vi.fn().mockRejectedValue(new Error("save failed"));
@@ -327,6 +413,21 @@ describe("GuardianDashboard", () => {
     expect(await screen.findByText("설정을 저장하지 못했어요.")).toBeVisible();
     expect(apiKey).toHaveValue("");
     expect(document.documentElement.outerHTML).not.toContain("key-that-must-not-stay");
+  });
+
+  it("clears a typed API key even when deleting the saved key fails", async () => {
+    const user = userEvent.setup();
+    const updateAiStudioProvider = vi.fn().mockRejectedValue(new Error("delete failed"));
+    render(<GuardianDashboard api={createGuardianApi({ updateAiStudioProvider })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    const apiKey = await screen.findByLabelText("Gemini API 키");
+    await user.type(apiKey, "typed-key-that-must-not-stay");
+    await user.click(screen.getByRole("button", { name: "Gemini API 키 삭제" }));
+
+    expect(await screen.findByText("API 키를 삭제하지 못했어요.")).toBeVisible();
+    expect(apiKey).toHaveValue("");
+    expect(document.documentElement.outerHTML).not.toContain("typed-key-that-must-not-stay");
   });
 
   it("blocks invalid estimated budget values before any save request", async () => {
@@ -570,6 +671,88 @@ describe("GuardianDashboard", () => {
       items: [{ ...draft.items[0]!, payload: { ...acceptedPayload, title: "저장 중인 새 제목" }, status: "edited" }]
     });
     await waitFor(() => expect(screen.getByRole("button", { name: "초안 발행" })).toBeEnabled());
+  });
+
+  it("rejects an item edit response for a different active draft identity", async () => {
+    const user = userEvent.setup();
+    const draft = createAcceptedMathDraft();
+    const mismatched = createAcceptedMathDraft("other-draft");
+    mismatched.items[0]!.payload = {
+      ...mismatched.items[0]!.payload,
+      title: "다른 초안이 보낸 제목"
+    };
+    const updateAiDraftItem = vi.fn().mockResolvedValue(mismatched);
+    render(<GuardianDashboard api={createGuardianApi({
+      createAiDraft: vi.fn().mockResolvedValue(draft),
+      updateAiDraftItem
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+    const card = await screen.findByRole("article", { name: "받아올림 더하기 초안" });
+    await user.click(within(card).getByRole("button", { name: "수정 저장" }));
+
+    expect(await within(card).findByText("수정 결과가 현재 초안과 달라서 반영하지 않았어요."))
+      .toBeVisible();
+    expect(screen.queryByRole("article", { name: "다른 초안이 보낸 제목 초안" }))
+      .not.toBeInTheDocument();
+    expect(screen.queryByText("수정한 문제를 저장했어요.")).not.toBeInTheDocument();
+  });
+
+  it("rejects a publish response for a different active draft identity", async () => {
+    const user = userEvent.setup();
+    const draft = createAcceptedMathDraft();
+    const mismatched = { ...createAcceptedMathDraft("other-draft"), status: "published" as const };
+    render(<GuardianDashboard api={createGuardianApi({
+      createAiDraft: vi.fn().mockResolvedValue(draft),
+      publishAiDraft: vi.fn().mockResolvedValue(mismatched)
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+    await screen.findByRole("article", { name: "받아올림 더하기 초안" });
+    await user.click(screen.getByRole("button", { name: "초안 발행" }));
+
+    expect(await screen.findByText("발행 결과가 현재 초안과 달라서 반영하지 않았어요."))
+      .toBeVisible();
+    expect(screen.queryByText("발행을 완료했어요.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "초안 발행" })).toBeEnabled();
+  });
+
+  it("disables all accepted item edits while publication is pending", async () => {
+    const user = userEvent.setup();
+    const draft = createAcceptedMathDraft();
+    const publication = deferred<AiDraftView>();
+    const updateAiDraftItem = vi.fn();
+    render(<GuardianDashboard api={createGuardianApi({
+      createAiDraft: vi.fn().mockResolvedValue(draft),
+      updateAiDraftItem,
+      publishAiDraft: vi.fn().mockReturnValue(publication.promise)
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+    const card = await screen.findByRole("article", { name: "받아올림 더하기 초안" });
+    await user.click(screen.getByRole("button", { name: "초안 발행" }));
+
+    expect(within(card).getByLabelText("문제 제목")).toBeDisabled();
+    expect(within(card).getByLabelText("문제")).toBeDisabled();
+    expect(within(card).getByLabelText("정답")).toBeDisabled();
+    expect(within(card).getByRole("button", { name: "수정 저장" })).toBeDisabled();
+    await user.click(within(card).getByRole("button", { name: "수정 저장" }));
+    expect(updateAiDraftItem).not.toHaveBeenCalled();
+
+    publication.resolve({ ...draft, status: "published" });
+    expect(await screen.findByText("발행을 완료했어요.")).toBeVisible();
   });
 
   it("restores the selected AI panel and exposes a keyboard-operable tree hierarchy", async () => {

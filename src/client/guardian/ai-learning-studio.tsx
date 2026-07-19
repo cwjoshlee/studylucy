@@ -464,9 +464,11 @@ function BudgetSettingsPanel({
         reloadSettings === undefined) return;
     setSaving(true);
     setMessage("");
+    let successfulWrites = 0;
     try {
       await updateBudget({ monthlyBudgetWon: parsedBudget });
-      await Promise.all([
+      successfulWrites += 1;
+      const rateResults = await Promise.allSettled([
         api.updateAiStudioProvider("gemini", {
           inputWonPer1K: parsedGeminiInput,
           outputWonPer1K: parsedGeminiOutput
@@ -476,11 +478,24 @@ function BudgetSettingsPanel({
           outputWonPer1K: parsedOpenAiOutput
         })
       ]);
+      successfulWrites += rateResults.filter((result) => result.status === "fulfilled").length;
+      const rejectedRate = rateResults.find((result) => result.status === "rejected");
+      if (rejectedRate?.status === "rejected") throw rejectedRate.reason;
       const refreshed = await reloadSettings();
       onSettingsReloaded(refreshed);
       setMessage("예산과 예상 요금을 저장했어요.");
     } catch {
-      setMessage("예산 설정을 저장하지 못했어요. 서버 설정을 다시 불러와 확인해 주세요.");
+      if (successfulWrites > 0) {
+        try {
+          const refreshed = await reloadSettings();
+          onSettingsReloaded(refreshed);
+          setMessage("일부 설정이 저장되어 서버의 최신 값을 다시 불러왔어요. 내용을 확인해 주세요.");
+        } catch {
+          setMessage("일부 설정이 저장되었지만 최신 값을 다시 불러오지 못했어요. 페이지를 다시 열어 확인해 주세요.");
+        }
+      } else {
+        setMessage("예산 설정을 저장하지 못했어요. 서버 설정은 변경되지 않았어요.");
+      }
     } finally {
       setSaving(false);
     }
@@ -628,6 +643,7 @@ function ProviderCard({
     } catch {
       setMessage("API 키를 삭제하지 못했어요.");
     } finally {
+      setApiKey("");
       setSaving(false);
     }
   };
@@ -695,6 +711,15 @@ type GenerationState = {
   status: "idle" | "pending" | "failed" | "succeeded";
   draft: AiDraftView | null;
 };
+
+function draftMatchesIdentity(
+  draft: AiDraftView,
+  id: string,
+  subject: "math" | "korean",
+  step: LearningStep
+): boolean {
+  return draft.id === id && draft.subject === subject && draft.step === step;
+}
 
 function DraftPanel({
   api,
@@ -816,8 +841,17 @@ function DraftPanel({
     try {
       const published = await api.publishAiDraft(draftId);
       if (!isCurrentRequest(requestId, requestSubject, requestStep)) return;
+      if (generation.status !== "succeeded" || generation.requestId !== requestId ||
+          generation.draft?.id !== draftId || generation.draft.status !== "draft" ||
+          !draftMatchesIdentity(published, draftId, requestSubject, requestStep) ||
+          published.status !== "published") {
+        setMessage("발행 결과가 현재 초안과 달라서 반영하지 않았어요.");
+        return;
+      }
       setGeneration((current) => current.requestId === requestId &&
-        current.subject === requestSubject && current.step === requestStep
+        current.subject === requestSubject && current.step === requestStep &&
+        current.status === "succeeded" && current.draft?.id === draftId &&
+        current.draft.status === "draft"
         ? { ...current, draft: published }
         : current);
       setMessage("발행을 완료했어요.");
@@ -904,6 +938,7 @@ function DraftPanel({
           {matchingDraft.items.map((item) => (
             <DraftItemEditor
               api={api}
+              disabled={publishing}
               draftId={matchingDraft.id}
               item={item}
               key={item.id}
@@ -913,12 +948,22 @@ function DraftPanel({
                 else next.delete(itemId);
                 return next;
               })}
-              onUpdated={(updated) => setGeneration((current) =>
-                current.status === "succeeded" &&
-                current.requestId === generation.requestId &&
-                current.subject === subject && current.step === step
-                  ? { ...current, draft: updated }
-                  : current)}
+              onUpdated={(updated) => {
+                const requestId = generation.requestId;
+                const draftId = matchingDraft.id;
+                if (!isCurrentRequest(requestId, subject, step) ||
+                    generation.status !== "succeeded" || generation.draft?.id !== draftId ||
+                    generation.draft.status !== "draft" ||
+                    !draftMatchesIdentity(updated, draftId, subject, step) ||
+                    updated.status !== "draft") return false;
+                setGeneration((current) => current.status === "succeeded" &&
+                  current.requestId === requestId && current.subject === subject &&
+                  current.step === step && current.draft?.id === draftId &&
+                  current.draft.status === "draft"
+                    ? { ...current, draft: updated }
+                    : current);
+                return true;
+              }}
             />
           ))}
           <button
@@ -939,16 +984,18 @@ function DraftPanel({
 
 function DraftItemEditor({
   api,
+  disabled,
   draftId,
   item,
   onSavingChange,
   onUpdated
 }: {
   api: Pick<ApiClient, "updateAiDraftItem">;
+  disabled: boolean;
   draftId: string;
   item: AiDraftItemView;
   onSavingChange(itemId: string, isSaving: boolean): void;
-  onUpdated(draft: AiDraftView): void;
+  onUpdated(draft: AiDraftView): boolean;
 }) {
   const [payload, setPayload] = useState<LearningItemPayload>(item.payload);
   const [saving, setSaving] = useState(false);
@@ -957,7 +1004,7 @@ function DraftItemEditor({
 
   const save = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (saving || rejected) return;
+    if (disabled || saving || rejected) return;
     const parsed = LearningItemPayloadSchema.safeParse(payload);
     if (!parsed.success) {
       setMessage("문제 형식을 다시 확인해 주세요.");
@@ -967,8 +1014,9 @@ function DraftItemEditor({
     setSaving(true);
     setMessage("");
     try {
-      onUpdated(await api.updateAiDraftItem(draftId, item.id, parsed.data));
-      setMessage("수정한 문제를 저장했어요.");
+      const updated = await api.updateAiDraftItem(draftId, item.id, parsed.data);
+      if (onUpdated(updated)) setMessage("수정한 문제를 저장했어요.");
+      else setMessage("수정 결과가 현재 초안과 달라서 반영하지 않았어요.");
     } catch {
       setMessage("수정한 문제를 저장하지 못했어요.");
     } finally {
@@ -993,6 +1041,7 @@ function DraftItemEditor({
           <label>
             문제 제목
             <input
+              disabled={disabled || saving}
               maxLength={200}
               onChange={(event) => {
                 const title = event.currentTarget.value;
@@ -1008,6 +1057,7 @@ function DraftItemEditor({
               <label>
                 문제
                 <textarea
+                  disabled={disabled || saving}
                   onChange={(event) => {
                     const question = event.currentTarget.value;
                     setPayload((current) => current.kind === "math-story"
@@ -1021,6 +1071,7 @@ function DraftItemEditor({
               <label>
                 정답
                 <input
+                  disabled={disabled || saving}
                   onChange={(event) => {
                     const answer = event.currentTarget.valueAsNumber;
                     setPayload((current) => current.kind === "math-story"
@@ -1038,6 +1089,7 @@ function DraftItemEditor({
               <label>
                 제시 문장
                 <input
+                  disabled={disabled || saving}
                   onChange={(event) => {
                     const promptText = event.currentTarget.value;
                     setPayload((current) => current.kind === "korean-dictation"
@@ -1052,6 +1104,7 @@ function DraftItemEditor({
               <label>
                 정답 문장
                 <input
+                  disabled={disabled || saving}
                   onChange={(event) => {
                     const answerText = event.currentTarget.value;
                     setPayload((current) => current.kind === "korean-dictation"
@@ -1065,7 +1118,7 @@ function DraftItemEditor({
               </label>
             </>
           ) : null}
-          <button disabled={saving} type="submit">수정 저장</button>
+          <button disabled={disabled || saving} type="submit">수정 저장</button>
         </form>
       )}
       {message !== "" ? <p role="status">{message}</p> : null}
