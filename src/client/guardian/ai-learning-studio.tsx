@@ -1,4 +1,5 @@
 import {
+  useCallback,
   useEffect,
   useRef,
   useState,
@@ -163,6 +164,7 @@ export function AiLearningStudio({
   const [settings, setSettings] = useState<AiStudioSettingsView | null>(null);
   const [settingsFailed, setSettingsFailed] = useState(false);
   const settingsReadSequence = useRef(0);
+  const activeSettingsRead = useRef<number | null>(null);
   const settingsContext = `${panel}:${selectedLeaf}`;
   const previousSettingsContext = useRef(settingsContext);
   const visibleTreeItems = TREE_GROUPS.flatMap((group) => [
@@ -205,32 +207,10 @@ export function AiLearningStudio({
     treeItemRefs.current.get(focusedItem)?.focus();
   }, [focusedItem, openGroupsKey]);
 
-  useEffect(() => {
+  const reloadSettings: ReloadAiStudioSettings = useCallback(async () => {
     const requestId = ++settingsReadSequence.current;
+    activeSettingsRead.current = requestId;
     setSettingsFailed(false);
-    void loadAiStudioSettings(api).then(
-      (loaded) => {
-        if (settingsReadSequence.current !== requestId) return;
-        setSettings(loaded);
-      },
-      () => {
-        if (settingsReadSequence.current !== requestId) return;
-        setSettingsFailed(true);
-      }
-    );
-    return () => {
-      if (settingsReadSequence.current === requestId) settingsReadSequence.current += 1;
-    };
-  }, [api]);
-
-  useEffect(() => {
-    if (previousSettingsContext.current === settingsContext) return;
-    previousSettingsContext.current = settingsContext;
-    settingsReadSequence.current += 1;
-  }, [settingsContext]);
-
-  const reloadSettings: ReloadAiStudioSettings = async () => {
-    const requestId = ++settingsReadSequence.current;
     try {
       const loaded = await loadAiStudioSettings(api);
       if (settingsReadSequence.current !== requestId) return { status: "stale" };
@@ -241,11 +221,30 @@ export function AiLearningStudio({
       if (settingsReadSequence.current !== requestId) return { status: "stale" };
       setSettingsFailed(true);
       return { status: "failed" };
+    } finally {
+      if (activeSettingsRead.current === requestId) activeSettingsRead.current = null;
     }
-  };
+  }, [api]);
+
+  useEffect(() => {
+    void reloadSettings();
+    return () => {
+      if (activeSettingsRead.current === null) return;
+      settingsReadSequence.current += 1;
+      activeSettingsRead.current = null;
+    };
+  }, [reloadSettings]);
+
+  useEffect(() => {
+    if (previousSettingsContext.current === settingsContext) return;
+    previousSettingsContext.current = settingsContext;
+    const replacePendingRead = activeSettingsRead.current !== null;
+    settingsReadSequence.current += 1;
+    activeSettingsRead.current = null;
+    if (replacePendingRead) void reloadSettings();
+  }, [reloadSettings, settingsContext]);
 
   const selectLeaf = (leaf: TreeLeaf) => {
-    if (selectedLeaf !== leaf.id || panel !== leaf.panel) settingsReadSequence.current += 1;
     setFocusedItem(leaf.id);
     updateTreeState({
       ...currentTreeState,
