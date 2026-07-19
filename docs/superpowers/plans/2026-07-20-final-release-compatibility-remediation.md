@@ -146,7 +146,7 @@ Use it in Coach and Studio completeUsage. A null total must leave reservation an
 
     npx --yes -p node@22 -p npm@11.11.0 -- npm test -- tests/server/ai-studio.test.ts tests/client/api-client.test.ts tests/client/guardian-dashboard.test.tsx
 
-Expected: current code returns an array from the unversioned endpoint and the 404 fallback assumes every predecessor is an array.
+Expected RED: the unversioned endpoint violates its immediate-predecessor full-object contract, while the 404 fallback rejects full-object predecessors because it assumes an array-only response. After implementation, the unversioned endpoint must preserve the full-object contract, and the fallback must accept either that validated predecessor object or a truly older legacy array.
 
 - [ ] **Step 3: Restore compatibility without duplicating client state**
 
