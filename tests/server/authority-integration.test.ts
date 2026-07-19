@@ -175,6 +175,27 @@ describe("predeployment authority integration", () => {
     });
   });
 
+  it("does not project or unlock a completion without its issued-plan source", async () => {
+    const { deviceA, deviceB, planA, planB } = await setupTwoStudentDevices(harness);
+    const foundationA = mathStage(planA, "foundation");
+    const foundationB = mathStage(planB, "foundation");
+    const currentB = mathStage(planB, "current");
+    const clientAttemptId = "cross-device-null-source-plan-0001";
+    expect((await deviceA.request(
+      "POST",
+      "/api/student/attempts",
+      passingAttempt(planA, foundationA, clientAttemptId)
+    )).statusCode).toBe(201);
+
+    harness.db.prepare(`
+      UPDATE attempts SET issued_plan_id = NULL
+      WHERE client_attempt_id = ?
+    `).run(clientAttemptId);
+
+    expect((await today(deviceB)).completedItemIds).not.toContain(foundationB.id);
+    await expectCurrentLockedWithoutWrites(harness, deviceB, planB, currentB);
+  });
+
   it.each(["study-date", "content-version"] as const)(
     "keeps device B current locked for a %s-mismatched historical completion",
     async (mismatch) => {
@@ -242,6 +263,7 @@ describe("predeployment authority integration", () => {
       WHERE id = ?
     `).run(planA.planId);
 
+    expect((await today(deviceB)).completedItemIds).not.toContain(foundationA.id);
     await expectCurrentLockedWithoutWrites(
       harness,
       deviceB,
@@ -266,6 +288,7 @@ describe("predeployment authority integration", () => {
       WHERE plan_id = ? AND item_id = ?
     `).run(planA.planId, foundationA.id);
 
+    expect((await today(deviceB)).completedItemIds).not.toContain(foundationA.id);
     await expectCurrentLockedWithoutWrites(
       harness,
       deviceB,

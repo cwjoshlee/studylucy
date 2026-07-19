@@ -270,18 +270,36 @@ function completeUsage(provider: AiCoachProvider, value: unknown): CompleteUsage
   if (value === null || typeof value !== "object") return null;
   const body = value as {
     usage?: { input_tokens?: unknown; output_tokens?: unknown };
-    usageMetadata?: { promptTokenCount?: unknown; candidatesTokenCount?: unknown };
+    usageMetadata?: {
+      promptTokenCount?: unknown;
+      candidatesTokenCount?: unknown;
+      thoughtsTokenCount?: unknown;
+    };
   };
   const inputTokens = provider === "openai"
     ? body.usage?.input_tokens
     : body.usageMetadata?.promptTokenCount;
-  const outputTokens = provider === "openai"
-    ? body.usage?.output_tokens
-    : body.usageMetadata?.candidatesTokenCount;
-  return Number.isSafeInteger(inputTokens) && Number(inputTokens) >= 0 &&
-    Number.isSafeInteger(outputTokens) && Number(outputTokens) >= 0
-    ? { inputTokens: Number(inputTokens), outputTokens: Number(outputTokens) }
-    : null;
+  if (!Number.isSafeInteger(inputTokens) || Number(inputTokens) < 0) return null;
+  if (provider === "openai") {
+    const outputTokens = body.usage?.output_tokens;
+    return Number.isSafeInteger(outputTokens) && Number(outputTokens) >= 0
+      ? { inputTokens: Number(inputTokens), outputTokens: Number(outputTokens) }
+      : null;
+  }
+  const usage = body.usageMetadata;
+  if (usage === undefined) return null;
+  const candidateTokens = usage.candidatesTokenCount;
+  const thoughtTokens = Object.prototype.hasOwnProperty.call(usage, "thoughtsTokenCount")
+    ? usage.thoughtsTokenCount
+    : 0;
+  if (!Number.isSafeInteger(candidateTokens) || Number(candidateTokens) < 0 ||
+      !Number.isSafeInteger(thoughtTokens) || Number(thoughtTokens) < 0) {
+    return null;
+  }
+  const candidate = Number(candidateTokens);
+  const thought = Number(thoughtTokens);
+  if (candidate > Number.MAX_SAFE_INTEGER - thought) return null;
+  return { inputTokens: Number(inputTokens), outputTokens: candidate + thought };
 }
 
 function estimatedInputTokens(persona: string, prompt: Record<string, unknown>): number {

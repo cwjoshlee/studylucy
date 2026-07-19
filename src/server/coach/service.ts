@@ -149,6 +149,28 @@ function completeUsage(inputTokens: unknown, outputTokens: unknown): {
     : null;
 }
 
+function completeGeminiUsage(value: unknown): {
+  inputTokens: number;
+  outputTokens: number;
+} | null {
+  if (value === null || typeof value !== "object") return null;
+  const usage = value as Record<string, unknown>;
+  const inputTokens = usage.promptTokenCount;
+  const candidateTokens = usage.candidatesTokenCount;
+  const thoughtTokens = Object.prototype.hasOwnProperty.call(usage, "thoughtsTokenCount")
+    ? usage.thoughtsTokenCount
+    : 0;
+  if (!Number.isSafeInteger(inputTokens) || Number(inputTokens) < 0 ||
+      !Number.isSafeInteger(candidateTokens) || Number(candidateTokens) < 0 ||
+      !Number.isSafeInteger(thoughtTokens) || Number(thoughtTokens) < 0) {
+    return null;
+  }
+  const candidate = Number(candidateTokens);
+  const thought = Number(thoughtTokens);
+  if (candidate > Number.MAX_SAFE_INTEGER - thought) return null;
+  return { inputTokens: Number(inputTokens), outputTokens: candidate + thought };
+}
+
 export class AiCoachService {
   private readonly fetcher: Fetcher;
   private readonly now: () => Date;
@@ -391,14 +413,15 @@ export class AiCoachService {
       if (!response.ok) throw new Error("provider request failed");
       const body = await response.json() as {
         candidates?: Array<{ content?: { parts?: Array<{ text?: unknown }> } }>;
-        usageMetadata?: { promptTokenCount?: number; candidatesTokenCount?: number };
+        usageMetadata?: {
+          promptTokenCount?: unknown;
+          candidatesTokenCount?: unknown;
+          thoughtsTokenCount?: unknown;
+        };
       };
       return {
         text: parseGeminiOutputText(body),
-        usage: completeUsage(
-          body.usageMetadata?.promptTokenCount,
-          body.usageMetadata?.candidatesTokenCount
-        )
+        usage: completeGeminiUsage(body.usageMetadata)
       };
     }
     const response = await this.fetcher("https://api.openai.com/v1/responses", {
