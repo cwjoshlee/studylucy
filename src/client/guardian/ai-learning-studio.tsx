@@ -22,17 +22,15 @@ export type AiStudioPanel = "settings" | "generate-math" | "generate-korean" |
   "today-report" | "weekly-report";
 
 export type AiLearningStudioApi = Pick<ApiClient,
-  | "getAiStudioSettings"
+  | "getAiStudioSettingsView"
+  | "updateAiStudioBudget"
   | "updateAiStudioProvider"
   | "createAiDraft"
   | "getAiDraft"
   | "updateAiDraftItem"
   | "publishAiDraft"
   | "getGuardianAiReport"
-> & Partial<Pick<ApiClient,
-  | "getAiStudioSettingsView"
-  | "updateAiStudioBudget"
->>;
+>;
 
 type TreeGroupId = "settings" | "generation" | "reports";
 export type AiStudioTreeState = {
@@ -90,12 +88,7 @@ const PROVIDER_LABELS = {
 } as const;
 
 function loadAiStudioSettings(api: AiLearningStudioApi): Promise<AiStudioSettingsView> {
-  if (api.getAiStudioSettingsView !== undefined) return api.getAiStudioSettingsView();
-  return api.getAiStudioSettings().then((providers) => ({
-    providers,
-    monthlyBudgetWon: 0,
-    monthSpentWon: 0
-  }));
+  return api.getAiStudioSettingsView();
 }
 
 function treeSelection(panel: AiStudioPanel): {
@@ -409,15 +402,6 @@ export function AiLearningStudio({
           api={api}
           selectedLeaf={selectedLeaf}
           settings={settings}
-          onProviderUpdated={(updated) => setSettings((current) => {
-            if (current === null) return null;
-            return {
-              ...current,
-              providers: current.providers.map((item) => item.provider === updated.provider
-                ? updated
-                : item)
-            };
-          })}
           reloadSettings={reloadSettings}
         />
       ) : null}
@@ -440,13 +424,11 @@ function ProviderSettingsPanel({
   api,
   settings,
   selectedLeaf,
-  onProviderUpdated,
   reloadSettings
 }: {
   api: AiLearningStudioApi;
   settings: AiStudioSettingsView | null;
   selectedLeaf: string;
-  onProviderUpdated(settings: AiProviderSettingsView): void;
   reloadSettings: ReloadAiStudioSettings;
 }) {
   if (settings === null) return <p aria-busy="true">제공자 설정을 불러오고 있어요.</p>;
@@ -468,7 +450,6 @@ function ProviderSettingsPanel({
           <ProviderCard
             api={api}
             key={provider}
-            onUpdated={onProviderUpdated}
             reloadSettings={reloadSettings}
             settings={value}
           />
@@ -529,7 +510,6 @@ function BudgetSettingsPanel({
   };
   const ratesValid = Object.values(parsedRates).every((value) => value !== null);
   const updateBudget = api.updateAiStudioBudget;
-  const budgetApiReady = updateBudget !== undefined && api.getAiStudioSettingsView !== undefined;
   const invalidMessage = parsedBudget === null
     ? "월 예산은 0원에서 10,000원 사이의 정수로 입력해 주세요."
     : !ratesValid
@@ -564,8 +544,7 @@ function BudgetSettingsPanel({
       openAiInput: parsedOpenAiInput, openAiOutput: parsedOpenAiOutput } = parsedRates;
     if (saving || parsedBudget === null || parsedGeminiInput === null ||
         parsedGeminiOutput === null || parsedOpenAiInput === null ||
-        parsedOpenAiOutput === null || updateBudget === undefined ||
-        api.getAiStudioSettingsView === undefined) return;
+        parsedOpenAiOutput === null) return;
     setSaving(true);
     setMessage("");
     setPendingReconciliation(null);
@@ -671,9 +650,8 @@ function BudgetSettingsPanel({
           );
         })}
         {invalidMessage !== "" ? <p role="alert">{invalidMessage}</p> : null}
-        {!budgetApiReady ? <p role="alert">예산 설정 기능을 사용할 수 없어요.</p> : null}
         <button
-          disabled={saving || invalidMessage !== "" || !budgetApiReady}
+          disabled={saving || invalidMessage !== ""}
           type="submit"
         >
           예산 저장
@@ -697,12 +675,10 @@ function BudgetSettingsPanel({
 function ProviderCard({
   api,
   settings,
-  onUpdated,
   reloadSettings
 }: {
   api: AiLearningStudioApi;
   settings: AiProviderSettingsView;
-  onUpdated(settings: AiProviderSettingsView): void;
   reloadSettings: ReloadAiStudioSettings;
 }) {
   const label = PROVIDER_LABELS[settings.provider];
@@ -723,19 +699,8 @@ function ProviderCard({
 
   const reconcileSettings = async (
     outcome: { action: "save" | "delete"; writeFailed: boolean },
-    retry: boolean,
-    acknowledged?: AiProviderSettingsView
+    retry: boolean
   ): Promise<void> => {
-    if (api.getAiStudioSettingsView === undefined) {
-      if (!outcome.writeFailed && acknowledged !== undefined) {
-        onUpdated(acknowledged);
-        setMessage(outcome.action === "delete" ? "API 키를 삭제했어요." : "설정을 저장했어요.");
-      } else {
-        setMessage("설정 저장 요청 후 현재 서버 상태를 확인하지 못했어요. 페이지를 다시 열어 확인해 주세요.");
-      }
-      setPendingReconciliation(null);
-      return;
-    }
     const result = await reloadSettings();
     if (result.status === "stale") return;
     if (result.status === "applied") {
@@ -759,10 +724,9 @@ function ProviderCard({
     setSaving(true);
     setMessage("");
     setPendingReconciliation(null);
-    let updated: AiProviderSettingsView | undefined;
     let writeFailed = false;
     try {
-      updated = await api.updateAiStudioProvider(settings.provider, {
+      await api.updateAiStudioProvider(settings.provider, {
         enabled,
         model,
         ...(apiKey === "" ? {} : { apiKey })
@@ -771,7 +735,7 @@ function ProviderCard({
       writeFailed = true;
     } finally {
       setApiKey("");
-      await reconcileSettings({ action: "save", writeFailed }, false, updated);
+      await reconcileSettings({ action: "save", writeFailed }, false);
       setSaving(false);
     }
   };
@@ -781,10 +745,9 @@ function ProviderCard({
     setSaving(true);
     setMessage("");
     setPendingReconciliation(null);
-    let updated: AiProviderSettingsView | undefined;
     let writeFailed = false;
     try {
-      updated = await api.updateAiStudioProvider(settings.provider, {
+      await api.updateAiStudioProvider(settings.provider, {
         enabled: false,
         deleteApiKey: true
       });
@@ -792,7 +755,7 @@ function ProviderCard({
       writeFailed = true;
     } finally {
       setApiKey("");
-      await reconcileSettings({ action: "delete", writeFailed }, false, updated);
+      await reconcileSettings({ action: "delete", writeFailed }, false);
       setSaving(false);
     }
   };

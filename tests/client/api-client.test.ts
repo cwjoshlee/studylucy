@@ -429,7 +429,7 @@ describe("ApiClient", () => {
     };
     const responses = [
       settings,
-      settings,
+      settings.providers,
       settings.providers[0],
       { ...settings, monthlyBudgetWon: 5000 },
       draft,
@@ -500,7 +500,7 @@ describe("ApiClient", () => {
       method: init?.method,
       body: init?.body
     }))).toEqual([
-      { path: "/api/guardian/ai-studio/settings", method: "GET", body: undefined },
+      { path: "/api/guardian/ai-studio/settings/view", method: "GET", body: undefined },
       { path: "/api/guardian/ai-studio/settings", method: "GET", body: undefined },
       {
         path: "/api/guardian/ai-studio/settings/gemini",
@@ -544,6 +544,64 @@ describe("ApiClient", () => {
         body: undefined
       }
     ]);
+  });
+
+  it("falls back to accurate legacy settings when an older server lacks the full view", async () => {
+    const providers = [{
+      provider: "gemini" as const,
+      enabled: true,
+      model: "gemini-2.5-flash-lite",
+      hasApiKey: true,
+      inputWonPer1K: 2,
+      outputWonPer1K: 8
+    }];
+    const coachSettings = {
+      enabled: true,
+      provider: "gemini" as const,
+      model: "gemini-2.5-flash-lite",
+      monthlyBudgetWon: 4321,
+      monthSpentWon: 876,
+      hasApiKey: true
+    };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: "HTTP_404" }), {
+        status: 404,
+        headers: { "content-type": "application/json" }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(providers), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(coachSettings), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }));
+    const api = new ApiClient(fetcher);
+
+    await expect(api.getAiStudioSettingsView()).resolves.toEqual({
+      providers,
+      monthlyBudgetWon: 4321,
+      monthSpentWon: 876
+    });
+    expect(fetcher.mock.calls.map(([path]) => path)).toEqual([
+      "/api/guardian/ai-studio/settings/view",
+      "/api/guardian/ai-studio/settings",
+      "/api/guardian/ai-coach-settings"
+    ]);
+  });
+
+  it("does not hide a non-404 full settings failure behind legacy negotiation", async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      code: "AUTH_REQUIRED"
+    }), {
+      status: 401,
+      headers: { "content-type": "application/json" }
+    }));
+    const api = new ApiClient(fetcher);
+
+    await expect(api.getAiStudioSettingsView())
+      .rejects.toEqual(new ApiError(401, "AUTH_REQUIRED"));
+    expect(fetcher).toHaveBeenCalledTimes(1);
   });
 
   it("reports authority failures through the injected no-op policy boundary", async () => {

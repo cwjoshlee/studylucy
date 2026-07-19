@@ -15,7 +15,12 @@ afterEach(cleanup);
 
 function createApi(): AiLearningStudioApi {
   return {
-    getAiStudioSettings: vi.fn().mockResolvedValue([]),
+    getAiStudioSettingsView: vi.fn().mockResolvedValue({
+      providers: [],
+      monthlyBudgetWon: 1000,
+      monthSpentWon: 0
+    }),
+    updateAiStudioBudget: vi.fn(),
     updateAiStudioProvider: vi.fn(),
     createAiDraft: vi.fn(),
     getAiDraft: vi.fn(),

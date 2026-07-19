@@ -1214,6 +1214,12 @@ describe("AI learning studio", () => {
     const anonymous = await harness.client().request("GET", "/api/guardian/ai-studio/settings");
     expect(anonymous.statusCode).toBe(401);
     expect(anonymous.json()).toEqual({ code: "AUTH_REQUIRED" });
+    const anonymousView = await harness.client().request(
+      "GET",
+      "/api/guardian/ai-studio/settings/view"
+    );
+    expect(anonymousView.statusCode).toBe(401);
+    expect(anonymousView.json()).toEqual({ code: "AUTH_REQUIRED" });
 
     const guardian = harness.client();
     expect((await guardian.request("POST", "/api/auth/setup", {
@@ -1226,7 +1232,26 @@ describe("AI learning studio", () => {
       password: "correct horse battery staple"
     })).statusCode).toBe(204);
 
-    const response = await guardian.request("GET", "/api/guardian/ai-studio/settings");
+    const legacyResponse = await guardian.request(
+      "GET",
+      "/api/guardian/ai-studio/settings"
+    );
+    expect(legacyResponse.statusCode).toBe(200);
+    expect(legacyResponse.json()).toEqual([
+      {
+        provider: "gemini", enabled: false, model: "gemini-2.5-flash-lite",
+        hasApiKey: false, inputWonPer1K: 1, outputWonPer1K: 4
+      },
+      {
+        provider: "openai", enabled: false, model: "gpt-5-nano",
+        hasApiKey: false, inputWonPer1K: 1, outputWonPer1K: 4
+      }
+    ]);
+
+    const response = await guardian.request(
+      "GET",
+      "/api/guardian/ai-studio/settings/view"
+    );
     expect(response.statusCode).toBe(200);
     expect(response.json()).toEqual({
       monthlyBudgetWon: 1000,
@@ -1242,6 +1267,7 @@ describe("AI learning studio", () => {
         }
       ]
     });
+    expect(legacyResponse.body).not.toContain("api_key");
     expect(response.body).not.toContain("api_key");
     await harness.close();
   });

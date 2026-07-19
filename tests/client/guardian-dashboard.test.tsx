@@ -174,6 +174,16 @@ function createAcceptedMathDraft(id = "draft-1"): AiDraftView {
 }
 
 describe("GuardianDashboard", () => {
+  it("loads the current AI studio without requiring the legacy provider-array method", async () => {
+    const user = userEvent.setup();
+    const api = createGuardianApi({ getAiStudioSettings: undefined });
+
+    render(<GuardianDashboard api={api} />);
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+
+    expect(await screen.findByRole("heading", { name: "AI 학습실" })).toBeVisible();
+  });
+
   it("exposes the guardian sections, AI hierarchy, and separate device management in responsive navigation", async () => {
     const user = userEvent.setup();
     render(<GuardianDashboard api={createGuardianApi()} />);
