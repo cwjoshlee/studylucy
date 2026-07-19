@@ -344,11 +344,24 @@ export class ApiClient {
   }
 
   getAiStudioSettings(): Promise<AiProviderSettingsView[]> {
-    return this.getAiStudioSettingsView().then((settings) => settings.providers);
+    return this.request("GET", "/api/guardian/ai-studio/settings");
   }
 
-  getAiStudioSettingsView(): Promise<AiStudioSettingsView> {
-    return this.request("GET", "/api/guardian/ai-studio/settings");
+  async getAiStudioSettingsView(): Promise<AiStudioSettingsView> {
+    try {
+      return await this.request("GET", "/api/guardian/ai-studio/settings/view");
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.status !== 404) throw error;
+      const [providers, coach] = await Promise.all([
+        this.getAiStudioSettings(),
+        this.getAiCoachSettings()
+      ]);
+      return {
+        providers,
+        monthlyBudgetWon: coach.monthlyBudgetWon,
+        monthSpentWon: coach.monthSpentWon
+      };
+    }
   }
 
   updateAiStudioBudget(
