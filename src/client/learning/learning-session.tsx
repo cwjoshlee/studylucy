@@ -61,6 +61,7 @@ export type LearningSessionProps = {
   onNext?: () => void | Promise<void>;
   onRetryRefresh?: () => void | Promise<void>;
   postCompletionRefreshFailed?: boolean;
+  postCompletionRefreshWaitingForNext?: boolean;
   postCompletionRefreshPending?: boolean;
   onExit?: () => void;
   onNavigateToday?: () => void;
@@ -70,6 +71,10 @@ export type LearningSessionProps = {
   offlineEligibility?: "validated";
   idFactory?: (prefix: "attempt" | "idle-event") => string;
 };
+
+export function learningSessionKey(planId: string, item: PlanItem): string {
+  return `${planId}:${item.id}:${item.version}`;
+}
 
 type LearningAuthority =
   | { phase: "issuing" }
@@ -121,7 +126,7 @@ export function LearningSession(props: LearningSessionProps) {
   return (
     <LearningSessionView
       {...props}
-      key={`${props.planId}:${props.item.id}:${props.item.version}`}
+      key={learningSessionKey(props.planId, props.item)}
       item={props.item.payload}
       itemStep={props.item.step}
       contentVersion={props.item.version}
@@ -142,6 +147,7 @@ function LearningSessionView({
   onNext,
   onRetryRefresh,
   postCompletionRefreshFailed = false,
+  postCompletionRefreshWaitingForNext = false,
   postCompletionRefreshPending = false,
   onExit,
   onNavigateToday,
@@ -1159,14 +1165,16 @@ function LearningSessionView({
         onComplete={() => controllerRef.current?.resume("celebration")}
       />
 
-      {postCompletionRefreshFailed ? (
+      {postCompletionRefreshFailed || postCompletionRefreshWaitingForNext ? (
         <aside
           aria-label="다음 문제 준비 상태"
           aria-live="polite"
           className="post-completion-refresh"
           role="status"
         >
-          <p>다음 문제를 준비하지 못했어요. 연결을 확인하고 다시 불러와 주세요.</p>
+          <p>{postCompletionRefreshWaitingForNext
+            ? "다음 문제를 아직 준비 중이에요. 잠시 후 다시 불러와 주세요."
+            : "다음 문제를 준비하지 못했어요. 연결을 확인하고 다시 불러와 주세요."}</p>
           <button
             type="button"
             disabled={postCompletionRefreshPending}
