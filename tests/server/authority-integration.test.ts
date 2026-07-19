@@ -107,6 +107,33 @@ function attemptEvent(payload: ReturnType<typeof passingAttempt>, sequence: numb
   return { kind: "attempt" as const, deviceSequence: sequence, legacy: false, payload };
 }
 
+function authorityWriteSnapshot(harness: Harness) {
+  return harness.db.prepare(`
+    SELECT
+      (SELECT COUNT(*) FROM issued_learning_sessions) AS learningSessions,
+      (SELECT COUNT(*) FROM attempts) AS attempts,
+      (SELECT COUNT(*) FROM star_events) AS starEvents,
+      (SELECT SUM(current_cursor) FROM student_activity_cursors) AS activityCursor
+  `).get();
+}
+
+async function expectCurrentLockedWithoutWrites(
+  harness: Harness,
+  device: TestClient,
+  plan: TodayPlan,
+  current: TodayPlan["items"][number]
+): Promise<void> {
+  const before = authorityWriteSnapshot(harness);
+  const locked = await device.request(
+    "POST",
+    "/api/student/learning-sessions",
+    { planId: plan.planId, itemId: current.id, contentVersion: current.version }
+  );
+  expect(locked.statusCode).toBe(409);
+  expect(locked.json()).toEqual({ code: "STEP_LOCKED" });
+  expect(authorityWriteSnapshot(harness)).toEqual(before);
+}
+
 describe("predeployment authority integration", () => {
   let harness: Harness;
 
@@ -194,6 +221,58 @@ describe("predeployment authority integration", () => {
       expect(locked.json()).toEqual({ code: "STEP_LOCKED" });
     }
   );
+
+  it("keeps current locked when a matching completion points at another student's source plan", async () => {
+    const { deviceA, deviceB, planA, planB } = await setupTwoStudentDevices(harness);
+    const foundationA = mathStage(planA, "foundation");
+    const currentB = mathStage(planB, "current");
+    const clientAttemptId = "cross-device-other-student-source-0001";
+    expect((await deviceA.request(
+      "POST",
+      "/api/student/attempts",
+      passingAttempt(planA, foundationA, clientAttemptId)
+    )).statusCode).toBe(201);
+
+    harness.db.prepare(`
+      INSERT INTO users (id, role, display_name, created_at)
+      VALUES ('other-student-source-plan', 'student', '다른 학생', ?)
+    `).run("2026-07-15T03:00:00.000Z");
+    harness.db.prepare(`
+      UPDATE issued_daily_plans SET student_id = 'other-student-source-plan'
+      WHERE id = ?
+    `).run(planA.planId);
+
+    await expectCurrentLockedWithoutWrites(
+      harness,
+      deviceB,
+      planB,
+      currentB
+    );
+  });
+
+  it("keeps current locked when a completion source plan lacks issued item membership", async () => {
+    const { deviceA, deviceB, planA, planB } = await setupTwoStudentDevices(harness);
+    const foundationA = mathStage(planA, "foundation");
+    const currentB = mathStage(planB, "current");
+    const clientAttemptId = "cross-device-missing-source-item-0001";
+    expect((await deviceA.request(
+      "POST",
+      "/api/student/attempts",
+      passingAttempt(planA, foundationA, clientAttemptId)
+    )).statusCode).toBe(201);
+
+    harness.db.prepare(`
+      DELETE FROM issued_plan_items
+      WHERE plan_id = ? AND item_id = ?
+    `).run(planA.planId, foundationA.id);
+
+    await expectCurrentLockedWithoutWrites(
+      harness,
+      deviceB,
+      planB,
+      currentB
+    );
+  });
 
   it("preserves stale A work, waives idle, recovers after revoke, and leaves B authoritative", async () => {
     const guardian = harness.client();
