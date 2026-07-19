@@ -710,6 +710,53 @@ describe("LearningSession", () => {
     expect(onNext).toHaveBeenCalledOnce();
   });
 
+  it("cancels a completed receipt auto-next while hidden and preserves the answer on reopen", async () => {
+    vi.useFakeTimers();
+    const api = createLearningApi();
+    const onNext = vi.fn();
+    const { rerender } = render(<LearningSession
+      active
+      item={mathPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      onNext={onNext}
+    />);
+    await flushLearningSessionIssue();
+
+    fireEvent.change(screen.getByLabelText("답 쓰기"), {
+      target: { value: "5" }
+    });
+    fireEvent.submit(screen.getByLabelText("답 쓰기").closest("form")!);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    rerender(<LearningSession
+      active={false}
+      item={mathPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      onNext={onNext}
+    />);
+    act(() => vi.advanceTimersByTime(2_000));
+    expect(onNext).not.toHaveBeenCalled();
+
+    rerender(<LearningSession
+      active
+      item={mathPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      onNext={onNext}
+    />);
+    expect(screen.getByLabelText("답 쓰기")).toHaveValue("5");
+    act(() => vi.advanceTimersByTime(2_000));
+    expect(onNext).not.toHaveBeenCalled();
+  });
+
   it("automatically advances once after a locally queued passing reading", async () => {
     const api = createLearningApi();
     const onNext = vi.fn();
@@ -1874,6 +1921,44 @@ describe("LearningSession", () => {
       await Promise.resolve();
     });
     expect(api.sendIdleEvent).toHaveBeenCalledOnce();
+  });
+
+  it("contains focus in guardian break and restores the visible learning owner", async () => {
+    const user = userEvent.setup();
+    const api = createLearningApi();
+    render(<LearningSession
+      item={mathPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+    />);
+    await flushLearningSessionIssue();
+
+    const menuButton = screen.getByRole("button", { name: "메뉴 열기" });
+    await user.click(menuButton);
+    await user.click(within(screen.getByRole("dialog", { name: "학생 메뉴" }))
+      .getByRole("button", { name: "잠깐 쉬기" }));
+
+    const breakDialog = screen.getByRole("dialog", { name: "잠깐 쉬기" });
+    const resume = within(breakDialog).getByRole("button", { name: "학습 계속" });
+    expect(resume).toHaveFocus();
+    expect(screen.queryByRole("status", { name: "마법 친구 말풍선" }))
+      .not.toBeInTheDocument();
+    expect(screen.queryByRole("status", { name: "차나핑 코치" }))
+      .not.toBeInTheDocument();
+
+    await user.tab();
+    expect(resume).toHaveFocus();
+    await user.tab({ shift: true });
+    expect(resume).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(breakDialog).toBeVisible();
+    expect(resume).toHaveFocus();
+
+    await user.click(resume);
+    expect(screen.queryByRole("dialog", { name: "잠깐 쉬기" }))
+      .not.toBeInTheDocument();
+    expect(menuButton).toHaveFocus();
   });
 
   it("invokes student back navigation without exiting or clearing the current answer", async () => {
