@@ -13,7 +13,7 @@
 - Use Node 22/npm 11.11.0. Do not change worker counts or test timeouts.
 - Do not weaken same-student/date/item/content-version/issued-item membership for public completion or stage authority.
 - If complete Gemini usage is malformed, partial, negative, non-safe, or overflow-prone, retain the reservation; never release budget.
-- Preserve GET /api/guardian/ai-studio/settings provider-array compatibility for installed PWA shells. Use a separate versioned full-view GET for new object fields.
+- Preserve the immediate predecessor's GET /api/guardian/ai-studio/settings full-object contract through this release window. Use a separate versioned full-view GET for the same explicit full-object contract; any future provider-array protocol must receive its own URL.
 - A saved child completion must never be resubmitted after refresh failure; retries refresh authoritative plan/stars only.
 - Keep .DS_Store untouched. Do not push, merge, publish image, or modify NAS.
 - A fresh final review and new explicit release approval are still required before deployment.
@@ -121,17 +121,15 @@ Use it in Coach and Studio completeUsage. A null total must leave reservation an
 
 **Interfaces:**
 
-- GET /api/guardian/ai-studio/settings remains an AiProviderSettingsView[] for installed older shells.
-- GET /api/guardian/ai-studio/settings/view returns AiStudioSettingsView with providers, monthlyBudgetWon, and monthSpentWon for the current shell.
-- Current client uses only the versioned full-view endpoint; provider save/delete uses stable existing mutation routes.
+- GET /api/guardian/ai-studio/settings remains the immediate predecessor's AiStudioSettingsView object for installed cached shells.
+- GET /api/guardian/ai-studio/settings/view returns the same AiStudioSettingsView object with providers, monthlyBudgetWon, and monthSpentWon for the current shell.
+- Current client reads the versioned endpoint first. On a 404 only, it runtime-validates the old unversioned response: a full object returns directly; an array is combined with actual coach budget/spend for an older array server. Provider save/delete uses stable existing mutation routes.
 
 - [ ] **Step 1: Add forward/rollback contract tests**
 
-    it("keeps legacy settings GET as provider array", async () => {
+    it("keeps immediate-predecessor settings GET as a full object", async () => {
       const response = await guardian.get("/api/guardian/ai-studio/settings");
-      expect(response.json()).toEqual(expect.arrayContaining([
-        expect.objectContaining({ provider: "gemini", hasApiKey: false })
-      ]));
+      expect(response.json()).toMatchObject({ providers: expect.any(Array), monthlyBudgetWon: expect.any(Number) });
     });
 
     it("returns full settings only from versioned view endpoint", async () => {
@@ -148,11 +146,11 @@ Use it in Coach and Studio completeUsage. A null total must leave reservation an
 
     npx --yes -p node@22 -p npm@11.11.0 -- npm test -- tests/server/ai-studio.test.ts tests/client/api-client.test.ts tests/client/guardian-dashboard.test.tsx
 
-Expected: unversioned endpoint returns object and current client requests it.
+Expected: current code returns an array from the unversioned endpoint and the 404 fallback assumes every predecessor is an array.
 
 - [ ] **Step 3: Restore compatibility without duplicating client state**
 
-Have routes expose both response shapes from the same service read. Keep only full-view parsing in AiLearningStudio. Do not add an array-or-object fallback to current UI; explicit endpoint versioning makes deploy/rollback behavior testable.
+Have both routes expose the full object from the same service read. Keep full-object-only state in AiLearningStudio. At the ApiClient boundary, runtime-validate the 404 fallback as either a complete full object or a legacy array; only the legacy array branch reads coach settings and combines actual budget/spend. Reject unknown shapes and propagate non-404 failures.
 
 - [ ] **Step 4: Verify green and commit**
 
