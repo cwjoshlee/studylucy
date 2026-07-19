@@ -58,7 +58,7 @@ export type LearningSessionProps = {
   studyDate: string;
   active?: boolean;
   reducedMotion?: boolean;
-  onNext?: () => void;
+  onNext?: () => void | Promise<void>;
   onExit?: () => void;
   onNavigateToday?: () => void;
   getNavigationDestinationFocusTarget?: (id: "back" | "today") => HTMLElement | null;
@@ -80,6 +80,11 @@ type IdleUi =
   | { phase: "waiting" }
   | { phase: "paused"; message: string }
   | null;
+
+type CompletionReceipt = {
+  id: string;
+  generation: number;
+};
 
 const IDLE_RESULT_TEXT: Record<IdleEventResult["outcome"], string> = {
   applied: "5분 동안 학습 활동이 없어서 별 1개가 줄었어요. 준비되면 다시 시작할 수 있어요.",
@@ -174,6 +179,8 @@ function LearningSessionView({
   const [breakPaused, setBreakPaused] = useState(false);
   const [navigationHelpOpen, setNavigationHelpOpen] = useState(false);
   const [consumedNextReceiptId, setConsumedNextReceiptId] = useState<string | null>(null);
+  const [completionReceipt, setCompletionReceipt] = useState<CompletionReceipt | null>(null);
+  const [transitionPending, setTransitionPending] = useState(false);
   const controllerRef = useRef<InactivityController | null>(null);
   const speechRef = useRef<SpeechController | null>(null);
   const completionCueTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -187,6 +194,7 @@ function LearningSessionView({
   const restoreBreakFocusRef = useRef(false);
   const attemptGenerationRef = useRef(0);
   const attemptReceiptRef = useRef<AttemptReceipt | null>(null);
+  const transitionPendingRef = useRef(false);
   const learningActivityPaused = !active || breakPaused;
   const learningControlsPaused =
     learningActivityPaused ||
@@ -195,13 +203,14 @@ function LearningSessionView({
       authority.phase !== "offline-unissued"
     ) ||
     waiting ||
+    transitionPending ||
     idleUi?.phase === "paused" ||
     breakPaused;
   const learningControlsPausedRef = useRef(learningControlsPaused);
   const learningActivityAllowedRef = useRef(!learningActivityPaused);
   learningControlsPausedRef.current = learningControlsPaused;
   learningActivityAllowedRef.current = !learningActivityPaused;
-  automaticNextAllowedRef.current = active && !breakPaused;
+  automaticNextAllowedRef.current = active && !breakPaused && !transitionPending;
   onNextRef.current = onNext;
 
   useEffect(() => {
@@ -374,11 +383,24 @@ function LearningSessionView({
   }, []);
 
   const advanceReceipt = useCallback((receiptId: string): boolean => {
-    if (consumedNextReceiptIdsRef.current.has(receiptId)) return false;
+    if (
+      transitionPendingRef.current ||
+      consumedNextReceiptIdsRef.current.has(receiptId)
+    ) return false;
     consumedNextReceiptIdsRef.current.add(receiptId);
+    transitionPendingRef.current = true;
+    learningControlsPausedRef.current = true;
     clearAutomaticNext();
     setConsumedNextReceiptId(receiptId);
-    onNextRef.current?.();
+    setTransitionPending(true);
+    try {
+      const transition = onNextRef.current?.();
+      if (transition !== undefined) {
+        void Promise.resolve(transition).catch(() => undefined);
+      }
+    } catch {
+      // The receipt stays consumed. A new keyed item is the only safe reset.
+    }
     return true;
   }, [clearAutomaticNext]);
 
@@ -386,6 +408,7 @@ function LearningSessionView({
     clearAutomaticNext();
     if (
       !automaticNextAllowedRef.current ||
+      transitionPendingRef.current ||
       consumedNextReceiptIdsRef.current.has(receiptId)
     ) return;
     automaticNextReceiptIdRef.current = receiptId;
@@ -395,6 +418,7 @@ function LearningSessionView({
         attemptGenerationRef.current === generation &&
         automaticNextReceiptIdRef.current === receiptId &&
         automaticNextAllowedRef.current &&
+        !transitionPendingRef.current &&
         !consumedNextReceiptIdsRef.current.has(receiptId)
       ) {
         advanceReceipt(receiptId);
@@ -412,25 +436,25 @@ function LearningSessionView({
     if (
       !active ||
       breakPaused ||
-      !attemptReceipt?.completed ||
-      attemptReceipt.duplicate ||
-      consumedNextReceiptIdsRef.current.has(attemptReceipt.id) ||
-      automaticNextReceiptIdRef.current === attemptReceipt.id
+      completionReceipt === null ||
+      transitionPendingRef.current ||
+      consumedNextReceiptIdsRef.current.has(completionReceipt.id) ||
+      automaticNextReceiptIdRef.current === completionReceipt.id
     ) return;
-    scheduleAutomaticNext(attemptReceipt.id, attemptGenerationRef.current);
+    scheduleAutomaticNext(completionReceipt.id, completionReceipt.generation);
   }, [
     active,
-    attemptReceipt?.completed,
-    attemptReceipt?.duplicate,
-    attemptReceipt?.id,
     breakPaused,
+    completionReceipt,
     scheduleAutomaticNext
   ]);
 
-  const beginAttempt = useCallback(() => {
+  const beginAttempt = useCallback((): boolean => {
+    if (transitionPendingRef.current) return false;
     attemptGenerationRef.current += 1;
     attemptReceiptRef.current = null;
     setAttemptReceipt(null);
+    setCompletionReceipt(null);
     setConsumedNextReceiptId(null);
     if (completionCueTimerRef.current !== null) {
       clearTimeout(completionCueTimerRef.current);
@@ -438,12 +462,13 @@ function LearningSessionView({
     }
     clearAutomaticNext();
     setShowNextCue(false);
+    return true;
   }, [clearAutomaticNext]);
 
   const saveReadingAttempt = useCallback(async (result: ReadingResult) => {
+    if (!beginAttempt()) return;
     controllerRef.current?.pause("server-wait");
     setSaveUiState("saving");
-    beginAttempt();
     setWaiting(true);
     const input = buildAttempt(result, null);
     try {
@@ -453,7 +478,10 @@ function LearningSessionView({
       setSaveUiState("idle");
       if (receipt.completed && !receipt.duplicate) {
         setShowNextCue(false);
-        scheduleAutomaticNext(receipt.id, attemptGenerationRef.current);
+        setCompletionReceipt({
+          id: receipt.id,
+          generation: attemptGenerationRef.current
+        });
       }
       onActivityCursor?.(receipt.activityCursor);
       setNextUnlocked(receipt.completed);
@@ -472,7 +500,10 @@ function LearningSessionView({
       setProvisional(queued);
       if (queued) {
         onProvisional?.();
-        scheduleAutomaticNext(`queued:${input.clientAttemptId}`, attemptGenerationRef.current);
+        setCompletionReceipt({
+          id: `queued:${input.clientAttemptId}`,
+          generation: attemptGenerationRef.current
+        });
       }
       setMathFeedback(queued
         ? "학습 기록이 아직 여행 중이에요. 연결되면 확인할게요."
@@ -487,8 +518,7 @@ function LearningSessionView({
     buildAttempt,
     onActivityCursor,
     onExit,
-    onProvisional,
-    scheduleAutomaticNext
+    onProvisional
   ]);
 
   useEffect(() => {
@@ -624,10 +654,10 @@ function LearningSessionView({
     answer: number,
     expectedAnswer: number
   ): Promise<void> {
+    if (!beginAttempt()) return;
     recordActivity("answer");
     controllerRef.current?.pause("server-wait");
     setSaveUiState("saving");
-    beginAttempt();
     setWaiting(true);
     const input = buildAttempt(result, answer);
     try {
@@ -649,7 +679,10 @@ function LearningSessionView({
           ? "도전 시도 완료"
           : "답을 다시 생각해 봐요.");
       if (receipt.completed && !receipt.duplicate) {
-        scheduleAutomaticNext(receipt.id, attemptGenerationRef.current);
+        setCompletionReceipt({
+          id: receipt.id,
+          generation: attemptGenerationRef.current
+        });
       }
     } catch (error) {
       if (isExplicitClientError(error)) {
@@ -663,7 +696,13 @@ function LearningSessionView({
       if (!locallyComplete) setMathRetryCount((count) => count + 1);
       setNextUnlocked(locallyComplete);
       setProvisional(locallyComplete);
-      if (locallyComplete) onProvisional?.();
+      if (locallyComplete) {
+        onProvisional?.();
+        setCompletionReceipt({
+          id: `queued:${input.clientAttemptId}`,
+          generation: attemptGenerationRef.current
+        });
+      }
       setMathFeedback(queued
         ? "학습 기록이 아직 여행 중이에요. 연결되면 확인할게요."
         : "답을 확인하지 못했어요. 다시 시도해 주세요.");
@@ -674,11 +713,15 @@ function LearningSessionView({
   }
 
   async function saveDictationAnswer(text: string): Promise<void> {
-    if (item.kind !== "korean-dictation" || learningControlsPaused) return;
+    if (
+      item.kind !== "korean-dictation" ||
+      learningControlsPaused ||
+      transitionPendingRef.current ||
+      !beginAttempt()
+    ) return;
     recordActivity("answer");
     controllerRef.current?.pause("server-wait");
     setSaveUiState("saving");
-    beginAttempt();
     setWaiting(true);
     const input = buildAttempt(
       { score: 100, passed: true, missedTokens: [] },
@@ -701,7 +744,10 @@ function LearningSessionView({
           : "다시 써 볼까요?");
       if (receipt.completed && !receipt.duplicate) {
         setShowNextCue(false);
-        scheduleAutomaticNext(receipt.id, attemptGenerationRef.current);
+        setCompletionReceipt({
+          id: receipt.id,
+          generation: attemptGenerationRef.current
+        });
       }
     } catch (error) {
       if (isExplicitClientError(error)) {
@@ -864,11 +910,9 @@ function LearningSessionView({
       ? "first" as const
       : "none" as const;
   const coachRetryCount = mathRetryCount + (readingResult !== null && !readingResult.passed ? 1 : 0);
-  const nextReceiptId = attemptReceipt?.id ??
-    automaticNextReceiptIdRef.current ??
-    consumedNextReceiptId ??
-    `attempt-generation:${attemptGenerationRef.current}`;
-  const nextReceiptConsumed = consumedNextReceiptId === nextReceiptId ||
+  const nextReceiptId = completionReceipt?.id ?? consumedNextReceiptId;
+  const nextReceiptConsumed = nextReceiptId === null ||
+    consumedNextReceiptId === nextReceiptId ||
     consumedNextReceiptIdsRef.current.has(nextReceiptId);
 
   return (
@@ -942,6 +986,7 @@ function LearningSessionView({
             value={mathAnswer}
             disabled={learningControlsPaused}
             onChange={(value) => {
+              if (transitionPendingRef.current) return;
               setMathAnswer(value);
               recordActivity("answer");
             }}
@@ -1048,6 +1093,7 @@ function LearningSessionView({
               inputMode="numeric"
               value={mathAnswer}
               onChange={(event) => {
+                if (transitionPendingRef.current) return;
                 setMathAnswer(event.target.value);
                 recordActivity("answer");
               }}
@@ -1111,7 +1157,11 @@ function LearningSessionView({
         type="button"
         disabled={!nextUnlocked || learningControlsPaused || nextReceiptConsumed}
         onClick={() => {
-          if (consumedNextReceiptIdsRef.current.has(nextReceiptId)) return;
+          if (
+            nextReceiptId === null ||
+            transitionPendingRef.current ||
+            consumedNextReceiptIdsRef.current.has(nextReceiptId)
+          ) return;
           recordActivity("continue");
           advanceReceipt(nextReceiptId);
         }}

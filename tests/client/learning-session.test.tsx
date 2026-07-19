@@ -755,7 +755,7 @@ describe("LearningSession", () => {
     expect(replacementOnNext).not.toHaveBeenCalled();
   });
 
-  it("shares one receipt transition across automatic and repeated manual next while the parent refresh is deferred", async () => {
+  it("locks every same-item control while a consumed receipt waits for the parent transition", async () => {
     vi.useFakeTimers();
     const api = createLearningApi();
     api.saveAttempt
@@ -784,25 +784,147 @@ describe("LearningSession", () => {
     expect(onNext).toHaveBeenCalledOnce();
     const next = screen.getByRole("button", { name: "다음 문제" });
     expect(next).toBeDisabled();
+    expect(answer).toBeDisabled();
     fireEvent.click(next);
     fireEvent.click(next);
     expect(onNext).toHaveBeenCalledOnce();
 
+    fireEvent.change(answer, { target: { value: "4" } });
     fireEvent.submit(answer.closest("form")!);
     await act(async () => {
       await Promise.resolve();
       await Promise.resolve();
     });
-    expect(screen.getByRole("button", { name: "다음 문제" })).toBeEnabled();
-    fireEvent.click(screen.getByRole("button", { name: "다음 문제" }));
-    fireEvent.click(screen.getByRole("button", { name: "다음 문제" }));
-    expect(onNext).toHaveBeenCalledTimes(2);
+    expect(answer).toHaveValue("5");
+    expect(api.saveAttempt).toHaveBeenCalledOnce();
+    expect(onNext).toHaveBeenCalledOnce();
 
     parentRefresh.resolve();
     await parentRefresh.promise;
   });
 
-  it("allows a later completed attempt receipt to auto-advance once", async () => {
+  it("keeps a rejected parent transition consumed until a genuinely new item is issued", async () => {
+    vi.useFakeTimers();
+    const api = createLearningApi();
+    api.saveAttempt
+      .mockResolvedValueOnce(receipt({ id: "attempt-parent-reject" }))
+      .mockResolvedValueOnce(receipt({ id: "attempt-new-item" }));
+    const parentRefresh = deferred<void>();
+    void parentRefresh.promise.catch(() => undefined);
+    const onNext = vi.fn(() => parentRefresh.promise);
+    const view = render(<LearningSession
+      item={mathPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      onNext={onNext}
+    />);
+    await flushLearningSessionIssue();
+
+    const answer = screen.getByLabelText("답 쓰기");
+    fireEvent.change(answer, { target: { value: "5" } });
+    fireEvent.submit(answer.closest("form")!);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    act(() => vi.advanceTimersByTime(1_500));
+    expect(onNext).toHaveBeenCalledOnce();
+
+    parentRefresh.reject(new Error("refresh failed"));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(answer).toBeDisabled();
+    fireEvent.submit(answer.closest("form")!);
+    expect(api.saveAttempt).toHaveBeenCalledOnce();
+    expect(onNext).toHaveBeenCalledOnce();
+
+    const nextMathItem: TodayPlan["items"][number] = {
+      ...mathPlanItem,
+      id: "math-02",
+      payload: { ...mathItem, id: "math-02", title: "새 별을 세어요" }
+    };
+    view.rerender(<LearningSession
+      item={nextMathItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      onNext={onNext}
+    />);
+    await flushLearningSessionIssue();
+
+    const newAnswer = screen.getByLabelText("답 쓰기");
+    expect(newAnswer).toBeEnabled();
+    expect(newAnswer).toHaveValue("");
+    fireEvent.change(newAnswer, { target: { value: "5" } });
+    fireEvent.submit(newAnswer.closest("form")!);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    act(() => vi.advanceTimersByTime(1_500));
+    expect(api.saveAttempt).toHaveBeenCalledTimes(2);
+    expect(onNext).toHaveBeenCalledTimes(2);
+  });
+
+  it("locks dictation typing, replay, submit, and Next during a parent transition", async () => {
+    vi.useFakeTimers();
+    const api = createLearningApi();
+    api.saveAttempt.mockResolvedValue(receipt({
+      id: "attempt-dictation-transition",
+      dictationPass: true,
+      mathPass: null
+    }));
+    const speak = vi.fn();
+    vi.stubGlobal("SpeechSynthesisUtterance", class {
+      lang = "";
+      constructor(readonly text: string) {}
+    });
+    vi.stubGlobal("speechSynthesis", { cancel: vi.fn(), speak });
+    const parentRefresh = deferred<void>();
+    const onNext = vi.fn(() => parentRefresh.promise);
+    render(<LearningSession
+      item={currentDictationPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      onNext={onNext}
+    />);
+    await flushLearningSessionIssue();
+
+    const answer = screen.getByLabelText("받아쓰기 답");
+    fireEvent.change(answer, { target: { value: "봄비" } });
+    fireEvent.submit(answer.closest("form")!);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    act(() => vi.advanceTimersByTime(1_500));
+
+    const replay = screen.getByRole("button", { name: "다시 듣기" });
+    const submit = screen.getByRole("button", { name: "받아쓰기 확인" });
+    const next = screen.getByRole("button", { name: "다음 문제" });
+    expect(answer).toBeDisabled();
+    expect(replay).toBeDisabled();
+    expect(submit).toBeDisabled();
+    expect(next).toBeDisabled();
+
+    fireEvent.change(answer, { target: { value: "다시 제출" } });
+    fireEvent.click(replay);
+    fireEvent.submit(answer.closest("form")!);
+    fireEvent.click(next);
+    expect(answer).toHaveValue("봄비");
+    expect(speak).not.toHaveBeenCalled();
+    expect(api.saveAttempt).toHaveBeenCalledOnce();
+    expect(onNext).toHaveBeenCalledOnce();
+
+    parentRefresh.resolve();
+    await parentRefresh.promise;
+  });
+
+  it("does not create a later same-item attempt after its receipt transition starts", async () => {
     vi.useFakeTimers();
     const api = createLearningApi();
     api.saveAttempt
@@ -834,9 +956,10 @@ describe("LearningSession", () => {
       await Promise.resolve();
     });
     act(() => vi.advanceTimersByTime(1_500));
-    expect(onNext).toHaveBeenCalledTimes(2);
+    expect(api.saveAttempt).toHaveBeenCalledOnce();
+    expect(onNext).toHaveBeenCalledOnce();
     act(() => vi.advanceTimersByTime(5_000));
-    expect(onNext).toHaveBeenCalledTimes(2);
+    expect(onNext).toHaveBeenCalledOnce();
   });
 
   it("pauses a completed receipt auto-next while hidden and schedules it once on reopen", async () => {
@@ -955,6 +1078,105 @@ describe("LearningSession", () => {
     expect(next).toBeDisabled();
     fireEvent.click(next);
     expect(onNext).toHaveBeenCalledOnce();
+  });
+
+  it("retains one queued receipt across hidden pause and resumes its exact transition once", async () => {
+    const api = createLearningApi();
+    const onNext = vi.fn();
+    let attemptSequence = 0;
+    const queuedId = (prefix: "attempt" | "idle-event") =>
+      prefix === "attempt"
+        ? `attempt-offline-${++attemptSequence}`
+        : "idle-event-offline-0001";
+    api.saveAttempt.mockRejectedValue(new TypeError("offline"));
+    const view = render(<LearningSession
+      active
+      item={readingPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      idFactory={queuedId}
+      onNext={onNext}
+    />);
+    await flushLearningSessionIssue();
+    fireEvent.click(screen.getByText("직접 입력으로 확인하기"));
+    fireEvent.change(screen.getByLabelText("읽은 내용 직접 입력"), {
+      target: { value: readingItem.text }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "읽기 판정하기" }));
+    await screen.findByText("동기화 대기");
+
+    view.rerender(<LearningSession
+      active={false}
+      item={readingPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      idFactory={queuedId}
+      onNext={onNext}
+    />);
+    vi.useFakeTimers();
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(onNext).not.toHaveBeenCalled();
+
+    view.rerender(<LearningSession
+      active
+      item={readingPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      idFactory={queuedId}
+      onNext={onNext}
+    />);
+    act(() => vi.advanceTimersByTime(1_499));
+    expect(onNext).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(1));
+    expect(onNext).toHaveBeenCalledOnce();
+    fireEvent.click(screen.getByRole("button", { name: "다음 문제" }));
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(onNext).toHaveBeenCalledOnce();
+
+    vi.clearAllTimers();
+    vi.useRealTimers();
+    await cacheIssuedPlan({
+      planId: "plan-daily-2",
+      planKind: "daily",
+      recoverySourcePlanId: null,
+      date: "2026-07-17",
+      submitUntil: "2026-07-18T14:59:59.999Z",
+      offlineEpoch: 2,
+      activityCursor: 0,
+      studentDisplayName: "수아",
+      completedItemIds: [],
+      requiredItemIds: [readingPlanItem.id],
+      stars: {
+        balance: 7,
+        earnedToday: 0,
+        deductedToday: 0,
+        lastReason: null
+      },
+      items: [readingPlanItem]
+    });
+    view.rerender(<LearningSession
+      active
+      item={readingPlanItem}
+      api={api}
+      planId="plan-daily-2"
+      studyDate="2026-07-17"
+      idFactory={queuedId}
+      onNext={onNext}
+    />);
+    await flushLearningSessionIssue();
+    fireEvent.click(screen.getByText("직접 입력으로 확인하기"));
+    fireEvent.change(screen.getByLabelText("읽은 내용 직접 입력"), {
+      target: { value: readingItem.text }
+    });
+    fireEvent.click(screen.getByRole("button", { name: "읽기 판정하기" }));
+    await waitFor(() => expect(onNext).toHaveBeenCalledTimes(2), { timeout: 2_000 });
+    expect(await listQueuedAttempts()).toEqual(expect.arrayContaining([
+      expect.objectContaining({ clientAttemptId: "attempt-offline-1", planId: "plan-daily-1" }),
+      expect.objectContaining({ clientAttemptId: "attempt-offline-2", planId: "plan-daily-2" })
+    ]));
   });
 
   it("cancels a stale automatic next when a repeat reading submission supersedes it", async () => {
