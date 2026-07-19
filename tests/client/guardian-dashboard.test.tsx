@@ -199,30 +199,41 @@ describe("GuardianDashboard", () => {
 
   it("expands the exact AI learning studio tree and blanks each saved provider key", async () => {
     const user = userEvent.setup();
+    let authoritativeSettings = {
+      monthlyBudgetWon: 3000,
+      monthSpentWon: 0,
+      providers: [
+        {
+          provider: "gemini" as const, enabled: false, model: "gemini-2.5-flash",
+          hasApiKey: false, inputWonPer1K: 2, outputWonPer1K: 8
+        },
+        {
+          provider: "openai" as const, enabled: false, model: "gpt-5-mini",
+          hasApiKey: false, inputWonPer1K: 3, outputWonPer1K: 12
+        }
+      ]
+    };
     const updateAiStudioProvider = vi.fn(async (
       provider: "gemini" | "openai",
       input: { enabled?: boolean; model?: string; apiKey?: string }
-    ) => ({
-      provider,
-      enabled: input.enabled ?? false,
-      model: input.model ?? "model",
-      hasApiKey: input.apiKey !== undefined
-    }));
+    ) => {
+      const current = authoritativeSettings.providers.find((item) => item.provider === provider)!;
+      const updated = {
+        ...current,
+        enabled: input.enabled ?? current.enabled,
+        model: input.model ?? current.model,
+        hasApiKey: input.apiKey !== undefined || current.hasApiKey
+      };
+      authoritativeSettings = {
+        ...authoritativeSettings,
+        providers: authoritativeSettings.providers.map((item) => item.provider === provider
+          ? updated
+          : item)
+      };
+      return updated;
+    });
     const api = createGuardianApi({
-      getAiStudioSettingsView: vi.fn().mockResolvedValue({
-        monthlyBudgetWon: 3000,
-        monthSpentWon: 0,
-        providers: [
-          {
-            provider: "gemini", enabled: false, model: "gemini-2.5-flash",
-            hasApiKey: false, inputWonPer1K: 2, outputWonPer1K: 8
-          },
-          {
-            provider: "openai", enabled: false, model: "gpt-5-mini",
-            hasApiKey: false, inputWonPer1K: 3, outputWonPer1K: 12
-          }
-        ]
-      }),
+      getAiStudioSettingsView: vi.fn(async () => authoritativeSettings),
       updateAiStudioProvider
     });
     render(<GuardianDashboard api={api} />);
@@ -396,21 +407,144 @@ describe("GuardianDashboard", () => {
     await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(2));
     expect(screen.getByLabelText("월 예산 (원)")).toHaveValue(5000);
     expect(screen.getByText("이번 달 사용 1,300원")).toBeVisible();
-    expect(screen.getByText(/일부 설정이 저장되어 서버의 최신 값을 다시 불러왔어요/))
+    expect(screen.getByText(/저장 요청 중 오류가 있었지만 서버의 최신 값을 다시 불러왔어요/))
       .toBeVisible();
+  });
+
+  it("reloads authoritative budget truth when the first write request rejects ambiguously", async () => {
+    const user = userEvent.setup();
+    const initial = {
+      monthlyBudgetWon: 3000,
+      monthSpentWon: 1250,
+      providers: [
+        {
+          provider: "gemini" as const, enabled: true, model: "gemini-2.5-flash",
+          hasApiKey: true, inputWonPer1K: 2, outputWonPer1K: 8
+        },
+        {
+          provider: "openai" as const, enabled: true, model: "gpt-5-mini",
+          hasApiKey: true, inputWonPer1K: 3, outputWonPer1K: 12
+        }
+      ]
+    };
+    const authoritative = { ...initial, monthlyBudgetWon: 5000, monthSpentWon: 1300 };
+    const getAiStudioSettingsView = vi.fn()
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(authoritative);
+    render(<GuardianDashboard api={createGuardianApi({
+      getAiStudioSettingsView,
+      updateAiStudioBudget: vi.fn().mockRejectedValue(new Error("ambiguous response failure"))
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(screen.getByRole("treeitem", { name: "월 예산·사용량" }));
+    const budget = await screen.findByLabelText("월 예산 (원)");
+    await user.clear(budget);
+    await user.type(budget, "5000");
+    await user.click(screen.getByRole("button", { name: "예산 저장" }));
+
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(2));
+    expect(screen.getByLabelText("월 예산 (원)")).toHaveValue(5000);
+    expect(screen.getByText("이번 달 사용 1,300원")).toBeVisible();
+    expect(screen.getByText(/저장 요청 중 오류가 있었지만 서버의 최신 값을 다시 불러왔어요/))
+      .toBeVisible();
+    expect(screen.queryByText(/서버 설정은 변경되지 않았어요/)).not.toBeInTheDocument();
+  });
+
+  it("labels a successful reconciliation after writes succeeded but the first reload failed", async () => {
+    const user = userEvent.setup();
+    const initial = {
+      monthlyBudgetWon: 3000,
+      monthSpentWon: 1250,
+      providers: [
+        {
+          provider: "gemini" as const, enabled: true, model: "gemini-2.5-flash",
+          hasApiKey: true, inputWonPer1K: 2, outputWonPer1K: 8
+        },
+        {
+          provider: "openai" as const, enabled: true, model: "gpt-5-mini",
+          hasApiKey: true, inputWonPer1K: 3, outputWonPer1K: 12
+        }
+      ]
+    };
+    const authoritative = { ...initial, monthlyBudgetWon: 5000, monthSpentWon: 1300 };
+    const getAiStudioSettingsView = vi.fn()
+      .mockResolvedValueOnce(initial)
+      .mockRejectedValueOnce(new Error("reload failed"))
+      .mockResolvedValueOnce(authoritative);
+    render(<GuardianDashboard api={createGuardianApi({
+      getAiStudioSettingsView,
+      updateAiStudioBudget: vi.fn().mockResolvedValue(authoritative),
+      updateAiStudioProvider: vi.fn().mockResolvedValue(initial.providers[0])
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(screen.getByRole("treeitem", { name: "월 예산·사용량" }));
+    const budget = await screen.findByLabelText("월 예산 (원)");
+    await user.clear(budget);
+    await user.type(budget, "5000");
+    await user.click(screen.getByRole("button", { name: "예산 저장" }));
+
+    const retry = await screen.findByRole("button", { name: "최신 설정 다시 불러오기" });
+    expect(screen.getByText(/저장 요청은 완료했지만 현재 서버 상태를 확인하지 못했어요/))
+      .toBeVisible();
+    await user.click(retry);
+
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(3));
+    expect(screen.getByLabelText("월 예산 (원)")).toHaveValue(5000);
+    expect(screen.getByText("설정 저장을 완료했고 서버의 최신 값을 다시 확인했어요."))
+      .toBeVisible();
+    expect(screen.queryByText(/일부 설정이 저장/)).not.toBeInTheDocument();
+  });
+
+  it("keeps reconciliation retry available when two authoritative reloads fail", async () => {
+    const user = userEvent.setup();
+    const getAiStudioSettingsView = vi.fn()
+      .mockResolvedValueOnce({
+        monthlyBudgetWon: 3000,
+        monthSpentWon: 1250,
+        providers: [
+          {
+            provider: "gemini" as const, enabled: true, model: "gemini-2.5-flash",
+            hasApiKey: true, inputWonPer1K: 2, outputWonPer1K: 8
+          },
+          {
+            provider: "openai" as const, enabled: true, model: "gpt-5-mini",
+            hasApiKey: true, inputWonPer1K: 3, outputWonPer1K: 12
+          }
+        ]
+      })
+      .mockRejectedValue(new Error("reload unavailable"));
+    render(<GuardianDashboard api={createGuardianApi({ getAiStudioSettingsView })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(screen.getByRole("treeitem", { name: "월 예산·사용량" }));
+    await user.click(await screen.findByRole("button", { name: "예산 저장" }));
+    await user.click(await screen.findByRole("button", { name: "최신 설정 다시 불러오기" }));
+
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(3));
+    expect(screen.getByText(/현재 서버 상태를 확인하지 못했어요/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "최신 설정 다시 불러오기" })).toBeEnabled();
+    expect(screen.queryByText(/서버 설정은 변경되지 않았어요/)).not.toBeInTheDocument();
   });
 
   it("clears an API key entry even when the save request fails", async () => {
     const user = userEvent.setup();
     const updateAiStudioProvider = vi.fn().mockRejectedValue(new Error("save failed"));
-    render(<GuardianDashboard api={createGuardianApi({ updateAiStudioProvider })} />);
+    const getAiStudioSettingsView = createGuardianApi().getAiStudioSettingsView;
+    render(<GuardianDashboard api={createGuardianApi({
+      getAiStudioSettingsView,
+      updateAiStudioProvider
+    })} />);
 
     await user.click(screen.getByRole("button", { name: "AI 학습실" }));
     const apiKey = await screen.findByLabelText("Gemini API 키");
     await user.type(apiKey, "key-that-must-not-stay");
     await user.click(screen.getByRole("button", { name: "Gemini 설정 저장" }));
 
-    expect(await screen.findByText("설정을 저장하지 못했어요.")).toBeVisible();
+    expect(await screen.findByText(/설정 저장 요청 중 오류가 있었지만 서버의 최신 설정을 다시 불러왔어요/))
+      .toBeVisible();
+    expect(getAiStudioSettingsView).toHaveBeenCalledTimes(2);
     expect(apiKey).toHaveValue("");
     expect(document.documentElement.outerHTML).not.toContain("key-that-must-not-stay");
   });
@@ -418,14 +552,20 @@ describe("GuardianDashboard", () => {
   it("clears a typed API key even when deleting the saved key fails", async () => {
     const user = userEvent.setup();
     const updateAiStudioProvider = vi.fn().mockRejectedValue(new Error("delete failed"));
-    render(<GuardianDashboard api={createGuardianApi({ updateAiStudioProvider })} />);
+    const getAiStudioSettingsView = createGuardianApi().getAiStudioSettingsView;
+    render(<GuardianDashboard api={createGuardianApi({
+      getAiStudioSettingsView,
+      updateAiStudioProvider
+    })} />);
 
     await user.click(screen.getByRole("button", { name: "AI 학습실" }));
     const apiKey = await screen.findByLabelText("Gemini API 키");
     await user.type(apiKey, "typed-key-that-must-not-stay");
     await user.click(screen.getByRole("button", { name: "Gemini API 키 삭제" }));
 
-    expect(await screen.findByText("API 키를 삭제하지 못했어요.")).toBeVisible();
+    expect(await screen.findByText(/설정 저장 요청 중 오류가 있었지만 서버의 최신 설정을 다시 불러왔어요/))
+      .toBeVisible();
+    expect(getAiStudioSettingsView).toHaveBeenCalledTimes(2);
     expect(apiKey).toHaveValue("");
     expect(document.documentElement.outerHTML).not.toContain("typed-key-that-must-not-stay");
   });
@@ -508,6 +648,29 @@ describe("GuardianDashboard", () => {
     await act(async () => oldRequest.reject(new Error("late failure")));
 
     expect(screen.queryByText("초안을 만들지 못했어요.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "초안 발행" })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["subject", (draft: AiDraftView) => ({ ...draft, subject: "korean" as const })],
+    ["step", (draft: AiDraftView) => ({ ...draft, step: "challenge" as const })],
+    ["status", (draft: AiDraftView) => ({ ...draft, status: "published" as const })]
+  ])("keeps a generated draft with a mismatched %s invisible", async (_dimension, change) => {
+    const user = userEvent.setup();
+    render(<GuardianDashboard api={createGuardianApi({
+      createAiDraft: vi.fn().mockResolvedValue(change(createAcceptedMathDraft()))
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+
+    expect(await screen.findByText(/초안의 과목이나 학습 단계 또는 상태가 요청과 달라서/))
+      .toBeVisible();
+    expect(screen.queryByRole("article", { name: "받아올림 더하기 초안" }))
+      .not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "초안 발행" })).not.toBeInTheDocument();
   });
 
@@ -702,6 +865,37 @@ describe("GuardianDashboard", () => {
     expect(screen.queryByText("수정한 문제를 저장했어요.")).not.toBeInTheDocument();
   });
 
+  it.each([
+    ["subject", (draft: AiDraftView) => ({ ...draft, subject: "korean" as const })],
+    ["step", (draft: AiDraftView) => ({ ...draft, step: "challenge" as const })],
+    ["status", (draft: AiDraftView) => ({ ...draft, status: "published" as const })]
+  ])("rejects an item edit response with a mismatched %s", async (_dimension, change) => {
+    const user = userEvent.setup();
+    const draft = createAcceptedMathDraft();
+    const response = change(createAcceptedMathDraft());
+    response.items[0]!.payload = {
+      ...response.items[0]!.payload,
+      title: "현재 초안이 아닌 응답"
+    };
+    render(<GuardianDashboard api={createGuardianApi({
+      createAiDraft: vi.fn().mockResolvedValue(draft),
+      updateAiDraftItem: vi.fn().mockResolvedValue(response)
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+    const card = await screen.findByRole("article", { name: "받아올림 더하기 초안" });
+    await user.click(within(card).getByRole("button", { name: "수정 저장" }));
+
+    expect(await within(card).findByText("수정 결과가 현재 초안과 달라서 반영하지 않았어요."))
+      .toBeVisible();
+    expect(screen.queryByRole("article", { name: "현재 초안이 아닌 응답 초안" }))
+      .not.toBeInTheDocument();
+  });
+
   it("rejects a publish response for a different active draft identity", async () => {
     const user = userEvent.setup();
     const draft = createAcceptedMathDraft();
@@ -709,6 +903,36 @@ describe("GuardianDashboard", () => {
     render(<GuardianDashboard api={createGuardianApi({
       createAiDraft: vi.fn().mockResolvedValue(draft),
       publishAiDraft: vi.fn().mockResolvedValue(mismatched)
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+    await screen.findByRole("article", { name: "받아올림 더하기 초안" });
+    await user.click(screen.getByRole("button", { name: "초안 발행" }));
+
+    expect(await screen.findByText("발행 결과가 현재 초안과 달라서 반영하지 않았어요."))
+      .toBeVisible();
+    expect(screen.queryByText("발행을 완료했어요.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "초안 발행" })).toBeEnabled();
+  });
+
+  it.each([
+    ["subject", (draft: AiDraftView) => ({
+      ...draft, subject: "korean" as const, status: "published" as const
+    })],
+    ["step", (draft: AiDraftView) => ({
+      ...draft, step: "challenge" as const, status: "published" as const
+    })],
+    ["status", (draft: AiDraftView) => ({ ...draft, status: "draft" as const })]
+  ])("rejects a publish response with a mismatched %s", async (_dimension, change) => {
+    const user = userEvent.setup();
+    const draft = createAcceptedMathDraft();
+    render(<GuardianDashboard api={createGuardianApi({
+      createAiDraft: vi.fn().mockResolvedValue(draft),
+      publishAiDraft: vi.fn().mockResolvedValue(change(createAcceptedMathDraft()))
     })} />);
 
     await user.click(screen.getByRole("button", { name: "AI 학습실" }));
