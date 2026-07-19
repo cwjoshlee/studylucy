@@ -631,6 +631,51 @@ describe("GuardianDashboard", () => {
     expect(screen.queryByRole("button", { name: "초안 발행" })).not.toBeInTheDocument();
   });
 
+  it("drops the first same-selection generation after leaving, returning, and restarting", async () => {
+    const user = userEvent.setup();
+    const firstGeneration = deferred<AiDraftView>();
+    const restartedGeneration = deferred<AiDraftView>();
+    const createAiDraft = vi.fn()
+      .mockReturnValueOnce(firstGeneration.promise)
+      .mockReturnValueOnce(restartedGeneration.promise);
+    render(<GuardianDashboard api={createGuardianApi({ createAiDraft })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+    await waitFor(() => expect(createAiDraft).toHaveBeenCalledTimes(1));
+
+    await user.selectOptions(screen.getByLabelText("학습 단계"), "challenge");
+    await user.selectOptions(screen.getByLabelText("학습 단계"), "current");
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+    await waitFor(() => expect(createAiDraft).toHaveBeenCalledTimes(2));
+
+    const oldDraft = createAcceptedMathDraft("same-draft");
+    oldDraft.items[0]!.payload = {
+      ...oldDraft.items[0]!.payload,
+      title: "돌아오기 전 요청 결과"
+    };
+    await act(async () => firstGeneration.resolve(oldDraft));
+
+    expect(screen.queryByRole("article", { name: "돌아오기 전 요청 결과 초안" }))
+      .not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "초안 발행" })).not.toBeInTheDocument();
+
+    const currentDraft = createAcceptedMathDraft("same-draft");
+    currentDraft.items[0]!.payload = {
+      ...currentDraft.items[0]!.payload,
+      title: "다시 시작한 요청 결과"
+    };
+    await act(async () => restartedGeneration.resolve(currentDraft));
+
+    expect(await screen.findByRole("article", { name: "다시 시작한 요청 결과 초안" }))
+      .toBeVisible();
+    expect(screen.queryByRole("article", { name: "돌아오기 전 요청 결과 초안" }))
+      .not.toBeInTheDocument();
+  });
+
   it("drops an old generation error after the guardian changes learning step", async () => {
     const user = userEvent.setup();
     const oldRequest = deferred<never>();
@@ -834,6 +879,51 @@ describe("GuardianDashboard", () => {
       items: [{ ...draft.items[0]!, payload: { ...acceptedPayload, title: "저장 중인 새 제목" }, status: "edited" }]
     });
     await waitFor(() => expect(screen.getByRole("button", { name: "초안 발행" })).toBeEnabled());
+  });
+
+  it("does not let an old edit replace a restarted same-identity generation", async () => {
+    const user = userEvent.setup();
+    const oldEdit = deferred<AiDraftView>();
+    const restartedGeneration = deferred<AiDraftView>();
+    const initialDraft = createAcceptedMathDraft("same-draft");
+    const createAiDraft = vi.fn()
+      .mockResolvedValueOnce(initialDraft)
+      .mockReturnValueOnce(restartedGeneration.promise);
+    const updateAiDraftItem = vi.fn().mockReturnValue(oldEdit.promise);
+    render(<GuardianDashboard api={createGuardianApi({ createAiDraft, updateAiDraftItem })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+    const initialCard = await screen.findByRole("article", { name: "받아올림 더하기 초안" });
+    await user.click(within(initialCard).getByRole("button", { name: "수정 저장" }));
+    await waitFor(() => expect(updateAiDraftItem).toHaveBeenCalledOnce());
+
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+    await waitFor(() => expect(createAiDraft).toHaveBeenCalledTimes(2));
+    const currentDraft = createAcceptedMathDraft("same-draft");
+    currentDraft.items[0]!.payload = {
+      ...currentDraft.items[0]!.payload,
+      title: "새 요청이 만든 현재 문제"
+    };
+    await act(async () => restartedGeneration.resolve(currentDraft));
+    expect(await screen.findByRole("article", { name: "새 요청이 만든 현재 문제 초안" }))
+      .toBeVisible();
+
+    const staleEditResult = createAcceptedMathDraft("same-draft");
+    staleEditResult.items[0]!.payload = {
+      ...staleEditResult.items[0]!.payload,
+      title: "이전 수정 요청이 돌려준 문제"
+    };
+    staleEditResult.items[0]!.status = "edited";
+    await act(async () => oldEdit.resolve(staleEditResult));
+
+    expect(screen.getByRole("article", { name: "새 요청이 만든 현재 문제 초안" }))
+      .toBeVisible();
+    expect(screen.queryByRole("article", { name: "이전 수정 요청이 돌려준 문제 초안" }))
+      .not.toBeInTheDocument();
   });
 
   it("rejects an item edit response for a different active draft identity", async () => {
