@@ -132,7 +132,7 @@ Use it in Coach and Studio completeUsage. A null total must leave reservation an
       expect(response.json()).toMatchObject({ providers: expect.any(Array), monthlyBudgetWon: expect.any(Number) });
     });
 
-    it("returns full settings only from versioned view endpoint", async () => {
+    it("returns full settings from the explicit versioned endpoint", async () => {
       const response = await guardian.get("/api/guardian/ai-studio/settings/view");
       expect(response.json()).toMatchObject({ providers: expect.any(Array), monthlyBudgetWon: expect.any(Number) });
     });
