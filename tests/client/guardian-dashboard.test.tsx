@@ -1198,6 +1198,31 @@ describe("GuardianDashboard", () => {
       .toEqual([owner]);
   });
 
+  it("keeps tree focus on the generation owner when its focused leaf is collapsed", async () => {
+    const api = createGuardianApi();
+    const view = (openGroups: AiStudioTreeState["openGroups"]) => (
+      <AiLearningStudio
+        api={api}
+        panel="generate-math"
+        onPanelChange={vi.fn()}
+        treeState={{ selectedLeaf: "generate-math", openGroups }}
+        onTreeStateChange={vi.fn()}
+      />
+    );
+    const { rerender } = render(view(["generation"]));
+    const tree = screen.getByRole("tree", { name: "AI 학습실 메뉴" });
+    const focusedLeaf = within(tree).getByRole("treeitem", { name: "수학 문제 배치" });
+    focusedLeaf.focus();
+    expect(focusedLeaf).toHaveFocus();
+
+    rerender(view([]));
+
+    const owner = within(tree).getByRole("treeitem", { name: "문제 생성" });
+    await waitFor(() => expect(owner).toHaveFocus());
+    expect(owner).toHaveAttribute("tabindex", "0");
+    expect(document.body).not.toHaveFocus();
+  });
+
   it("keeps input focus while a hidden controlled selection gets a visible roving owner", async () => {
     const user = userEvent.setup();
     const api = createGuardianApi();

@@ -151,6 +151,7 @@ export function AiLearningStudio({
   const previousSelectedLeafRef = useRef(selectedLeaf);
   const treeRef = useRef<HTMLElement>(null);
   const treeItemRefs = useRef(new Map<string, HTMLElement>());
+  const treeHadFocusRef = useRef(false);
   const focusRequested = useRef(false);
   const [settings, setSettings] = useState<AiStudioSettingsView | null>(null);
   const [settingsFailed, setSettingsFailed] = useState(false);
@@ -174,6 +175,8 @@ export function AiLearningStudio({
     const activeElement = document.activeElement;
     const treeOwnsFocus = activeElement instanceof HTMLElement &&
       treeRef.current?.contains(activeElement) === true;
+    const treeFocusWasRemoved = treeHadFocusRef.current &&
+      (activeElement === null || activeElement === document.body);
     const selectionChanged = previousSelectedLeafRef.current !== selectedLeaf;
     previousSelectedLeafRef.current = selectedLeaf;
     const currentFocusedItem = focusedItemRef.current;
@@ -181,7 +184,9 @@ export function AiLearningStudio({
       ? selectedVisibleItem
       : currentFocusedItem;
     setFocusedItem(nextFocusedItem);
-    if (treeOwnsFocus) treeItemRefs.current.get(nextFocusedItem)?.focus();
+    if (treeOwnsFocus || treeFocusWasRemoved) {
+      treeItemRefs.current.get(nextFocusedItem)?.focus();
+    }
   }, [openGroupsKey, selectedLeaf, selectedVisibleItem]);
 
   useEffect(() => {
@@ -288,6 +293,14 @@ export function AiLearningStudio({
       <nav
         aria-label="AI 학습실 메뉴"
         className="ai-studio-tree"
+        onBlurCapture={(event) => {
+          const nextTarget = event.relatedTarget;
+          treeHadFocusRef.current = nextTarget instanceof Node &&
+            event.currentTarget.contains(nextTarget);
+        }}
+        onFocusCapture={() => {
+          treeHadFocusRef.current = true;
+        }}
         ref={treeRef}
         role="tree"
       >
