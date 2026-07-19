@@ -44,6 +44,13 @@ type TreeLeaf = {
   panel: AiStudioPanel;
 };
 
+type SettingsReloadResult =
+  | { status: "applied"; settings: AiStudioSettingsView }
+  | { status: "failed" }
+  | { status: "stale" };
+
+type ReloadAiStudioSettings = () => Promise<SettingsReloadResult>;
+
 const TREE_GROUPS: Array<{
   id: TreeGroupId;
   label: string;
@@ -155,6 +162,9 @@ export function AiLearningStudio({
   const focusRequested = useRef(false);
   const [settings, setSettings] = useState<AiStudioSettingsView | null>(null);
   const [settingsFailed, setSettingsFailed] = useState(false);
+  const settingsReadSequence = useRef(0);
+  const settingsContext = `${panel}:${selectedLeaf}`;
+  const previousSettingsContext = useRef(settingsContext);
   const visibleTreeItems = TREE_GROUPS.flatMap((group) => [
     `group:${group.id}`,
     ...(openGroups.has(group.id) ? group.leaves.map((leaf) => leaf.id) : [])
@@ -196,20 +206,46 @@ export function AiLearningStudio({
   }, [focusedItem, openGroupsKey]);
 
   useEffect(() => {
-    let active = true;
+    const requestId = ++settingsReadSequence.current;
     setSettingsFailed(false);
     void loadAiStudioSettings(api).then(
       (loaded) => {
-        if (active) setSettings(loaded);
+        if (settingsReadSequence.current !== requestId) return;
+        setSettings(loaded);
       },
       () => {
-        if (active) setSettingsFailed(true);
+        if (settingsReadSequence.current !== requestId) return;
+        setSettingsFailed(true);
       }
     );
-    return () => { active = false; };
+    return () => {
+      if (settingsReadSequence.current === requestId) settingsReadSequence.current += 1;
+    };
   }, [api]);
 
+  useEffect(() => {
+    if (previousSettingsContext.current === settingsContext) return;
+    previousSettingsContext.current = settingsContext;
+    settingsReadSequence.current += 1;
+  }, [settingsContext]);
+
+  const reloadSettings: ReloadAiStudioSettings = async () => {
+    const requestId = ++settingsReadSequence.current;
+    try {
+      const loaded = await loadAiStudioSettings(api);
+      if (settingsReadSequence.current !== requestId) return { status: "stale" };
+      setSettings(loaded);
+      setSettingsFailed(false);
+      return { status: "applied", settings: loaded };
+    } catch {
+      if (settingsReadSequence.current !== requestId) return { status: "stale" };
+      setSettingsFailed(true);
+      return { status: "failed" };
+    }
+  };
+
   const selectLeaf = (leaf: TreeLeaf) => {
+    if (selectedLeaf !== leaf.id || panel !== leaf.panel) settingsReadSequence.current += 1;
     setFocusedItem(leaf.id);
     updateTreeState({
       ...currentTreeState,
@@ -383,7 +419,7 @@ export function AiLearningStudio({
                 : item)
             };
           })}
-          onSettingsReloaded={setSettings}
+          reloadSettings={reloadSettings}
         />
       ) : null}
       {panel === "generate-math" || panel === "generate-korean" ? (
@@ -406,20 +442,20 @@ function ProviderSettingsPanel({
   settings,
   selectedLeaf,
   onProviderUpdated,
-  onSettingsReloaded
+  reloadSettings
 }: {
   api: AiLearningStudioApi;
   settings: AiStudioSettingsView | null;
   selectedLeaf: string;
   onProviderUpdated(settings: AiProviderSettingsView): void;
-  onSettingsReloaded(settings: AiStudioSettingsView): void;
+  reloadSettings: ReloadAiStudioSettings;
 }) {
   if (settings === null) return <p aria-busy="true">제공자 설정을 불러오고 있어요.</p>;
   if (selectedLeaf === "budget") {
     return (
       <BudgetSettingsPanel
         api={api}
-        onSettingsReloaded={onSettingsReloaded}
+        reloadSettings={reloadSettings}
         settings={settings}
       />
     );
@@ -434,7 +470,7 @@ function ProviderSettingsPanel({
             api={api}
             key={provider}
             onUpdated={onProviderUpdated}
-            onSettingsReloaded={onSettingsReloaded}
+            reloadSettings={reloadSettings}
             settings={value}
           />
         );
@@ -458,11 +494,11 @@ function parseBoundedInteger(value: string, maximum: number): number | null {
 function BudgetSettingsPanel({
   api,
   settings,
-  onSettingsReloaded
+  reloadSettings
 }: {
   api: AiLearningStudioApi;
   settings: AiStudioSettingsView;
-  onSettingsReloaded(settings: AiStudioSettingsView): void;
+  reloadSettings: ReloadAiStudioSettings;
 }) {
   const provider = (id: "gemini" | "openai") =>
     settings.providers.find((item) => item.provider === id);
@@ -494,8 +530,7 @@ function BudgetSettingsPanel({
   };
   const ratesValid = Object.values(parsedRates).every((value) => value !== null);
   const updateBudget = api.updateAiStudioBudget;
-  const reloadSettings = api.getAiStudioSettingsView;
-  const budgetApiReady = updateBudget !== undefined && reloadSettings !== undefined;
+  const budgetApiReady = updateBudget !== undefined && api.getAiStudioSettingsView !== undefined;
   const invalidMessage = parsedBudget === null
     ? "월 예산은 0원에서 10,000원 사이의 정수로 입력해 주세요."
     : !ratesValid
@@ -507,22 +542,21 @@ function BudgetSettingsPanel({
     outcome: "writes-succeeded" | "write-failed",
     retry: boolean
   ): Promise<void> => {
-    if (reloadSettings === undefined) return;
-    try {
-      const refreshed = await reloadSettings();
-      onSettingsReloaded(refreshed);
+    const result = await reloadSettings();
+    if (result.status === "stale") return;
+    if (result.status === "applied") {
       setPendingReconciliation(null);
       setMessage(outcome === "write-failed"
         ? "저장 요청 중 오류가 있었지만 서버의 최신 값을 다시 불러왔어요. 내용을 확인해 주세요."
         : retry
           ? "설정 저장을 완료했고 서버의 최신 값을 다시 확인했어요."
           : "예산과 예상 요금을 저장했어요.");
-    } catch {
-      setPendingReconciliation(outcome);
-      setMessage(outcome === "write-failed"
-        ? "설정 저장 요청 중 오류가 있었고 현재 서버 상태를 확인하지 못했어요. 최신 설정을 다시 불러와 확인해 주세요."
-        : "저장 요청은 완료했지만 현재 서버 상태를 확인하지 못했어요. 최신 설정을 다시 불러와 확인해 주세요.");
+      return;
     }
+    setPendingReconciliation(outcome);
+    setMessage(outcome === "write-failed"
+      ? "설정 저장 요청 중 오류가 있었고 현재 서버 상태를 확인하지 못했어요. 최신 설정을 다시 불러와 확인해 주세요."
+      : "저장 요청은 완료했지만 현재 서버 상태를 확인하지 못했어요. 최신 설정을 다시 불러와 확인해 주세요.");
   };
 
   const save = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -532,7 +566,7 @@ function BudgetSettingsPanel({
     if (saving || parsedBudget === null || parsedGeminiInput === null ||
         parsedGeminiOutput === null || parsedOpenAiInput === null ||
         parsedOpenAiOutput === null || updateBudget === undefined ||
-        reloadSettings === undefined) return;
+        api.getAiStudioSettingsView === undefined) return;
     setSaving(true);
     setMessage("");
     setPendingReconciliation(null);
@@ -665,12 +699,12 @@ function ProviderCard({
   api,
   settings,
   onUpdated,
-  onSettingsReloaded
+  reloadSettings
 }: {
   api: AiLearningStudioApi;
   settings: AiProviderSettingsView;
   onUpdated(settings: AiProviderSettingsView): void;
-  onSettingsReloaded(settings: AiStudioSettingsView): void;
+  reloadSettings: ReloadAiStudioSettings;
 }) {
   const label = PROVIDER_LABELS[settings.provider];
   const [enabled, setEnabled] = useState(settings.enabled);
@@ -693,8 +727,7 @@ function ProviderCard({
     retry: boolean,
     acknowledged?: AiProviderSettingsView
   ): Promise<void> => {
-    const reloadSettings = api.getAiStudioSettingsView;
-    if (reloadSettings === undefined) {
+    if (api.getAiStudioSettingsView === undefined) {
       if (!outcome.writeFailed && acknowledged !== undefined) {
         onUpdated(acknowledged);
         setMessage(outcome.action === "delete" ? "API 키를 삭제했어요." : "설정을 저장했어요.");
@@ -704,21 +737,21 @@ function ProviderCard({
       setPendingReconciliation(null);
       return;
     }
-    try {
-      const refreshed = await reloadSettings();
-      onSettingsReloaded(refreshed);
+    const result = await reloadSettings();
+    if (result.status === "stale") return;
+    if (result.status === "applied") {
       setPendingReconciliation(null);
       setMessage(outcome.writeFailed
         ? "설정 저장 요청 중 오류가 있었지만 서버의 최신 설정을 다시 불러왔어요. 내용을 확인해 주세요."
         : retry
           ? "설정 저장을 완료했고 서버의 최신 설정을 다시 확인했어요."
           : outcome.action === "delete" ? "API 키를 삭제했어요." : "설정을 저장했어요.");
-    } catch {
-      setPendingReconciliation(outcome);
-      setMessage(outcome.writeFailed
-        ? "설정 저장 요청 중 오류가 있었고 현재 서버 상태를 확인하지 못했어요. 최신 설정을 다시 불러와 확인해 주세요."
-        : "설정 저장 요청은 완료했지만 현재 서버 상태를 확인하지 못했어요. 최신 설정을 다시 불러와 확인해 주세요.");
+      return;
     }
+    setPendingReconciliation(outcome);
+    setMessage(outcome.writeFailed
+      ? "설정 저장 요청 중 오류가 있었고 현재 서버 상태를 확인하지 못했어요. 최신 설정을 다시 불러와 확인해 주세요."
+      : "설정 저장 요청은 완료했지만 현재 서버 상태를 확인하지 못했어요. 최신 설정을 다시 불러와 확인해 주세요.");
   };
 
   const save = async (event: React.FormEvent<HTMLFormElement>) => {
@@ -846,6 +879,8 @@ type GenerationState = {
   draft: AiDraftView | null;
 };
 
+type DraftItemSaveResult = "applied" | "blocked" | "failed" | "rejected" | "stale";
+
 function draftMatchesIdentity(
   draft: AiDraftView,
   id: string,
@@ -869,6 +904,8 @@ function DraftPanel({
   const [difficulty, setDifficulty] = useState(4);
   const [weakTopics, setWeakTopics] = useState("");
   const requestSequence = useRef(0);
+  const draftMutationSequence = useRef(0);
+  const activeDraftMutation = useRef<number | null>(null);
   const activeSelection = useRef({ subject, step });
   activeSelection.current = { subject, step };
   const [generation, setGeneration] = useState<GenerationState>({
@@ -879,7 +916,7 @@ function DraftPanel({
     draft: null
   });
   const [publishing, setPublishing] = useState(false);
-  const [savingItemIds, setSavingItemIds] = useState<Set<string>>(() => new Set());
+  const [savingItemId, setSavingItemId] = useState<string | null>(null);
   const [message, setMessage] = useState("");
   const providersReady = settings !== null &&
     (["gemini", "openai"] as const).every((provider) => settings.some((item) =>
@@ -888,9 +925,11 @@ function DraftPanel({
 
   useEffect(() => {
     const requestId = ++requestSequence.current;
+    draftMutationSequence.current += 1;
+    activeDraftMutation.current = null;
     activeSelection.current = { subject, step };
     setGeneration({ requestId, subject, step, status: "idle", draft: null });
-    setSavingItemIds(new Set());
+    setSavingItemId(null);
     setPublishing(false);
     setMessage("");
   }, [subject, step]);
@@ -907,6 +946,8 @@ function DraftPanel({
     event.preventDefault();
     if (!providersReady || generation.status === "pending" || publishing) return;
     const requestId = ++requestSequence.current;
+    draftMutationSequence.current += 1;
+    activeDraftMutation.current = null;
     const requestSubject = subject;
     const requestStep = step;
     setGeneration({
@@ -916,7 +957,7 @@ function DraftPanel({
       status: "pending",
       draft: null
     });
-    setSavingItemIds(new Set());
+    setSavingItemId(null);
     setMessage("");
     try {
       const created = await api.createAiDraft({
@@ -964,9 +1005,53 @@ function DraftPanel({
     ? generation.draft
     : null;
 
+  const saveDraftItem = async (
+    itemId: string,
+    payload: LearningItemPayload
+  ): Promise<DraftItemSaveResult> => {
+    if (matchingDraft === null || matchingDraft.status !== "draft" || publishing ||
+        activeDraftMutation.current !== null || generation.status !== "succeeded") {
+      return "blocked";
+    }
+    const requestId = generation.requestId;
+    const requestSubject = generation.subject;
+    const requestStep = generation.step;
+    const draftId = matchingDraft.id;
+    const mutationId = ++draftMutationSequence.current;
+    activeDraftMutation.current = mutationId;
+    setSavingItemId(itemId);
+    try {
+      const updated = await api.updateAiDraftItem(draftId, itemId, payload);
+      if (activeDraftMutation.current !== mutationId ||
+          draftMutationSequence.current !== mutationId ||
+          !isCurrentRequest(requestId, requestSubject, requestStep)) return "stale";
+      if (generation.status !== "succeeded" || generation.requestId !== requestId ||
+          generation.draft?.id !== draftId || generation.draft.status !== "draft" ||
+          !draftMatchesIdentity(updated, draftId, requestSubject, requestStep) ||
+          updated.status !== "draft") return "rejected";
+      setGeneration((current) => current.status === "succeeded" &&
+        current.requestId === requestId && current.subject === requestSubject &&
+        current.step === requestStep && current.draft?.id === draftId &&
+        current.draft.status === "draft"
+          ? { ...current, draft: updated }
+          : current);
+      return "applied";
+    } catch {
+      if (activeDraftMutation.current !== mutationId ||
+          draftMutationSequence.current !== mutationId ||
+          !isCurrentRequest(requestId, requestSubject, requestStep)) return "stale";
+      return "failed";
+    } finally {
+      if (activeDraftMutation.current === mutationId) {
+        activeDraftMutation.current = null;
+        setSavingItemId(null);
+      }
+    }
+  };
+
   const publish = async () => {
     if (matchingDraft === null || matchingDraft.status !== "draft" || publishing ||
-        generation.status !== "succeeded" || savingItemIds.size > 0) return;
+        generation.status !== "succeeded" || activeDraftMutation.current !== null) return;
     const requestId = generation.requestId;
     const requestSubject = generation.subject;
     const requestStep = generation.step;
@@ -1000,10 +1085,12 @@ function DraftPanel({
 
   const changeStep = (nextStep: LearningStep) => {
     const requestId = ++requestSequence.current;
+    draftMutationSequence.current += 1;
+    activeDraftMutation.current = null;
     activeSelection.current = { subject, step: nextStep };
     setStep(nextStep);
     setGeneration({ requestId, subject, step: nextStep, status: "idle", draft: null });
-    setSavingItemIds(new Set());
+    setSavingItemId(null);
     setPublishing(false);
     setMessage("");
   };
@@ -1072,37 +1159,14 @@ function DraftPanel({
           </p>
           {matchingDraft.items.map((item) => (
             <DraftItemEditor
-              api={api}
-              disabled={publishing}
-              draftId={matchingDraft.id}
+              disabled={publishing || savingItemId !== null}
               item={item}
               key={item.id}
-              onSavingChange={(itemId, isSaving) => setSavingItemIds((current) => {
-                const next = new Set(current);
-                if (isSaving) next.add(itemId);
-                else next.delete(itemId);
-                return next;
-              })}
-              onUpdated={(updated) => {
-                const requestId = generation.requestId;
-                const draftId = matchingDraft.id;
-                if (!isCurrentRequest(requestId, subject, step) ||
-                    generation.status !== "succeeded" || generation.draft?.id !== draftId ||
-                    generation.draft.status !== "draft" ||
-                    !draftMatchesIdentity(updated, draftId, subject, step) ||
-                    updated.status !== "draft") return false;
-                setGeneration((current) => current.status === "succeeded" &&
-                  current.requestId === requestId && current.subject === subject &&
-                  current.step === step && current.draft?.id === draftId &&
-                  current.draft.status === "draft"
-                    ? { ...current, draft: updated }
-                    : current);
-                return true;
-              }}
+              onSave={(payload) => saveDraftItem(item.id, payload)}
             />
           ))}
           <button
-            disabled={publishing || savingItemIds.size > 0 || matchingDraft.status !== "draft" ||
+            disabled={publishing || savingItemId !== null || matchingDraft.status !== "draft" ||
               generation.status !== "succeeded" ||
               !matchingDraft.items.some((item) => item.status === "accepted" || item.status === "edited")}
             onClick={() => void publish()}
@@ -1118,19 +1182,13 @@ function DraftPanel({
 }
 
 function DraftItemEditor({
-  api,
   disabled,
-  draftId,
   item,
-  onSavingChange,
-  onUpdated
+  onSave
 }: {
-  api: Pick<ApiClient, "updateAiDraftItem">;
   disabled: boolean;
-  draftId: string;
   item: AiDraftItemView;
-  onSavingChange(itemId: string, isSaving: boolean): void;
-  onUpdated(draft: AiDraftView): boolean;
+  onSave(payload: LearningItemPayload): Promise<DraftItemSaveResult>;
 }) {
   const [payload, setPayload] = useState<LearningItemPayload>(item.payload);
   const [saving, setSaving] = useState(false);
@@ -1145,17 +1203,15 @@ function DraftItemEditor({
       setMessage("문제 형식을 다시 확인해 주세요.");
       return;
     }
-    onSavingChange(item.id, true);
     setSaving(true);
     setMessage("");
     try {
-      const updated = await api.updateAiDraftItem(draftId, item.id, parsed.data);
-      if (onUpdated(updated)) setMessage("수정한 문제를 저장했어요.");
-      else setMessage("수정 결과가 현재 초안과 달라서 반영하지 않았어요.");
-    } catch {
-      setMessage("수정한 문제를 저장하지 못했어요.");
+      const result = await onSave(parsed.data);
+      if (result === "applied") setMessage("수정한 문제를 저장했어요.");
+      else if (result === "rejected") {
+        setMessage("수정 결과가 현재 초안과 달라서 반영하지 않았어요.");
+      } else if (result === "failed") setMessage("수정한 문제를 저장하지 못했어요.");
     } finally {
-      onSavingChange(item.id, false);
       setSaving(false);
     }
   };
