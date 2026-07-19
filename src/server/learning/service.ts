@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
+import type { AppConfig } from "../config";
 import type {
   AttemptInput,
   AttemptReceipt,
@@ -42,6 +43,7 @@ export class LearningError extends Error {
 export type LearningServiceDeps = {
   db: Database.Database;
   now: () => Date;
+  config: Pick<AppConfig, "sessionPepper">;
 };
 
 export class LearningService {
@@ -50,7 +52,10 @@ export class LearningService {
   private sessions: LearningSessionRepository;
 
   constructor(private deps: LearningServiceDeps) {
-    this.repository = new LearningRepository(deps.db);
+    this.repository = new LearningRepository(
+      deps.db,
+      deps.config.sessionPepper
+    );
     this.issuedPlans = new IssuedPlanRepository(deps.db, deps.now);
     this.sessions = new LearningSessionRepository(deps.db);
   }

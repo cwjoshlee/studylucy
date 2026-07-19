@@ -140,4 +140,49 @@ describe("offline staged attempt authority", () => {
           WHERE status = 'rejected' AND code = 'STEP_LOCKED') AS rejections
     `).get()).toEqual({ attempts: 0, stars: 0, batches: 1, rejections: 2 });
   });
+
+  it("rejects dictation before persisting an offline batch or activity", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    const plan = await getToday(student);
+    const dictation = plan.items.find((item) =>
+      item.payload.kind === "korean-dictation"
+    )!;
+
+    const response = await student.request(
+      "POST",
+      "/api/student/offline-batches",
+      {
+        clientBatchId: "batch-offline-dictation-0001",
+        planId: plan.planId,
+        offlineEpoch: plan.offlineEpoch,
+        startCursor: plan.activityCursor,
+        events: [{
+          kind: "attempt",
+          deviceSequence: 1,
+          legacy: false,
+          payload: passingAttempt(
+            plan,
+            dictation,
+            "attempt-offline-dictation-0001"
+          )
+        }]
+      }
+    );
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ code: "DICTATION_ONLINE_ONLY" });
+    expect(harness.db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM attempts) AS attempts,
+        (SELECT COUNT(*) FROM offline_batches) AS batches,
+        (SELECT COUNT(*) FROM offline_activity_receipts) AS activities,
+        (SELECT current_cursor FROM student_activity_cursors) AS activityCursor
+    `).get()).toEqual({
+      attempts: 0,
+      batches: 0,
+      activities: 0,
+      activityCursor: 0
+    });
+  });
 });

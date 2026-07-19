@@ -10,11 +10,13 @@ import {
   AiStudioError,
   AiStudioService
 } from "../../src/server/coach/studio-service";
-import { encryptApiKey } from "../../src/server/coach/crypto";
+import { buildApp } from "../../src/server/app";
+import { decryptApiKey, encryptApiKey } from "../../src/server/coach/crypto";
+import { parseConfig } from "../../src/server/config";
 import { openDatabase } from "../../src/server/db/client";
 import { migrate } from "../../src/server/db/migrate";
 import { seedInitialContent } from "../../src/server/db/seed";
-import { createTestHarness } from "../helpers/app";
+import { createTestHarness, TestClient } from "../helpers/app";
 
 const encryptionKey = Buffer.alloc(32, 19);
 const now = () => new Date("2026-07-18T03:00:00.000Z");
@@ -138,7 +140,92 @@ function counts(db: ReturnType<typeof openDatabase>) {
   };
 }
 
+async function productionStudioHarness() {
+  const db = openDatabase(":memory:");
+  migrate(db);
+  seedInitialContent(db);
+  const config = parseConfig({
+    NODE_ENV: "production",
+    HOST: "127.0.0.1",
+    PORT: "8787",
+    DATABASE_PATH: ":memory:",
+    BACKUP_DIR: "/tmp/sua-backups",
+    APP_ORIGIN: "https://sua.example.test",
+    SETUP_SECRET: "s".repeat(32),
+    SESSION_PEPPER: "p".repeat(32),
+    LLM_ENCRYPTION_KEY: encryptionKey.toString("base64"),
+    SESSION_DAYS: "14",
+    TIME_ZONE: "Asia/Seoul"
+  });
+  let sequence = 0;
+  const app = await buildApp({
+    config,
+    db,
+    now,
+    randomToken: () => Buffer.alloc(32, ++sequence).toString("base64url")
+  });
+  return {
+    app,
+    config,
+    db,
+    guardian: new TestClient(app, config.appOrigin),
+    close: async () => {
+      await app.close();
+      db.close();
+    }
+  };
+}
+
 describe("AI learning studio", () => {
+  it("accepts key updates only over effective HTTPS from the trusted first-hop proxy", async () => {
+    const harness = await productionStudioHarness();
+    const { guardian } = harness;
+    expect((await guardian.request("POST", "/api/auth/setup", {
+      setupSecret: harness.config.setupSecret,
+      guardianName: "보호자",
+      password: "correct horse battery staple",
+      studentName: "수아"
+    })).statusCode).toBe(201);
+    expect((await guardian.request("POST", "/api/auth/guardian/login", {
+      password: "correct horse battery staple"
+    })).statusCode).toBe(204);
+
+    const accepted = await guardian.request(
+      "PUT",
+      "/api/guardian/ai-studio/settings/openai",
+      { apiKey: "  provider-secret  " },
+      {
+        remoteAddress: "172.20.0.2",
+        headers: { "x-forwarded-proto": "https" }
+      }
+    );
+    expect(accepted.statusCode).toBe(200);
+    expect(accepted.json()).toMatchObject({
+      provider: "openai",
+      hasApiKey: true
+    });
+    const encrypted = harness.db.prepare(`
+      SELECT api_key_ciphertext AS ciphertext,
+             api_key_iv AS iv,
+             api_key_tag AS tag
+      FROM ai_provider_settings WHERE provider = 'openai'
+    `).get() as { ciphertext: string; iv: string; tag: string };
+    expect(decryptApiKey(encrypted, encryptionKey)).toBe("provider-secret");
+
+    const untrustedForward = await guardian.request(
+      "PUT",
+      "/api/guardian/ai-studio/settings/openai",
+      { apiKey: "replacement-secret" },
+      {
+        remoteAddress: "203.0.113.50",
+        headers: { "x-forwarded-proto": "https" }
+      }
+    );
+    expect(untrustedForward.statusCode).toBe(403);
+    expect(untrustedForward.json()).toEqual({ code: "HTTPS_REQUIRED" });
+    await harness.close();
+  });
+
   it("validates the strict batch request contract", () => {
     expect(AiBatchRequestSchema.parse({
       subject: "math",

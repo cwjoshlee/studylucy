@@ -1,4 +1,8 @@
-import type { FastifyInstance, FastifyReply } from "fastify";
+import type {
+  FastifyInstance,
+  FastifyReply,
+  FastifyRequest
+} from "fastify";
 import { z } from "zod";
 import {
   AiBatchRequestSchema,
@@ -15,7 +19,7 @@ const SettingsInputSchema = z.object({
   enabled: z.boolean().optional(),
   provider: z.enum(["gemini", "openai"]).optional(),
   monthlyBudgetWon: z.number().int().min(0).max(10_000).optional(),
-  apiKey: z.string().min(1).max(500).optional(),
+  apiKey: z.string().trim().min(1).max(500).optional(),
   deleteApiKey: z.literal(true).optional()
 }).strict().refine((input) => Object.keys(input).length > 0);
 
@@ -25,7 +29,7 @@ const ProviderParamsSchema = z.object({
 const ProviderInputSchema = z.object({
   enabled: z.boolean().optional(),
   model: z.string().regex(/^[A-Za-z0-9._:-]{2,120}$/).optional(),
-  apiKey: z.string().min(1).max(500).optional(),
+  apiKey: z.string().trim().min(1).max(500).optional(),
   deleteApiKey: z.literal(true).optional()
 }).strict()
   .refine((input) => Object.keys(input).length > 0)
@@ -46,6 +50,28 @@ const ReportQuerySchema = z.object({
 
 function invalid(reply: FastifyReply): void {
   void reply.code(400).send({ code: "INVALID_REQUEST" });
+}
+
+function bodyHasApiKey(body: unknown): boolean {
+  return typeof body === "object" &&
+    body !== null &&
+    Object.prototype.hasOwnProperty.call(body, "apiKey");
+}
+
+async function requireHttpsForApiKey(
+  request: FastifyRequest,
+  reply: FastifyReply,
+  deps: AppDeps
+): Promise<boolean> {
+  if (
+    deps.config.nodeEnv === "production" &&
+    bodyHasApiKey(request.body) &&
+    request.protocol !== "https"
+  ) {
+    await reply.code(403).send({ code: "HTTPS_REQUIRED" });
+    return false;
+  }
+  return true;
 }
 
 async function handleStudioError(
@@ -90,6 +116,7 @@ export function registerAiCoachRoutes(app: FastifyInstance, deps: AppDeps): void
     "/api/guardian/ai-coach-settings",
     { preHandler: requireRole("guardian") },
     async (request, reply) => {
+      if (!await requireHttpsForApiKey(request, reply, deps)) return;
       const body = SettingsInputSchema.safeParse(request.body);
       if (!body.success) return invalid(reply);
       try {
@@ -134,6 +161,7 @@ export function registerAiCoachRoutes(app: FastifyInstance, deps: AppDeps): void
     "/api/guardian/ai-studio/settings/:provider",
     { preHandler: requireRole("guardian") },
     async (request, reply) => {
+      if (!await requireHttpsForApiKey(request, reply, deps)) return;
       const params = ProviderParamsSchema.safeParse(request.params);
       const body = ProviderInputSchema.safeParse(request.body);
       if (!params.success || !body.success) return invalid(reply);

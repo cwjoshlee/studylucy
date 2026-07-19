@@ -1,5 +1,6 @@
 import type Database from "better-sqlite3";
 import { createHash, randomUUID } from "node:crypto";
+import type { AppConfig } from "../config";
 import { GuardianOfflineRejectionsSchema } from "../../shared/learning";
 import type {
   ActivityEvent,
@@ -43,6 +44,7 @@ export class OfflineBatchError extends Error {
 export type OfflineBatchServiceDeps = {
   db: Database.Database;
   now: () => Date;
+  config: Pick<AppConfig, "sessionPepper">;
 };
 
 type CanonicalEvent = {
@@ -100,7 +102,10 @@ export class OfflineBatchService {
   constructor(private deps: OfflineBatchServiceDeps) {
     this.offline = new OfflineRepository(deps.db);
     this.issuedPlans = new IssuedPlanRepository(deps.db, deps.now);
-    this.learning = new LearningRepository(deps.db);
+    this.learning = new LearningRepository(
+      deps.db,
+      deps.config.sessionPepper
+    );
     this.stars = new StarService(deps);
   }
 
@@ -143,6 +148,11 @@ export class OfflineBatchService {
     trustedDeviceId: string,
     input: OfflineBatchInput
   ): OfflineBatchReceipt {
+    if (input.events.some((event) =>
+      event.kind === "attempt" && event.payload.dictationText !== undefined
+    )) {
+      throw new OfflineBatchError(400, "DICTATION_ONLINE_ONLY");
+    }
     return this.deps.db.transaction(() => {
       const requestReceivedAt = this.deps.now();
       try {
