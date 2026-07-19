@@ -590,6 +590,53 @@ describe("ApiClient", () => {
     ]);
   });
 
+  it("accepts the exact 01ad101 provider array without inventing unavailable rates", async () => {
+    const legacyProviders = [{
+      provider: "gemini" as const,
+      enabled: true,
+      model: "gemini-2.5-flash-lite",
+      hasApiKey: true
+    }, {
+      provider: "openai" as const,
+      enabled: false,
+      model: "gpt-5-nano",
+      hasApiKey: false
+    }];
+    const coachSettings = {
+      enabled: true,
+      provider: "gemini" as const,
+      model: "gemini-2.5-flash-lite",
+      monthlyBudgetWon: 4321,
+      monthSpentWon: 876,
+      hasApiKey: true
+    };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: "HTTP_404" }), {
+        status: 404,
+        headers: { "content-type": "application/json" }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(legacyProviders), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(coachSettings), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }));
+    const api = new ApiClient(fetcher);
+
+    await expect(api.getAiStudioSettingsView()).resolves.toEqual({
+      providers: legacyProviders,
+      monthlyBudgetWon: 4321,
+      monthSpentWon: 876
+    });
+    expect(fetcher.mock.calls.map(([path, init]) => ({ path, method: init?.method }))).toEqual([
+      { path: "/api/guardian/ai-studio/settings/view", method: "GET" },
+      { path: "/api/guardian/ai-studio/settings", method: "GET" },
+      { path: "/api/guardian/ai-coach-settings", method: "GET" }
+    ]);
+  });
+
   it("accepts the exact predecessor full-object settings response after a view 404", async () => {
     const predecessorSettings = {
       monthlyBudgetWon: 1000,

@@ -9,7 +9,7 @@ import {
   AiLearningStudio,
   type AiStudioTreeState
 } from "../../src/client/guardian/ai-learning-studio";
-import { ApiError } from "../../src/client/api/client";
+import { ApiClient, ApiError } from "../../src/client/api/client";
 import type { AiDraftView, GuardianOfflineRejection } from "../../src/shared/learning";
 import type {
   AppliedStarResult,
@@ -196,6 +196,113 @@ describe("GuardianDashboard", () => {
     expect(await screen.findByRole("alert"))
       .toHaveTextContent("AI 학습실 설정을 불러오지 못했어요.");
     expect(screen.queryByText(/TypeError/)).not.toBeInTheDocument();
+  });
+
+  it("retries a failed settings read from the affected generation panel without duplicate reads", async () => {
+    const user = userEvent.setup();
+    const recovered = {
+      monthlyBudgetWon: 3000,
+      monthSpentWon: 1250,
+      providers: [
+        {
+          provider: "gemini" as const,
+          enabled: true,
+          model: "gemini-2.5-flash",
+          hasApiKey: true,
+          inputWonPer1K: 2,
+          outputWonPer1K: 8
+        },
+        {
+          provider: "openai" as const,
+          enabled: true,
+          model: "gpt-5-mini",
+          hasApiKey: true,
+          inputWonPer1K: 3,
+          outputWonPer1K: 12
+        }
+      ]
+    };
+    const retryRead = deferred<typeof recovered>();
+    const getAiStudioSettingsView = vi.fn()
+      .mockRejectedValueOnce(new Error("temporary settings failure"))
+      .mockReturnValueOnce(retryRead.promise);
+    render(<GuardianDashboard api={createGuardianApi({ getAiStudioSettingsView })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    expect(await screen.findByRole("alert"))
+      .toHaveTextContent("AI 학습실 설정을 불러오지 못했어요.");
+
+    const tree = screen.getByRole("tree", { name: "AI 학습실 메뉴" });
+    await user.click(within(tree).getByRole("button", { name: "문제 생성" }));
+    await user.click(within(tree).getByRole("treeitem", { name: "수학 문제 배치" }));
+    const createDraft = screen.getByRole("button", { name: "초안 만들기" });
+    expect(createDraft).toBeDisabled();
+
+    const retry = screen.getByRole("button", { name: "AI 학습실 설정 다시 불러오기" });
+    await user.click(retry);
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(2));
+    expect(retry).toBeDisabled();
+    await user.click(retry);
+    expect(getAiStudioSettingsView).toHaveBeenCalledTimes(2);
+
+    await act(async () => retryRead.resolve(recovered));
+    await waitFor(() => expect(createDraft).toBeEnabled());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("shows the real legacy budget while keeping unavailable rate editing controlled", async () => {
+    const legacyProviders = [{
+      provider: "gemini" as const,
+      enabled: true,
+      model: "gemini-2.5-flash-lite",
+      hasApiKey: true
+    }, {
+      provider: "openai" as const,
+      enabled: false,
+      model: "gpt-5-nano",
+      hasApiKey: false
+    }];
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: "HTTP_404" }), {
+        status: 404,
+        headers: { "content-type": "application/json" }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(legacyProviders), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        enabled: true,
+        provider: "gemini",
+        model: "gemini-2.5-flash-lite",
+        monthlyBudgetWon: 4321,
+        monthSpentWon: 876,
+        hasApiKey: true
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }));
+    const api = new ApiClient(fetcher);
+    render(<AiLearningStudio
+      api={api}
+      onPanelChange={vi.fn()}
+      onTreeStateChange={vi.fn()}
+      panel="settings"
+      treeState={{ selectedLeaf: "budget", openGroups: ["settings"] }}
+    />);
+
+    expect(await screen.findByText("월 예상 예산 4,321원")).toBeVisible();
+    expect(screen.getByText("이번 달 사용 876원")).toBeVisible();
+    expect(screen.getByRole("status"))
+      .toHaveTextContent("이전 서버에서는 예상 요금을 수정할 수 없어요.");
+    expect(screen.queryByRole("button", { name: "예산 저장" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Gemini 예상 입력 요금 (원/1K 토큰)"))
+      .not.toBeInTheDocument();
+    expect(fetcher.mock.calls.map(([path, init]) => ({ path, method: init?.method }))).toEqual([
+      { path: "/api/guardian/ai-studio/settings/view", method: "GET" },
+      { path: "/api/guardian/ai-studio/settings", method: "GET" },
+      { path: "/api/guardian/ai-coach-settings", method: "GET" }
+    ]);
   });
 
   it("exposes the guardian sections, AI hierarchy, and separate device management in responsive navigation", async () => {
