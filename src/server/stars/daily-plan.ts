@@ -182,7 +182,18 @@ export class DailyPlanService {
     guardianId: string
   ): GuardianDailyPlan {
     return this.db.transaction(() => {
+      if (input.subjectSettings === undefined) {
+        throw new Error("PLAN_VERSION_REQUIRED");
+      }
       if (studyDate < kstStudyDate(this.now())) {
+        throw new Error("PLAN_LOCKED");
+      }
+      const issued = this.db.prepare(`
+        SELECT 1 FROM issued_daily_plans
+        WHERE student_id = ? AND study_date = ? AND plan_kind = 'daily'
+        LIMIT 1
+      `).get(studentId, studyDate);
+      if (issued !== undefined) {
         throw new Error("PLAN_LOCKED");
       }
       const locked = this.db.prepare(`
@@ -215,26 +226,24 @@ export class DailyPlanService {
         guardianId,
         updatedAt
       );
-      if (input.subjectSettings !== undefined) {
-        const upsertStepSettings = this.db.prepare(`
-          INSERT INTO daily_step_settings (
-            student_id, study_date, subject, difficulty,
-            challenge_bonus_stars
-          ) VALUES (?, ?, ?, ?, ?)
-          ON CONFLICT(student_id, study_date, subject) DO UPDATE SET
-            difficulty = excluded.difficulty,
-            challenge_bonus_stars = excluded.challenge_bonus_stars
-        `);
-        for (const subject of SUBJECTS) {
-          const subjectInput = input.subjectSettings[subject];
-          upsertStepSettings.run(
-            studentId,
-            studyDate,
-            subject,
-            subjectInput.difficulty,
-            subjectInput.challengeBonusStars
-          );
-        }
+      const upsertStepSettings = this.db.prepare(`
+        INSERT INTO daily_step_settings (
+          student_id, study_date, subject, difficulty,
+          challenge_bonus_stars
+        ) VALUES (?, ?, ?, ?, ?)
+        ON CONFLICT(student_id, study_date, subject) DO UPDATE SET
+          difficulty = excluded.difficulty,
+          challenge_bonus_stars = excluded.challenge_bonus_stars
+      `);
+      for (const subject of SUBJECTS) {
+        const subjectInput = input.subjectSettings[subject];
+        upsertStepSettings.run(
+          studentId,
+          studyDate,
+          subject,
+          subjectInput.difficulty,
+          subjectInput.challengeBonusStars
+        );
       }
       this.db.prepare(`
         DELETE FROM daily_requirements

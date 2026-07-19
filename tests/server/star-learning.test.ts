@@ -195,6 +195,88 @@ describe("issued-plan required learning star awards", () => {
     );
   });
 
+  it("locks requirement replacement after either device receives the daily plan", async () => {
+    const firstDevice = harness.client();
+    await authenticateStudent(harness, firstDevice);
+    const firstPlan = await getToday(firstDevice);
+
+    const secondDevice = harness.client();
+    await loginStudentOnNewDevice(secondDevice, "수아 두 번째 태블릿");
+    const secondPlan = await getToday(secondDevice);
+    expect(secondPlan.planId).not.toBe(firstPlan.planId);
+    expect(secondPlan.items).toEqual(firstPlan.items);
+
+    const guardian = harness.client();
+    expect((await guardian.request("POST", "/api/auth/guardian/login", {
+      password: FAMILY.password
+    })).statusCode).toBe(204);
+    const locked = await guardian.request(
+      "PUT",
+      "/api/guardian/daily-plans/2026-07-15",
+      {
+        koreanTarget: 1,
+        mathTarget: 3,
+        isRestDay: false,
+        subjectSettings: {
+          korean: { difficulty: 5, challengeBonusStars: 5 },
+          math: { difficulty: 1, challengeBonusStars: 0 }
+        }
+      }
+    );
+    expect(locked.statusCode).toBe(409);
+    expect(locked.json()).toEqual({ code: "PLAN_LOCKED" });
+    expect(harness.db.prepare(`
+      SELECT korean_target AS koreanTarget, math_target AS mathTarget,
+             is_rest_day AS isRestDay
+      FROM daily_plan_settings
+      WHERE study_date = '2026-07-15'
+    `).get()).toEqual({ koreanTarget: 2, mathTarget: 2, isRestDay: 0 });
+    expect(harness.db.prepare(`
+      SELECT subject, difficulty,
+             challenge_bonus_stars AS challengeBonusStars
+      FROM daily_step_settings
+      WHERE study_date = '2026-07-15'
+      ORDER BY subject
+    `).all()).toEqual([
+      { subject: "korean", difficulty: 3, challengeBonusStars: 2 },
+      { subject: "math", difficulty: 3, challengeBonusStars: 2 }
+    ]);
+    expect(harness.db.prepare(`
+      SELECT COUNT(*) AS count FROM daily_requirements
+      WHERE study_date = '2026-07-15'
+    `).get()).toEqual({ count: 6 });
+  });
+
+  it("rejects legacy target-only plan updates with a stable version code", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    const guardian = harness.client();
+    expect((await guardian.request("POST", "/api/auth/guardian/login", {
+      password: FAMILY.password
+    })).statusCode).toBe(204);
+
+    const response = await guardian.request(
+      "PUT",
+      "/api/guardian/daily-plans/2026-07-15",
+      { koreanTarget: 1, mathTarget: 3, isRestDay: false }
+    );
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ code: "PLAN_VERSION_REQUIRED" });
+    expect(harness.db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM daily_plan_settings) AS settings,
+        (SELECT COUNT(*) FROM daily_step_settings) AS stepSettings,
+        (SELECT COUNT(*) FROM daily_requirements) AS requirements,
+        (SELECT COUNT(*) FROM issued_daily_plans) AS issuedPlans
+    `).get()).toEqual({
+      settings: 0,
+      stepSettings: 0,
+      requirements: 0,
+      issuedPlans: 0
+    });
+  });
+
   it("issues one authoritative foundation, current, and challenge item per subject", async () => {
     const student = harness.client();
     await authenticateStudent(harness, student);
@@ -548,7 +630,9 @@ describe("issued-plan required learning star awards", () => {
     await authenticateStudent(harness, student);
     const plan = await getToday(student);
     const required = plan.items.find((item) => item.step === "foundation")!;
-    const optional = plan.items.find((item) => item.step === "current")!;
+    const optional = plan.items.find((item) =>
+      item.step === "foundation" && item.id !== required.id
+    )!;
     harness.db.prepare(`
       UPDATE issued_plan_items SET is_required = 0
       WHERE plan_id = ? AND item_id = ?

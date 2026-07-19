@@ -29,6 +29,7 @@ export class LearningError extends Error {
     | "PLAN_NOT_ISSUED"
     | "PLAN_SUBMISSION_EXPIRED"
     | "CONTENT_VERSION_CONFLICT"
+    | "STEP_LOCKED"
     | "LEARNING_SESSION_INVALID"
     | "LEARNING_SESSION_EXPIRED"
     | "INVALID_REQUEST"

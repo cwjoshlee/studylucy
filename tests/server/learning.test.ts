@@ -195,6 +195,68 @@ describe("authoritative learning API", () => {
     `).get(recovery.json().planId, item.id)).toEqual({ step: "foundation" });
   });
 
+  it("rejects current and challenge before prerequisite issued steps complete", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    const plan = await getToday(student);
+    const math = Object.fromEntries(plan.items
+      .filter((item) => item.payload.subject === "math")
+      .map((item) => [item.step, item])) as Record<
+        "foundation" | "current" | "challenge",
+        TodayPlan["items"][number]
+      >;
+
+    const lockedSession = await createLearningSession(
+      student,
+      plan,
+      math.current
+    );
+    expect(lockedSession.statusCode).toBe(409);
+    expect(lockedSession.json()).toEqual({ code: "STEP_LOCKED" });
+
+    for (const [item, clientAttemptId] of [
+      [math.current, "attempt-current-before-foundation-0001"],
+      [math.challenge, "attempt-challenge-before-foundation-0001"]
+    ] as const) {
+      const response = await student.request(
+        "POST",
+        "/api/student/attempts",
+        passingAttempt(plan, item, clientAttemptId)
+      );
+      expect(response.statusCode).toBe(409);
+      expect(response.json()).toEqual({ code: "STEP_LOCKED" });
+    }
+    expect(harness.db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM issued_learning_sessions) AS sessions,
+        (SELECT COUNT(*) FROM attempts) AS attempts,
+        (SELECT COUNT(*) FROM star_events) AS stars,
+        (SELECT current_cursor FROM student_activity_cursors) AS cursor
+    `).get()).toEqual({ sessions: 0, attempts: 0, stars: 0, cursor: 0 });
+
+    const foundation = await student.request(
+      "POST",
+      "/api/student/attempts",
+      passingAttempt(plan, math.foundation, "attempt-foundation-unlocks-current-0001")
+    );
+    expect(foundation.statusCode).toBe(201);
+    expect(foundation.json()).toMatchObject({ completed: true });
+
+    const currentSession = await createLearningSession(
+      student,
+      plan,
+      math.current
+    );
+    expect(currentSession.statusCode).toBe(201);
+    const current = await student.request(
+      "POST",
+      "/api/student/attempts",
+      passingAttempt(plan, math.current, "attempt-current-after-foundation-0001")
+    );
+    expect(current.statusCode).toBe(201);
+    expect(current.json()).toMatchObject({ completed: true });
+  });
+
   it("completes a wrong challenge, unlocks from server completion, and awards one perfect bonus", async () => {
     const student = harness.client();
     await authenticateStudent(harness, student);
@@ -212,6 +274,22 @@ describe("authoritative learning API", () => {
     const challenge = plan.items.find((item) =>
       item.payload.subject === "math" && item.step === "challenge"
     )!;
+    const prerequisites = plan.items.filter((item) =>
+      item.payload.subject === "math" && item.step !== "challenge"
+    );
+    for (const [index, prerequisite] of prerequisites.entries()) {
+      const response = await student.request(
+        "POST",
+        "/api/student/attempts",
+        passingAttempt(
+          plan,
+          prerequisite,
+          `attempt-challenge-prerequisite-${index + 1}-0001`
+        )
+      );
+      expect(response.statusCode).toBe(201);
+      expect(response.json()).toMatchObject({ completed: true });
+    }
 
     const wrong = await student.request("POST", "/api/student/attempts", {
       ...passingAttempt(plan, challenge, "attempt-wrong-challenge-0001"),
@@ -938,10 +1016,11 @@ describe("authoritative learning API", () => {
       "/api/student/attempts",
       passingAttempt(
         secondPlan,
-        secondPlan.items[1]!,
+        secondPlan.items[0]!,
         "attempt-cursor-second-0001"
       )
     );
+    expect(second.statusCode).toBe(201);
     expect(second.json().activityCursor).toBe(2);
 
     const laterDuplicate = await firstDevice.request(
