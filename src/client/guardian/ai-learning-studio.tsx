@@ -10,6 +10,7 @@ import {
   type AiDraftItemView,
   type AiDraftView,
   type AiProviderSettingsView,
+  type AiStudioSettingsView,
   type GuardianAiReport,
   type LearningItemPayload,
   type LearningStep
@@ -27,7 +28,10 @@ export type AiLearningStudioApi = Pick<ApiClient,
   | "updateAiDraftItem"
   | "publishAiDraft"
   | "getGuardianAiReport"
->;
+> & Partial<Pick<ApiClient,
+  | "getAiStudioSettingsView"
+  | "updateAiStudioBudget"
+>>;
 
 type TreeGroupId = "settings" | "generation" | "reports";
 export type AiStudioTreeState = {
@@ -76,6 +80,15 @@ const PROVIDER_LABELS = {
   gemini: "Gemini",
   openai: "OpenAI"
 } as const;
+
+function loadAiStudioSettings(api: AiLearningStudioApi): Promise<AiStudioSettingsView> {
+  if (api.getAiStudioSettingsView !== undefined) return api.getAiStudioSettingsView();
+  return api.getAiStudioSettings().then((providers) => ({
+    providers,
+    monthlyBudgetWon: 0,
+    monthSpentWon: 0
+  }));
+}
 
 function treeSelection(panel: AiStudioPanel): {
   groupId: TreeGroupId;
@@ -136,7 +149,7 @@ export function AiLearningStudio({
   const [focusedItem, setFocusedItem] = useState(currentTreeState.selectedLeaf);
   const treeItemRefs = useRef(new Map<string, HTMLElement>());
   const focusRequested = useRef(false);
-  const [settings, setSettings] = useState<AiProviderSettingsView[] | null>(null);
+  const [settings, setSettings] = useState<AiStudioSettingsView | null>(null);
   const [settingsFailed, setSettingsFailed] = useState(false);
 
   useEffect(() => {
@@ -148,7 +161,7 @@ export function AiLearningStudio({
   useEffect(() => {
     let active = true;
     setSettingsFailed(false);
-    void api.getAiStudioSettings().then(
+    void loadAiStudioSettings(api).then(
       (loaded) => {
         if (active) setSettings(loaded);
       },
@@ -314,19 +327,25 @@ export function AiLearningStudio({
       {panel === "settings" ? (
         <ProviderSettingsPanel
           api={api}
+          selectedLeaf={selectedLeaf}
           settings={settings}
           onProviderUpdated={(updated) => setSettings((current) => {
-            if (current === null) return [updated];
-            return current.map((item) => item.provider === updated.provider
-              ? updated
-              : item);
+            if (current === null) return null;
+            return {
+              ...current,
+              providers: current.providers.map((item) => item.provider === updated.provider
+                ? updated
+                : item)
+            };
           })}
+          onSettingsReloaded={setSettings}
         />
       ) : null}
       {panel === "generate-math" || panel === "generate-korean" ? (
         <DraftPanel
           api={api}
-          settings={settings}
+          key={panel}
+          settings={settings?.providers ?? null}
           subject={panel === "generate-math" ? "math" : "korean"}
         />
       ) : null}
@@ -340,17 +359,30 @@ export function AiLearningStudio({
 function ProviderSettingsPanel({
   api,
   settings,
-  onProviderUpdated
+  selectedLeaf,
+  onProviderUpdated,
+  onSettingsReloaded
 }: {
-  api: Pick<ApiClient, "updateAiStudioProvider">;
-  settings: AiProviderSettingsView[] | null;
+  api: AiLearningStudioApi;
+  settings: AiStudioSettingsView | null;
+  selectedLeaf: string;
   onProviderUpdated(settings: AiProviderSettingsView): void;
+  onSettingsReloaded(settings: AiStudioSettingsView): void;
 }) {
   if (settings === null) return <p aria-busy="true">제공자 설정을 불러오고 있어요.</p>;
+  if (selectedLeaf === "budget") {
+    return (
+      <BudgetSettingsPanel
+        api={api}
+        onSettingsReloaded={onSettingsReloaded}
+        settings={settings}
+      />
+    );
+  }
   return (
     <div className="ai-provider-grid">
       {(["gemini", "openai"] as const).map((provider) => {
-        const value = settings.find((item) => item.provider === provider);
+        const value = settings.providers.find((item) => item.provider === provider);
         if (value === undefined) return null;
         return (
           <ProviderCard
@@ -365,6 +397,178 @@ function ProviderSettingsPanel({
         월 예산과 사용량은 두 제공자가 함께 쓰는 서버 공통 한도로 관리돼요.
       </p>
     </div>
+  );
+}
+
+const MAX_MONTHLY_BUDGET_WON = 10_000;
+const MAX_RATE_WON_PER_1K = 1_000_000;
+
+function parseBoundedInteger(value: string, maximum: number): number | null {
+  if (!/^(0|[1-9]\d*)$/u.test(value)) return null;
+  const parsed = Number(value);
+  return Number.isSafeInteger(parsed) && parsed <= maximum ? parsed : null;
+}
+
+function BudgetSettingsPanel({
+  api,
+  settings,
+  onSettingsReloaded
+}: {
+  api: AiLearningStudioApi;
+  settings: AiStudioSettingsView;
+  onSettingsReloaded(settings: AiStudioSettingsView): void;
+}) {
+  const provider = (id: "gemini" | "openai") =>
+    settings.providers.find((item) => item.provider === id);
+  const [monthlyBudget, setMonthlyBudget] = useState(String(settings.monthlyBudgetWon));
+  const [geminiInput, setGeminiInput] = useState(String(provider("gemini")?.inputWonPer1K ?? 0));
+  const [geminiOutput, setGeminiOutput] = useState(String(provider("gemini")?.outputWonPer1K ?? 0));
+  const [openAiInput, setOpenAiInput] = useState(String(provider("openai")?.inputWonPer1K ?? 0));
+  const [openAiOutput, setOpenAiOutput] = useState(String(provider("openai")?.outputWonPer1K ?? 0));
+  const [saving, setSaving] = useState(false);
+  const [message, setMessage] = useState("");
+
+  useEffect(() => {
+    setMonthlyBudget(String(settings.monthlyBudgetWon));
+    setGeminiInput(String(provider("gemini")?.inputWonPer1K ?? 0));
+    setGeminiOutput(String(provider("gemini")?.outputWonPer1K ?? 0));
+    setOpenAiInput(String(provider("openai")?.inputWonPer1K ?? 0));
+    setOpenAiOutput(String(provider("openai")?.outputWonPer1K ?? 0));
+  }, [settings]);
+
+  const parsedBudget = parseBoundedInteger(monthlyBudget, MAX_MONTHLY_BUDGET_WON);
+  const parsedRates = {
+    geminiInput: parseBoundedInteger(geminiInput, MAX_RATE_WON_PER_1K),
+    geminiOutput: parseBoundedInteger(geminiOutput, MAX_RATE_WON_PER_1K),
+    openAiInput: parseBoundedInteger(openAiInput, MAX_RATE_WON_PER_1K),
+    openAiOutput: parseBoundedInteger(openAiOutput, MAX_RATE_WON_PER_1K)
+  };
+  const ratesValid = Object.values(parsedRates).every((value) => value !== null);
+  const updateBudget = api.updateAiStudioBudget;
+  const reloadSettings = api.getAiStudioSettingsView;
+  const budgetApiReady = updateBudget !== undefined && reloadSettings !== undefined;
+  const invalidMessage = parsedBudget === null
+    ? "월 예산은 0원에서 10,000원 사이의 정수로 입력해 주세요."
+    : !ratesValid
+      ? "예상 요금은 0원에서 1,000,000원 사이의 정수로 입력해 주세요."
+      : "";
+  const remaining = settings.monthlyBudgetWon - settings.monthSpentWon;
+
+  const save = async (event: React.FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    const { geminiInput: parsedGeminiInput, geminiOutput: parsedGeminiOutput,
+      openAiInput: parsedOpenAiInput, openAiOutput: parsedOpenAiOutput } = parsedRates;
+    if (saving || parsedBudget === null || parsedGeminiInput === null ||
+        parsedGeminiOutput === null || parsedOpenAiInput === null ||
+        parsedOpenAiOutput === null || updateBudget === undefined ||
+        reloadSettings === undefined) return;
+    setSaving(true);
+    setMessage("");
+    try {
+      await updateBudget({ monthlyBudgetWon: parsedBudget });
+      await Promise.all([
+        api.updateAiStudioProvider("gemini", {
+          inputWonPer1K: parsedGeminiInput,
+          outputWonPer1K: parsedGeminiOutput
+        }),
+        api.updateAiStudioProvider("openai", {
+          inputWonPer1K: parsedOpenAiInput,
+          outputWonPer1K: parsedOpenAiOutput
+        })
+      ]);
+      const refreshed = await reloadSettings();
+      onSettingsReloaded(refreshed);
+      setMessage("예산과 예상 요금을 저장했어요.");
+    } catch {
+      setMessage("예산 설정을 저장하지 못했어요. 서버 설정을 다시 불러와 확인해 주세요.");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <section className="ai-budget-panel" aria-labelledby="ai-budget-title">
+      <div>
+        <h3 id="ai-budget-title">월 예산·사용량</h3>
+        <p>표시 금액은 보호자가 입력한 토큰 요금으로 계산한 예상치예요.</p>
+      </div>
+      <div className="ai-budget-summary" aria-label="이번 달 AI 예상 사용 현황">
+        <p>월 예상 예산 {settings.monthlyBudgetWon.toLocaleString("ko-KR")}원</p>
+        <p>이번 달 사용 {settings.monthSpentWon.toLocaleString("ko-KR")}원</p>
+        <p className={remaining < 0 ? "ai-budget-summary__over" : ""}>
+          {remaining < 0
+            ? `예상 예산 초과 ${Math.abs(remaining).toLocaleString("ko-KR")}원`
+            : `남은 예상 예산 ${remaining.toLocaleString("ko-KR")}원`}
+        </p>
+      </div>
+      <form className="ai-budget-form" onSubmit={(event) => void save(event)}>
+        <label>
+          월 예산 (원)
+          <input
+            aria-label="월 예산 (원)"
+            disabled={saving}
+            inputMode="numeric"
+            max={MAX_MONTHLY_BUDGET_WON}
+            min="0"
+            onChange={(event) => setMonthlyBudget(event.currentTarget.value)}
+            step="1"
+            type="number"
+            value={monthlyBudget}
+          />
+        </label>
+        {(["gemini", "openai"] as const).map((providerId) => {
+          const label = PROVIDER_LABELS[providerId];
+          const inputValue = providerId === "gemini" ? geminiInput : openAiInput;
+          const outputValue = providerId === "gemini" ? geminiOutput : openAiOutput;
+          return (
+            <fieldset key={providerId}>
+              <legend>{label} 보호자 예상 요금</legend>
+              <label>
+                {label} 예상 입력 요금 (원/1K 토큰)
+                <input
+                  aria-label={`${label} 예상 입력 요금 (원/1K 토큰)`}
+                  disabled={saving}
+                  inputMode="numeric"
+                  max={MAX_RATE_WON_PER_1K}
+                  min="0"
+                  onChange={(event) => providerId === "gemini"
+                    ? setGeminiInput(event.currentTarget.value)
+                    : setOpenAiInput(event.currentTarget.value)}
+                  step="1"
+                  type="number"
+                  value={inputValue}
+                />
+              </label>
+              <label>
+                {label} 예상 출력 요금 (원/1K 토큰)
+                <input
+                  aria-label={`${label} 예상 출력 요금 (원/1K 토큰)`}
+                  disabled={saving}
+                  inputMode="numeric"
+                  max={MAX_RATE_WON_PER_1K}
+                  min="0"
+                  onChange={(event) => providerId === "gemini"
+                    ? setGeminiOutput(event.currentTarget.value)
+                    : setOpenAiOutput(event.currentTarget.value)}
+                  step="1"
+                  type="number"
+                  value={outputValue}
+                />
+              </label>
+            </fieldset>
+          );
+        })}
+        {invalidMessage !== "" ? <p role="alert">{invalidMessage}</p> : null}
+        {!budgetApiReady ? <p role="alert">예산 설정 기능을 사용할 수 없어요.</p> : null}
+        <button
+          disabled={saving || invalidMessage !== "" || !budgetApiReady}
+          type="submit"
+        >
+          예산 저장
+        </button>
+      </form>
+      {message !== "" ? <p role="status">{message}</p> : null}
+    </section>
   );
 }
 
@@ -403,6 +607,7 @@ function ProviderCard({
     } catch {
       setMessage("설정을 저장하지 못했어요.");
     } finally {
+      setApiKey("");
       setSaving(false);
     }
   };
@@ -483,6 +688,14 @@ function ProviderCard({
   );
 }
 
+type GenerationState = {
+  requestId: number;
+  subject: "math" | "korean";
+  step: LearningStep;
+  status: "idle" | "pending" | "failed" | "succeeded";
+  draft: AiDraftView | null;
+};
+
 function DraftPanel({
   api,
   settings,
@@ -496,8 +709,17 @@ function DraftPanel({
   const [count, setCount] = useState(8);
   const [difficulty, setDifficulty] = useState(4);
   const [weakTopics, setWeakTopics] = useState("");
-  const [draft, setDraft] = useState<AiDraftView | null>(null);
-  const [saving, setSaving] = useState(false);
+  const requestSequence = useRef(0);
+  const activeSelection = useRef({ subject, step });
+  activeSelection.current = { subject, step };
+  const [generation, setGeneration] = useState<GenerationState>({
+    requestId: 0,
+    subject,
+    step,
+    status: "idle",
+    draft: null
+  });
+  const [publishing, setPublishing] = useState(false);
   const [savingItemIds, setSavingItemIds] = useState<Set<string>>(() => new Set());
   const [message, setMessage] = useState("");
   const providersReady = settings !== null &&
@@ -505,39 +727,116 @@ function DraftPanel({
       item.provider === provider && item.enabled && item.hasApiKey
     ));
 
+  useEffect(() => {
+    const requestId = ++requestSequence.current;
+    activeSelection.current = { subject, step };
+    setGeneration({ requestId, subject, step, status: "idle", draft: null });
+    setSavingItemIds(new Set());
+    setPublishing(false);
+    setMessage("");
+  }, [subject, step]);
+
+  const isCurrentRequest = (
+    requestId: number,
+    requestSubject: "math" | "korean",
+    requestStep: LearningStep
+  ) => requestSequence.current === requestId &&
+    activeSelection.current.subject === requestSubject &&
+    activeSelection.current.step === requestStep;
+
   const create = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    if (!providersReady || saving) return;
-    setSaving(true);
+    if (!providersReady || generation.status === "pending" || publishing) return;
+    const requestId = ++requestSequence.current;
+    const requestSubject = subject;
+    const requestStep = step;
+    setGeneration({
+      requestId,
+      subject: requestSubject,
+      step: requestStep,
+      status: "pending",
+      draft: null
+    });
+    setSavingItemIds(new Set());
     setMessage("");
     try {
       const created = await api.createAiDraft({
-        subject,
-        step,
+        subject: requestSubject,
+        step: requestStep,
         count,
         difficulty,
         weakTopics: weakTopics.split(/[,\n]/u).map((value) => value.trim()).filter(Boolean)
       });
-      setDraft(created);
+      if (!isCurrentRequest(requestId, requestSubject, requestStep)) return;
+      if (created.subject !== requestSubject || created.step !== requestStep) {
+        setGeneration({
+          requestId,
+          subject: requestSubject,
+          step: requestStep,
+          status: "failed",
+          draft: null
+        });
+        setMessage("초안의 과목이나 학습 단계가 요청과 달라서 표시하지 않았어요.");
+        return;
+      }
+      setGeneration({
+        requestId,
+        subject: requestSubject,
+        step: requestStep,
+        status: "succeeded",
+        draft: created
+      });
     } catch {
+      if (!isCurrentRequest(requestId, requestSubject, requestStep)) return;
+      setGeneration({
+        requestId,
+        subject: requestSubject,
+        step: requestStep,
+        status: "failed",
+        draft: null
+      });
       setMessage("초안을 만들지 못했어요.");
-    } finally {
-      setSaving(false);
     }
   };
 
+  const matchingDraft = generation.status === "succeeded" &&
+    generation.subject === subject && generation.step === step
+    ? generation.draft
+    : null;
+
   const publish = async () => {
-    if (draft === null || draft.status !== "draft" || saving || savingItemIds.size > 0) return;
-    setSaving(true);
+    if (matchingDraft === null || matchingDraft.status !== "draft" || publishing ||
+        generation.status !== "succeeded" || savingItemIds.size > 0) return;
+    const requestId = generation.requestId;
+    const requestSubject = generation.subject;
+    const requestStep = generation.step;
+    const draftId = matchingDraft.id;
+    setPublishing(true);
     setMessage("");
     try {
-      setDraft(await api.publishAiDraft(draft.id));
+      const published = await api.publishAiDraft(draftId);
+      if (!isCurrentRequest(requestId, requestSubject, requestStep)) return;
+      setGeneration((current) => current.requestId === requestId &&
+        current.subject === requestSubject && current.step === requestStep
+        ? { ...current, draft: published }
+        : current);
       setMessage("발행을 완료했어요.");
     } catch {
+      if (!isCurrentRequest(requestId, requestSubject, requestStep)) return;
       setMessage("초안을 발행하지 못했어요.");
     } finally {
-      setSaving(false);
+      if (isCurrentRequest(requestId, requestSubject, requestStep)) setPublishing(false);
     }
+  };
+
+  const changeStep = (nextStep: LearningStep) => {
+    const requestId = ++requestSequence.current;
+    activeSelection.current = { subject, step: nextStep };
+    setStep(nextStep);
+    setGeneration({ requestId, subject, step: nextStep, status: "idle", draft: null });
+    setSavingItemIds(new Set());
+    setPublishing(false);
+    setMessage("");
   };
 
   return (
@@ -553,7 +852,10 @@ function DraftPanel({
       <form className="ai-draft-form" onSubmit={(event) => void create(event)}>
         <label>
           학습 단계
-          <select onChange={(event) => setStep(event.currentTarget.value as LearningStep)} value={step}>
+          <select
+            onChange={(event) => changeStep(event.currentTarget.value as LearningStep)}
+            value={step}
+          >
             <option value="foundation">기초</option>
             <option value="current">현재 수준</option>
             <option value="challenge">도전</option>
@@ -586,18 +888,23 @@ function DraftPanel({
             value={weakTopics}
           />
         </label>
-        <button disabled={!providersReady || saving} type="submit">초안 만들기</button>
+        <button
+          disabled={!providersReady || generation.status === "pending" || publishing}
+          type="submit"
+        >
+          초안 만들기
+        </button>
       </form>
-      {draft !== null ? (
+      {matchingDraft !== null ? (
         <div className="ai-draft-results">
           <p>
-            감리 통과 {draft.items.filter((item) => item.status !== "rejected").length}개 ·
-            발행 제외 {draft.items.filter((item) => item.status === "rejected").length}개
+            감리 통과 {matchingDraft.items.filter((item) => item.status !== "rejected").length}개 ·
+            발행 제외 {matchingDraft.items.filter((item) => item.status === "rejected").length}개
           </p>
-          {draft.items.map((item) => (
+          {matchingDraft.items.map((item) => (
             <DraftItemEditor
               api={api}
-              draftId={draft.id}
+              draftId={matchingDraft.id}
               item={item}
               key={item.id}
               onSavingChange={(itemId, isSaving) => setSavingItemIds((current) => {
@@ -606,12 +913,18 @@ function DraftPanel({
                 else next.delete(itemId);
                 return next;
               })}
-              onUpdated={setDraft}
+              onUpdated={(updated) => setGeneration((current) =>
+                current.status === "succeeded" &&
+                current.requestId === generation.requestId &&
+                current.subject === subject && current.step === step
+                  ? { ...current, draft: updated }
+                  : current)}
             />
           ))}
           <button
-            disabled={saving || savingItemIds.size > 0 || draft.status !== "draft" ||
-              !draft.items.some((item) => item.status === "accepted" || item.status === "edited")}
+            disabled={publishing || savingItemIds.size > 0 || matchingDraft.status !== "draft" ||
+              generation.status !== "succeeded" ||
+              !matchingDraft.items.some((item) => item.status === "accepted" || item.status === "edited")}
             onClick={() => void publish()}
             type="button"
           >

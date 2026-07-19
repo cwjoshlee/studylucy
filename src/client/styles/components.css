@@ -587,6 +587,41 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .ai-draft-card form, .ai-draft-card label { display: grid; gap: 8px; font-weight: 800; }
 .ai-provider-card__actions { display: flex; flex-wrap: wrap; gap: 10px; }
 .ai-studio-budget-note { grid-column: 1 / -1; color: var(--ink-soft); }
+.ai-budget-panel {
+  display: grid;
+  gap: 16px;
+  padding: 18px;
+  border: 2px solid var(--line);
+  border-radius: var(--radius-medium);
+  background: var(--cloud);
+}
+.ai-budget-panel h3, .ai-budget-panel p { margin: 0; }
+.ai-budget-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+}
+.ai-budget-summary p {
+  padding: 12px;
+  border-radius: 14px;
+  background: #fbf6ff;
+  font-weight: 850;
+}
+.ai-budget-summary__over { background: #fff0f0 !important; color: #8a2c2c; }
+.ai-budget-form { display: grid; grid-template-columns: minmax(0, 1fr); gap: 14px; }
+.ai-budget-form > label, .ai-budget-form fieldset, .ai-budget-form fieldset label {
+  display: grid;
+  gap: 8px;
+  font-weight: 800;
+}
+.ai-budget-form fieldset {
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 0;
+  padding: 14px;
+  border: 2px solid var(--line);
+  border-radius: 14px;
+}
+.ai-budget-form legend { padding: 0 6px; font-weight: 900; }
 .ai-studio-readiness {
   padding: 12px 14px;
   border: 2px solid #d29a00;
@@ -604,6 +639,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 
 @media (max-width: 800px) {
   .ai-studio-tree, .ai-provider-grid, .ai-draft-form { grid-template-columns: minmax(0, 1fr); }
+  .ai-budget-summary, .ai-budget-form fieldset { grid-template-columns: minmax(0, 1fr); }
   .ai-studio-budget-note { grid-column: auto; }
 }
 
