@@ -18,6 +18,28 @@ afterEach(() => {
 });
 
 function createGuardianApi(overrides: Record<string, unknown> = {}) {
+  const studioSettings = {
+    monthlyBudgetWon: 3000,
+    monthSpentWon: 1250,
+    providers: [
+      {
+        provider: "gemini" as const,
+        enabled: true,
+        model: "gemini-2.5-flash",
+        hasApiKey: true,
+        inputWonPer1K: 2,
+        outputWonPer1K: 8
+      },
+      {
+        provider: "openai" as const,
+        enabled: true,
+        model: "gpt-5-mini",
+        hasApiKey: true,
+        inputWonPer1K: 3,
+        outputWonPer1K: 12
+      }
+    ]
+  };
   return {
     getGuardianProgress: vi.fn().mockResolvedValue({
       completedItems: 4,
@@ -77,10 +99,9 @@ function createGuardianApi(overrides: Record<string, unknown> = {}) {
       hasApiKey: false
     }),
     updateAiCoachSettings: vi.fn(),
-    getAiStudioSettings: vi.fn().mockResolvedValue([
-      { provider: "gemini" as const, enabled: true, model: "gemini-2.5-flash", hasApiKey: true },
-      { provider: "openai" as const, enabled: true, model: "gpt-5-mini", hasApiKey: true }
-    ]),
+    getAiStudioSettings: vi.fn().mockResolvedValue(studioSettings.providers),
+    getAiStudioSettingsView: vi.fn().mockResolvedValue(studioSettings),
+    updateAiStudioBudget: vi.fn().mockResolvedValue(studioSettings),
     updateAiStudioProvider: vi.fn(),
     createAiDraft: vi.fn(),
     getAiDraft: vi.fn(),
@@ -153,10 +174,20 @@ describe("GuardianDashboard", () => {
       hasApiKey: input.apiKey !== undefined
     }));
     const api = createGuardianApi({
-      getAiStudioSettings: vi.fn().mockResolvedValue([
-        { provider: "gemini", enabled: false, model: "gemini-2.5-flash", hasApiKey: false },
-        { provider: "openai", enabled: false, model: "gpt-5-mini", hasApiKey: false }
-      ]),
+      getAiStudioSettingsView: vi.fn().mockResolvedValue({
+        monthlyBudgetWon: 3000,
+        monthSpentWon: 0,
+        providers: [
+          {
+            provider: "gemini", enabled: false, model: "gemini-2.5-flash",
+            hasApiKey: false, inputWonPer1K: 2, outputWonPer1K: 8
+          },
+          {
+            provider: "openai", enabled: false, model: "gpt-5-mini",
+            hasApiKey: false, inputWonPer1K: 3, outputWonPer1K: 12
+          }
+        ]
+      }),
       updateAiStudioProvider
     });
     render(<GuardianDashboard api={api} />);
@@ -207,6 +238,176 @@ describe("GuardianDashboard", () => {
     expect(screen.getAllByText("API 키 저장됨")).toHaveLength(2);
     expect(document.body.textContent).not.toMatch(/gemini-secret|openai-secret/);
     expect(document.documentElement.outerHTML).not.toMatch(/gemini-secret|openai-secret/);
+  });
+
+  it("saves authoritative estimated budget and provider rates then reloads server truth", async () => {
+    const user = userEvent.setup();
+    const initial = {
+      monthlyBudgetWon: 3000,
+      monthSpentWon: 1250,
+      providers: [
+        {
+          provider: "gemini" as const, enabled: true, model: "gemini-2.5-flash",
+          hasApiKey: true, inputWonPer1K: 2, outputWonPer1K: 8
+        },
+        {
+          provider: "openai" as const, enabled: true, model: "gpt-5-mini",
+          hasApiKey: true, inputWonPer1K: 3, outputWonPer1K: 12
+        }
+      ]
+    };
+    const refreshed = {
+      monthlyBudgetWon: 5000,
+      monthSpentWon: 1300,
+      providers: [
+        { ...initial.providers[0], inputWonPer1K: 4, outputWonPer1K: 10 },
+        { ...initial.providers[1], inputWonPer1K: 5, outputWonPer1K: 14 }
+      ]
+    };
+    const getAiStudioSettingsView = vi.fn()
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(refreshed);
+    const updateAiStudioBudget = vi.fn().mockResolvedValue(refreshed);
+    const updateAiStudioProvider = vi.fn().mockImplementation(async (
+      provider: "gemini" | "openai",
+      input: { inputWonPer1K: number; outputWonPer1K: number }
+    ) => ({
+      ...initial.providers.find((value) => value.provider === provider)!,
+      ...input
+    }));
+    render(<GuardianDashboard api={createGuardianApi({
+      getAiStudioSettingsView,
+      updateAiStudioBudget,
+      updateAiStudioProvider
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(screen.getByRole("treeitem", { name: "월 예산·사용량" }));
+    expect(await screen.findByText("이번 달 사용 1,250원")).toBeVisible();
+    expect(screen.getByText("남은 예상 예산 1,750원")).toBeVisible();
+
+    await user.clear(screen.getByLabelText("월 예산 (원)"));
+    await user.type(screen.getByLabelText("월 예산 (원)"), "5000");
+    await user.clear(screen.getByLabelText("Gemini 예상 입력 요금 (원/1K 토큰)"));
+    await user.type(screen.getByLabelText("Gemini 예상 입력 요금 (원/1K 토큰)"), "4");
+    await user.clear(screen.getByLabelText("Gemini 예상 출력 요금 (원/1K 토큰)"));
+    await user.type(screen.getByLabelText("Gemini 예상 출력 요금 (원/1K 토큰)"), "10");
+    await user.clear(screen.getByLabelText("OpenAI 예상 입력 요금 (원/1K 토큰)"));
+    await user.type(screen.getByLabelText("OpenAI 예상 입력 요금 (원/1K 토큰)"), "5");
+    await user.clear(screen.getByLabelText("OpenAI 예상 출력 요금 (원/1K 토큰)"));
+    await user.type(screen.getByLabelText("OpenAI 예상 출력 요금 (원/1K 토큰)"), "14");
+    await user.click(screen.getByRole("button", { name: "예산 저장" }));
+
+    await waitFor(() => expect(updateAiStudioBudget).toHaveBeenCalledWith({
+      monthlyBudgetWon: 5000
+    }));
+    expect(updateAiStudioProvider).toHaveBeenCalledWith("gemini", {
+      inputWonPer1K: 4,
+      outputWonPer1K: 10
+    });
+    expect(updateAiStudioProvider).toHaveBeenCalledWith("openai", {
+      inputWonPer1K: 5,
+      outputWonPer1K: 14
+    });
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("이번 달 사용 1,300원")).toBeVisible();
+    expect(screen.getByLabelText("월 예산 (원)")).toHaveValue(5000);
+  });
+
+  it("clears an API key entry even when the save request fails", async () => {
+    const user = userEvent.setup();
+    const updateAiStudioProvider = vi.fn().mockRejectedValue(new Error("save failed"));
+    render(<GuardianDashboard api={createGuardianApi({ updateAiStudioProvider })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    const apiKey = await screen.findByLabelText("Gemini API 키");
+    await user.type(apiKey, "key-that-must-not-stay");
+    await user.click(screen.getByRole("button", { name: "Gemini 설정 저장" }));
+
+    expect(await screen.findByText("설정을 저장하지 못했어요.")).toBeVisible();
+    expect(apiKey).toHaveValue("");
+    expect(document.documentElement.outerHTML).not.toContain("key-that-must-not-stay");
+  });
+
+  it("blocks invalid estimated budget values before any save request", async () => {
+    const user = userEvent.setup();
+    const updateAiStudioBudget = vi.fn();
+    const updateAiStudioProvider = vi.fn();
+    render(<GuardianDashboard api={createGuardianApi({
+      updateAiStudioBudget,
+      updateAiStudioProvider
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(screen.getByRole("treeitem", { name: "월 예산·사용량" }));
+    const monthlyBudget = await screen.findByLabelText("월 예산 (원)");
+    fireEvent.change(monthlyBudget, { target: { value: "10001" } });
+
+    expect(screen.getByRole("button", { name: "예산 저장" })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "월 예산은 0원에서 10,000원 사이의 정수로 입력해 주세요."
+    );
+    expect(updateAiStudioBudget).not.toHaveBeenCalled();
+    expect(updateAiStudioProvider).not.toHaveBeenCalled();
+  });
+
+  it("drops a late math draft after the guardian switches to Korean", async () => {
+    const user = userEvent.setup();
+    const lateMath = deferred<{
+      id: string;
+      subject: "math";
+      step: "current";
+      requestedCount: number;
+      difficulty: number;
+      weakTopics: string[];
+      status: "draft";
+      items: [];
+    }>();
+    const createAiDraft = vi.fn().mockReturnValue(lateMath.promise);
+    render(<GuardianDashboard api={createGuardianApi({ createAiDraft })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+    await waitFor(() => expect(createAiDraft).toHaveBeenCalledOnce());
+    await user.click(screen.getByRole("treeitem", { name: "국어·받아쓰기 배치" }));
+
+    await act(async () => lateMath.resolve({
+      id: "late-math",
+      subject: "math",
+      step: "current",
+      requestedCount: 8,
+      difficulty: 4,
+      weakTopics: [],
+      status: "draft",
+      items: []
+    }));
+
+    expect(screen.getByRole("heading", { name: "국어·받아쓰기 배치" })).toBeVisible();
+    expect(screen.queryByText(/감리 통과/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "초안 발행" })).not.toBeInTheDocument();
+  });
+
+  it("drops an old generation error after the guardian changes learning step", async () => {
+    const user = userEvent.setup();
+    const oldRequest = deferred<never>();
+    const createAiDraft = vi.fn().mockReturnValue(oldRequest.promise);
+    render(<GuardianDashboard api={createGuardianApi({ createAiDraft })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+    await waitFor(() => expect(createAiDraft).toHaveBeenCalledOnce());
+    await user.selectOptions(screen.getByLabelText("학습 단계"), "challenge");
+
+    await act(async () => oldRequest.reject(new Error("late failure")));
+
+    expect(screen.queryByText("초안을 만들지 못했어요.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "초안 발행" })).not.toBeInTheDocument();
   });
 
   it("creates, edits, and publishes only reviewed math draft items", async () => {

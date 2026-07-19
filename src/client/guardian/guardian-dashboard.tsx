@@ -55,6 +55,8 @@ function supportsAiLearningStudio(
   api: GuardianDashboardApi
 ): api is GuardianDashboardApi & AiLearningStudioApi {
   return typeof api.getAiStudioSettings === "function" &&
+    typeof api.getAiStudioSettingsView === "function" &&
+    typeof api.updateAiStudioBudget === "function" &&
     typeof api.updateAiStudioProvider === "function" &&
     typeof api.createAiDraft === "function" &&
     typeof api.getAiDraft === "function" &&
