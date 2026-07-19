@@ -3,6 +3,7 @@ import { decryptApiKey, encryptApiKey } from "../../src/server/coach/crypto";
 import { AiCoachService } from "../../src/server/coach/service";
 import { openDatabase } from "../../src/server/db/client";
 import { migrate } from "../../src/server/db/migrate";
+import { createTestHarness } from "../helpers/app";
 
 const key = Buffer.alloc(32, 7);
 
@@ -22,6 +23,45 @@ function openAiResponse(message: string, inputTokens = 10, outputTokens = 10) {
 }
 
 describe("AI coach privacy and budget boundaries", () => {
+  it("rejects production legacy API-key updates over HTTP and whitespace keys", async () => {
+    const harness = await createTestHarness({ nodeEnv: "production" });
+    const guardian = harness.client();
+    expect((await guardian.request("POST", "/api/auth/setup", {
+      setupSecret: harness.config.setupSecret,
+      guardianName: "보호자",
+      password: "correct horse battery staple",
+      studentName: "수아"
+    })).statusCode).toBe(201);
+    expect((await guardian.request("POST", "/api/auth/guardian/login", {
+      password: "correct horse battery staple"
+    })).statusCode).toBe(204);
+
+    const nonKeyUpdate = await guardian.request(
+      "PUT",
+      "/api/guardian/ai-coach-settings",
+      { monthlyBudgetWon: 900 }
+    );
+    expect(nonKeyUpdate.statusCode).toBe(200);
+
+    const insecure = await guardian.request(
+      "PUT",
+      "/api/guardian/ai-coach-settings",
+      { apiKey: "provider-secret" }
+    );
+    expect(insecure.statusCode).toBe(403);
+    expect(insecure.json()).toEqual({ code: "HTTPS_REQUIRED" });
+
+    const whitespace = await guardian.request(
+      "PUT",
+      "/api/guardian/ai-coach-settings",
+      { apiKey: "   " },
+      { headers: { "x-forwarded-proto": "https" } }
+    );
+    expect(whitespace.statusCode).toBe(400);
+    expect(whitespace.json()).toEqual({ code: "INVALID_REQUEST" });
+    await harness.close();
+  });
+
   it("uses randomized authenticated encryption and rejects a modified ciphertext", () => {
     const first = encryptApiKey("provider-secret", key);
     const second = encryptApiKey("provider-secret", key);

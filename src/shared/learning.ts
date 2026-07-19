@@ -257,7 +257,7 @@ export const AttemptInputSchema = z.object({
   readingScore: z.number().int().min(0).max(100),
   missedTokens: z.array(z.string().min(1)).max(20),
   mathAnswer: z.number().int().nullable(),
-  dictationText: z.string().optional(),
+  dictationText: z.string().max(200).optional(),
   durationMs: z.number().int().min(0).max(3_600_000),
   difficultyFeedback: z.enum(["easy", "thinking", "hard"]).nullable()
 });

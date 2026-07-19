@@ -1,4 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { createHash, createHmac } from "node:crypto";
 import { INITIAL_CONTENT_VERSION } from "../../src/server/db/seed";
 import { LearningRepository } from "../../src/server/learning/repository";
 import {
@@ -456,6 +457,15 @@ describe("authoritative learning API", () => {
       SELECT dictation_input_fingerprint AS dictationInputFingerprint
       FROM attempts WHERE client_attempt_id = ?
     `).get(clientAttemptId) as { dictationInputFingerprint: string };
+    const normalizedWrong = "틀린답";
+    expect(stored.dictationInputFingerprint).toBe(
+      createHmac("sha256", harness.config.sessionPepper)
+        .update(normalizedWrong, "utf8")
+        .digest("hex")
+    );
+    expect(stored.dictationInputFingerprint).not.toBe(
+      createHash("sha256").update(normalizedWrong, "utf8").digest("hex")
+    );
     expect(stored.dictationInputFingerprint).toMatch(/^[a-f0-9]{64}$/u);
     expect(stored.dictationInputFingerprint).not.toContain("틀린답");
     expect(JSON.stringify(harness.db.prepare(`
@@ -464,6 +474,26 @@ describe("authoritative learning API", () => {
     expect(JSON.stringify(harness.db.prepare(`
       SELECT * FROM attempts WHERE client_attempt_id = ?
     `).get(clientAttemptId))).not.toContain("틀린답");
+  });
+
+  it("rejects dictation text longer than 200 characters before writing an attempt", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    const plan = await getToday(student);
+    const item = plan.items.find((candidate) =>
+      candidate.payload.kind === "korean-dictation"
+    )!;
+
+    const response = await student.request("POST", "/api/student/attempts", {
+      ...passingAttempt(plan, item, "attempt-dictation-oversized-0001"),
+      dictationText: "가".repeat(201)
+    });
+
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ code: "INVALID_REQUEST" });
+    expect(harness.db.prepare(`
+      SELECT COUNT(*) AS count FROM attempts WHERE client_attempt_id = ?
+    `).get("attempt-dictation-oversized-0001")).toEqual({ count: 0 });
   });
 
   it("rejects every legacy date query before materializing an arbitrary daily plan", async () => {
@@ -859,7 +889,10 @@ describe("authoritative learning API", () => {
       SELECT trusted_device_id AS trustedDeviceId
       FROM issued_daily_plans WHERE id = ?
     `).get(plan.planId) as { trustedDeviceId: string }).trustedDeviceId;
-    const repository = new LearningRepository(harness.db);
+    const repository = new LearningRepository(
+      harness.db,
+      harness.config.sessionPepper
+    );
     const transactionInput = {
       ...input,
       id: "attempt-transaction-race-fallback",
@@ -1063,7 +1096,10 @@ describe("authoritative learning API", () => {
       completed: false
     });
     expect(
-      new LearningRepository(harness.db).findDuplicateAttempt(
+      new LearningRepository(
+        harness.db,
+        harness.config.sessionPepper
+      ).findDuplicateAttempt(
         "different-student",
         "attempt-server-graded-0001"
       )

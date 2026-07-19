@@ -1,5 +1,5 @@
 import type Database from "better-sqlite3";
-import { createHash } from "node:crypto";
+import { createHmac } from "node:crypto";
 import {
   evaluateAttemptCompletion,
   LearningItemPayloadSchema,
@@ -108,10 +108,11 @@ function receiptFromRow(
 
 function dictationInputFingerprint(
   payload: LearningItemPayload,
-  input: Pick<AttemptInput, "dictationText">
+  input: Pick<AttemptInput, "dictationText">,
+  sessionPepper: string
 ): string | null {
   if (payload.kind !== "korean-dictation") return null;
-  return createHash("sha256")
+  return createHmac("sha256", sessionPepper)
     .update(normalizeDictationText(input.dictationText ?? ""), "utf8")
     .digest("hex");
 }
@@ -119,7 +120,10 @@ function dictationInputFingerprint(
 export class LearningRepository {
   private stars: StarRepository;
 
-  constructor(private db: Database.Database) {
+  constructor(
+    private db: Database.Database,
+    private sessionPepper: string
+  ) {
     this.stars = new StarRepository(db);
   }
 
@@ -194,7 +198,11 @@ export class LearningRepository {
     const payload = LearningItemPayloadSchema.parse(JSON.parse(row.payloadJson));
     const currentDictationPass = evaluateAttemptCompletion(payload, input)
       .dictationPass;
-    const currentDictationFingerprint = dictationInputFingerprint(payload, input);
+    const currentDictationFingerprint = dictationInputFingerprint(
+      payload,
+      input,
+      this.sessionPepper
+    );
     const dictationInputMatches = payload.kind !== "korean-dictation" || (
       row.dictationInputFingerprint !== null &&
       currentDictationFingerprint === row.dictationInputFingerprint
@@ -321,7 +329,11 @@ export class LearningRepository {
       input
     );
     const { readingPass, mathPass, dictationPass } = evaluation;
-    const inputFingerprint = dictationInputFingerprint(payload, input);
+    const inputFingerprint = dictationInputFingerprint(
+      payload,
+      input,
+      this.sessionPepper
+    );
     const completed = input.snapshot.step === "challenge"
       ? true
       : evaluation.completed;
