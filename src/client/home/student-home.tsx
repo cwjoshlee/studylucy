@@ -56,6 +56,15 @@ export function stepStatus(
     : "locked";
 }
 
+function nextAvailableRequiredItem(plan: TodayPlan): PlanItem | null {
+  const requiredIds = new Set(plan.requiredItemIds);
+  const requiredItems = plan.items.filter((item) => requiredIds.has(item.id));
+  return requiredItems.find((item) =>
+    !plan.completedItemIds.includes(item.id) &&
+    stepStatus(requiredItems, plan.completedItemIds, item) === "available"
+  ) ?? null;
+}
+
 export function StudentHome({
   api,
   offlineSession,
@@ -82,8 +91,11 @@ export function StudentHome({
   );
   const [selectedItem, setSelectedItem] = useState<TodayPlan["items"][number] | null>(null);
   const [learningViewOpen, setLearningViewOpen] = useState(false);
+  const [postCompletionRefreshFailed, setPostCompletionRefreshFailed] = useState(false);
+  const [postCompletionRefreshPending, setPostCompletionRefreshPending] = useState(false);
   const [navigationHelpOpen, setNavigationHelpOpen] = useState(false);
   const authorityRequestGeneration = useRef(0);
+  const mountedRef = useRef(true);
   const dashboardFocusTarget = useRef<HTMLButtonElement>(null);
   const showDashboardPreservingDraft = useCallback(() => {
     setLearningViewOpen(false);
@@ -91,6 +103,15 @@ export function StudentHome({
   const discardLearningSession = useCallback(() => {
     setLearningViewOpen(false);
     setSelectedItem(null);
+    setPostCompletionRefreshFailed(false);
+  }, []);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => {
+      mountedRef.current = false;
+      authorityRequestGeneration.current += 1;
+    };
   }, []);
 
   useEffect(() => {
@@ -179,6 +200,57 @@ export function StudentHome({
     };
   }, [api, offlineSession]);
 
+  const refreshAfterCompletion = useCallback(async (
+    openNextItem: boolean
+  ): Promise<void> => {
+    const requestGeneration = ++authorityRequestGeneration.current;
+    const receiptGeneration = getReceiptAuthorityGeneration();
+    setPostCompletionRefreshPending(true);
+    try {
+      const [plan, stars] = await Promise.all([
+        api.getToday(),
+        api.getStudentStars()
+      ]);
+      if (
+        !mountedRef.current ||
+        requestGeneration !== authorityRequestGeneration.current
+      ) return;
+      const cached = await cacheIssuedPlan(plan, stars, {
+        expectedReceiptGeneration: receiptGeneration
+      });
+      if (
+        !cached ||
+        !mountedRef.current ||
+        requestGeneration !== authorityRequestGeneration.current
+      ) {
+        if (
+          mountedRef.current &&
+          requestGeneration === authorityRequestGeneration.current
+        ) setPostCompletionRefreshFailed(true);
+        return;
+      }
+      setData({ plan, stars });
+      setOfflineMode(false);
+      setPostCompletionRefreshFailed(false);
+      const nextItem = openNextItem ? nextAvailableRequiredItem(plan) : null;
+      setSelectedItem(nextItem);
+      setLearningViewOpen(nextItem !== null);
+    } catch {
+      if (
+        mountedRef.current &&
+        requestGeneration === authorityRequestGeneration.current
+      ) setPostCompletionRefreshFailed(true);
+    } finally {
+      if (
+        mountedRef.current &&
+        requestGeneration === authorityRequestGeneration.current
+      ) setPostCompletionRefreshPending(false);
+    }
+  }, [api]);
+
+  const retryPostCompletionRefresh = useCallback(() =>
+    refreshAfterCompletion(true), [refreshAfterCompletion]);
+
   if (failed) return <main>오늘의 학습을 불러오지 못했어요. 잠시 후 다시 만나요.</main>;
   if (data === null) return <main aria-busy="true">오늘의 학습을 준비하고 있어요.</main>;
 
@@ -188,25 +260,7 @@ export function StudentHome({
       setLearningViewOpen(false);
       return;
     }
-    const requestGeneration = ++authorityRequestGeneration.current;
-    const receiptGeneration = getReceiptAuthorityGeneration();
-    try {
-      const [plan, stars] = await Promise.all([
-        api.getToday(),
-        api.getStudentStars()
-      ]);
-      if (requestGeneration !== authorityRequestGeneration.current) return;
-      const cached = await cacheIssuedPlan(plan, stars, {
-        expectedReceiptGeneration: receiptGeneration
-      });
-      if (!cached || requestGeneration !== authorityRequestGeneration.current) return;
-      setData({ plan, stars });
-      setOfflineMode(false);
-      setSelectedItem(null);
-      setLearningViewOpen(false);
-    } catch {
-      setFailed(true);
-    }
+    await refreshAfterCompletion(false);
   }
 
   const requiredIds = new Set(data.plan.requiredItemIds);
@@ -303,6 +357,9 @@ export function StudentHome({
                   });
             }}
             onNext={finishLearning}
+            onRetryRefresh={retryPostCompletionRefresh}
+            postCompletionRefreshFailed={postCompletionRefreshFailed}
+            postCompletionRefreshPending={postCompletionRefreshPending}
             onExit={discardLearningSession}
             onNavigateToday={showDashboardPreservingDraft}
             getNavigationDestinationFocusTarget={() => dashboardFocusTarget.current}
