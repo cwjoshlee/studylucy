@@ -389,6 +389,7 @@ function ProviderSettingsPanel({
             api={api}
             key={provider}
             onUpdated={onProviderUpdated}
+            onSettingsReloaded={onSettingsReloaded}
             settings={value}
           />
         );
@@ -427,6 +428,9 @@ function BudgetSettingsPanel({
   const [openAiOutput, setOpenAiOutput] = useState(String(provider("openai")?.outputWonPer1K ?? 0));
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
+  const [pendingReconciliation, setPendingReconciliation] = useState<
+    "writes-succeeded" | "write-failed" | null
+  >(null);
 
   useEffect(() => {
     setMonthlyBudget(String(settings.monthlyBudgetWon));
@@ -454,6 +458,28 @@ function BudgetSettingsPanel({
       : "";
   const remaining = settings.monthlyBudgetWon - settings.monthSpentWon;
 
+  const reconcileSettings = async (
+    outcome: "writes-succeeded" | "write-failed",
+    retry: boolean
+  ): Promise<void> => {
+    if (reloadSettings === undefined) return;
+    try {
+      const refreshed = await reloadSettings();
+      onSettingsReloaded(refreshed);
+      setPendingReconciliation(null);
+      setMessage(outcome === "write-failed"
+        ? "저장 요청 중 오류가 있었지만 서버의 최신 값을 다시 불러왔어요. 내용을 확인해 주세요."
+        : retry
+          ? "설정 저장을 완료했고 서버의 최신 값을 다시 확인했어요."
+          : "예산과 예상 요금을 저장했어요.");
+    } catch {
+      setPendingReconciliation(outcome);
+      setMessage(outcome === "write-failed"
+        ? "설정 저장 요청 중 오류가 있었고 현재 서버 상태를 확인하지 못했어요. 최신 설정을 다시 불러와 확인해 주세요."
+        : "저장 요청은 완료했지만 현재 서버 상태를 확인하지 못했어요. 최신 설정을 다시 불러와 확인해 주세요.");
+    }
+  };
+
   const save = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     const { geminiInput: parsedGeminiInput, geminiOutput: parsedGeminiOutput,
@@ -464,10 +490,10 @@ function BudgetSettingsPanel({
         reloadSettings === undefined) return;
     setSaving(true);
     setMessage("");
-    let successfulWrites = 0;
+    setPendingReconciliation(null);
+    let writeFailed = false;
     try {
       await updateBudget({ monthlyBudgetWon: parsedBudget });
-      successfulWrites += 1;
       const rateResults = await Promise.allSettled([
         api.updateAiStudioProvider("gemini", {
           inputWonPer1K: parsedGeminiInput,
@@ -478,27 +504,20 @@ function BudgetSettingsPanel({
           outputWonPer1K: parsedOpenAiOutput
         })
       ]);
-      successfulWrites += rateResults.filter((result) => result.status === "fulfilled").length;
-      const rejectedRate = rateResults.find((result) => result.status === "rejected");
-      if (rejectedRate?.status === "rejected") throw rejectedRate.reason;
-      const refreshed = await reloadSettings();
-      onSettingsReloaded(refreshed);
-      setMessage("예산과 예상 요금을 저장했어요.");
+      writeFailed = rateResults.some((result) => result.status === "rejected");
     } catch {
-      if (successfulWrites > 0) {
-        try {
-          const refreshed = await reloadSettings();
-          onSettingsReloaded(refreshed);
-          setMessage("일부 설정이 저장되어 서버의 최신 값을 다시 불러왔어요. 내용을 확인해 주세요.");
-        } catch {
-          setMessage("일부 설정이 저장되었지만 최신 값을 다시 불러오지 못했어요. 페이지를 다시 열어 확인해 주세요.");
-        }
-      } else {
-        setMessage("예산 설정을 저장하지 못했어요. 서버 설정은 변경되지 않았어요.");
-      }
+      writeFailed = true;
     } finally {
+      await reconcileSettings(writeFailed ? "write-failed" : "writes-succeeded", false);
       setSaving(false);
     }
+  };
+
+  const retryReconciliation = async () => {
+    if (saving || pendingReconciliation === null) return;
+    setSaving(true);
+    await reconcileSettings(pendingReconciliation, true);
+    setSaving(false);
   };
 
   return (
@@ -583,6 +602,16 @@ function BudgetSettingsPanel({
         </button>
       </form>
       {message !== "" ? <p role="status">{message}</p> : null}
+      {pendingReconciliation !== null ? (
+        <button
+          className="button-secondary"
+          disabled={saving}
+          onClick={() => void retryReconciliation()}
+          type="button"
+        >
+          최신 설정 다시 불러오기
+        </button>
+      ) : null}
     </section>
   );
 }
@@ -590,11 +619,13 @@ function BudgetSettingsPanel({
 function ProviderCard({
   api,
   settings,
-  onUpdated
+  onUpdated,
+  onSettingsReloaded
 }: {
-  api: Pick<ApiClient, "updateAiStudioProvider">;
+  api: AiLearningStudioApi;
   settings: AiProviderSettingsView;
   onUpdated(settings: AiProviderSettingsView): void;
+  onSettingsReloaded(settings: AiStudioSettingsView): void;
 }) {
   const label = PROVIDER_LABELS[settings.provider];
   const [enabled, setEnabled] = useState(settings.enabled);
@@ -602,27 +633,68 @@ function ProviderCard({
   const [apiKey, setApiKey] = useState("");
   const [saving, setSaving] = useState(false);
   const [message, setMessage] = useState("");
+  const [pendingReconciliation, setPendingReconciliation] = useState<{
+    action: "save" | "delete";
+    writeFailed: boolean;
+  } | null>(null);
+
+  useEffect(() => {
+    setEnabled(settings.enabled);
+    setModel(settings.model);
+  }, [settings.enabled, settings.model]);
+
+  const reconcileSettings = async (
+    outcome: { action: "save" | "delete"; writeFailed: boolean },
+    retry: boolean,
+    acknowledged?: AiProviderSettingsView
+  ): Promise<void> => {
+    const reloadSettings = api.getAiStudioSettingsView;
+    if (reloadSettings === undefined) {
+      if (!outcome.writeFailed && acknowledged !== undefined) {
+        onUpdated(acknowledged);
+        setMessage(outcome.action === "delete" ? "API 키를 삭제했어요." : "설정을 저장했어요.");
+      } else {
+        setMessage("설정 저장 요청 후 현재 서버 상태를 확인하지 못했어요. 페이지를 다시 열어 확인해 주세요.");
+      }
+      setPendingReconciliation(null);
+      return;
+    }
+    try {
+      const refreshed = await reloadSettings();
+      onSettingsReloaded(refreshed);
+      setPendingReconciliation(null);
+      setMessage(outcome.writeFailed
+        ? "설정 저장 요청 중 오류가 있었지만 서버의 최신 설정을 다시 불러왔어요. 내용을 확인해 주세요."
+        : retry
+          ? "설정 저장을 완료했고 서버의 최신 설정을 다시 확인했어요."
+          : outcome.action === "delete" ? "API 키를 삭제했어요." : "설정을 저장했어요.");
+    } catch {
+      setPendingReconciliation(outcome);
+      setMessage(outcome.writeFailed
+        ? "설정 저장 요청 중 오류가 있었고 현재 서버 상태를 확인하지 못했어요. 최신 설정을 다시 불러와 확인해 주세요."
+        : "설정 저장 요청은 완료했지만 현재 서버 상태를 확인하지 못했어요. 최신 설정을 다시 불러와 확인해 주세요.");
+    }
+  };
 
   const save = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (saving) return;
     setSaving(true);
     setMessage("");
+    setPendingReconciliation(null);
+    let updated: AiProviderSettingsView | undefined;
+    let writeFailed = false;
     try {
-      const updated = await api.updateAiStudioProvider(settings.provider, {
+      updated = await api.updateAiStudioProvider(settings.provider, {
         enabled,
         model,
         ...(apiKey === "" ? {} : { apiKey })
       });
-      onUpdated(updated);
-      setEnabled(updated.enabled);
-      setModel(updated.model);
-      setApiKey("");
-      setMessage("설정을 저장했어요.");
     } catch {
-      setMessage("설정을 저장하지 못했어요.");
+      writeFailed = true;
     } finally {
       setApiKey("");
+      await reconcileSettings({ action: "save", writeFailed }, false, updated);
       setSaving(false);
     }
   };
@@ -631,21 +703,28 @@ function ProviderCard({
     if (saving || !settings.hasApiKey) return;
     setSaving(true);
     setMessage("");
+    setPendingReconciliation(null);
+    let updated: AiProviderSettingsView | undefined;
+    let writeFailed = false;
     try {
-      const updated = await api.updateAiStudioProvider(settings.provider, {
+      updated = await api.updateAiStudioProvider(settings.provider, {
         enabled: false,
         deleteApiKey: true
       });
-      onUpdated(updated);
-      setEnabled(false);
-      setApiKey("");
-      setMessage("API 키를 삭제했어요.");
     } catch {
-      setMessage("API 키를 삭제하지 못했어요.");
+      writeFailed = true;
     } finally {
       setApiKey("");
+      await reconcileSettings({ action: "delete", writeFailed }, false, updated);
       setSaving(false);
     }
+  };
+
+  const retryReconciliation = async () => {
+    if (saving || pendingReconciliation === null) return;
+    setSaving(true);
+    await reconcileSettings(pendingReconciliation, true);
+    setSaving(false);
   };
 
   return (
@@ -700,6 +779,16 @@ function ProviderCard({
         </div>
       </form>
       {message !== "" ? <p role="status">{message}</p> : null}
+      {pendingReconciliation !== null ? (
+        <button
+          className="button-secondary"
+          disabled={saving}
+          onClick={() => void retryReconciliation()}
+          type="button"
+        >
+          최신 설정 다시 불러오기
+        </button>
+      ) : null}
     </article>
   );
 }
@@ -793,7 +882,8 @@ function DraftPanel({
         weakTopics: weakTopics.split(/[,\n]/u).map((value) => value.trim()).filter(Boolean)
       });
       if (!isCurrentRequest(requestId, requestSubject, requestStep)) return;
-      if (created.subject !== requestSubject || created.step !== requestStep) {
+      if (created.subject !== requestSubject || created.step !== requestStep ||
+          created.status !== "draft") {
         setGeneration({
           requestId,
           subject: requestSubject,
@@ -801,7 +891,7 @@ function DraftPanel({
           status: "failed",
           draft: null
         });
-        setMessage("초안의 과목이나 학습 단계가 요청과 달라서 표시하지 않았어요.");
+        setMessage("초안의 과목이나 학습 단계 또는 상태가 요청과 달라서 표시하지 않았어요.");
         return;
       }
       setGeneration({
