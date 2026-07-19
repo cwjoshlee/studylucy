@@ -7,7 +7,10 @@ import { COMPANION_CAST } from "../companions/cast";
 import { CompanionAvatar } from "../companions/companion-avatar";
 import { FriendStage, FriendTrail } from "../companions/friend-stage";
 import { TodayStars } from "../delight/today-stars";
-import { LearningSession } from "../learning/learning-session";
+import {
+  LearningSession,
+  learningSessionKey
+} from "../learning/learning-session";
 import { StudentNavigation } from "./student-navigation";
 import {
   SOURCE_DEVICE_RECOVERY_GUIDANCE,
@@ -92,9 +95,11 @@ export function StudentHome({
   const [selectedItem, setSelectedItem] = useState<TodayPlan["items"][number] | null>(null);
   const [learningViewOpen, setLearningViewOpen] = useState(false);
   const [postCompletionRefreshFailed, setPostCompletionRefreshFailed] = useState(false);
+  const [postCompletionRefreshWaitingForNext, setPostCompletionRefreshWaitingForNext] = useState(false);
   const [postCompletionRefreshPending, setPostCompletionRefreshPending] = useState(false);
   const [navigationHelpOpen, setNavigationHelpOpen] = useState(false);
   const authorityRequestGeneration = useRef(0);
+  const postCompletionRequestGeneration = useRef(0);
   const mountedRef = useRef(true);
   const dashboardFocusTarget = useRef<HTMLButtonElement>(null);
   const showDashboardPreservingDraft = useCallback(() => {
@@ -104,6 +109,7 @@ export function StudentHome({
     setLearningViewOpen(false);
     setSelectedItem(null);
     setPostCompletionRefreshFailed(false);
+    setPostCompletionRefreshWaitingForNext(false);
   }, []);
 
   useEffect(() => {
@@ -111,6 +117,7 @@ export function StudentHome({
     return () => {
       mountedRef.current = false;
       authorityRequestGeneration.current += 1;
+      postCompletionRequestGeneration.current += 1;
     };
   }, []);
 
@@ -200,11 +207,12 @@ export function StudentHome({
     };
   }, [api, offlineSession]);
 
-  const refreshAfterCompletion = useCallback(async (
-    openNextItem: boolean
-  ): Promise<void> => {
-    const requestGeneration = ++authorityRequestGeneration.current;
+  const refreshAfterCompletion = useCallback(async (): Promise<void> => {
+    const requestGeneration = ++postCompletionRequestGeneration.current;
     const receiptGeneration = getReceiptAuthorityGeneration();
+    const completedSessionKey = selectedItem === null || data === null
+      ? null
+      : learningSessionKey(data.plan.planId, selectedItem);
     setPostCompletionRefreshPending(true);
     try {
       const [plan, stars] = await Promise.all([
@@ -213,7 +221,7 @@ export function StudentHome({
       ]);
       if (
         !mountedRef.current ||
-        requestGeneration !== authorityRequestGeneration.current
+        requestGeneration !== postCompletionRequestGeneration.current
       ) return;
       const cached = await cacheIssuedPlan(plan, stars, {
         expectedReceiptGeneration: receiptGeneration
@@ -221,35 +229,46 @@ export function StudentHome({
       if (
         !cached ||
         !mountedRef.current ||
-        requestGeneration !== authorityRequestGeneration.current
+        requestGeneration !== postCompletionRequestGeneration.current
       ) {
         if (
           mountedRef.current &&
-          requestGeneration === authorityRequestGeneration.current
+          requestGeneration === postCompletionRequestGeneration.current
         ) setPostCompletionRefreshFailed(true);
         return;
       }
       setData({ plan, stars });
       setOfflineMode(false);
       setPostCompletionRefreshFailed(false);
-      const nextItem = openNextItem ? nextAvailableRequiredItem(plan) : null;
+      const nextItem = nextAvailableRequiredItem(plan);
+      const nextSessionKey = nextItem === null
+        ? null
+        : learningSessionKey(plan.planId, nextItem);
+      if (
+        completedSessionKey !== null &&
+        nextSessionKey === completedSessionKey
+      ) {
+        setPostCompletionRefreshWaitingForNext(true);
+        return;
+      }
+      setPostCompletionRefreshWaitingForNext(false);
       setSelectedItem(nextItem);
       setLearningViewOpen(nextItem !== null);
     } catch {
       if (
         mountedRef.current &&
-        requestGeneration === authorityRequestGeneration.current
+        requestGeneration === postCompletionRequestGeneration.current
       ) setPostCompletionRefreshFailed(true);
     } finally {
       if (
         mountedRef.current &&
-        requestGeneration === authorityRequestGeneration.current
+        requestGeneration === postCompletionRequestGeneration.current
       ) setPostCompletionRefreshPending(false);
     }
-  }, [api]);
+  }, [api, data, selectedItem]);
 
   const retryPostCompletionRefresh = useCallback(() =>
-    refreshAfterCompletion(true), [refreshAfterCompletion]);
+    refreshAfterCompletion(), [refreshAfterCompletion]);
 
   if (failed) return <main>오늘의 학습을 불러오지 못했어요. 잠시 후 다시 만나요.</main>;
   if (data === null) return <main aria-busy="true">오늘의 학습을 준비하고 있어요.</main>;
@@ -260,7 +279,7 @@ export function StudentHome({
       setLearningViewOpen(false);
       return;
     }
-    await refreshAfterCompletion(false);
+    await refreshAfterCompletion();
   }
 
   const requiredIds = new Set(data.plan.requiredItemIds);
@@ -359,6 +378,7 @@ export function StudentHome({
             onNext={finishLearning}
             onRetryRefresh={retryPostCompletionRefresh}
             postCompletionRefreshFailed={postCompletionRefreshFailed}
+            postCompletionRefreshWaitingForNext={postCompletionRefreshWaitingForNext}
             postCompletionRefreshPending={postCompletionRefreshPending}
             onExit={discardLearningSession}
             onNavigateToday={showDashboardPreservingDraft}

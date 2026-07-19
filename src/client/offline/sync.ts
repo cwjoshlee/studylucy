@@ -56,7 +56,7 @@ export function subscribeRecoveryGuidance(
   return () => recoveryGuidanceListeners.delete(listener);
 }
 
-function publishSyncCompleted(): void {
+export function publishSyncCompleted(): void {
   for (const listener of syncCompletedListeners) listener();
 }
 
