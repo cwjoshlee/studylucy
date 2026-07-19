@@ -1,5 +1,6 @@
 import {
   type FormEvent,
+  type KeyboardEvent,
   useCallback,
   useEffect,
   useRef,
@@ -177,6 +178,10 @@ function LearningSessionView({
   const completionCueTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const automaticNextTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const automaticNextReceiptIdRef = useRef<string | null>(null);
+  const automaticNextAllowedRef = useRef(active && !breakPaused);
+  const breakDialogRef = useRef<HTMLElement>(null);
+  const breakInvokerRef = useRef<HTMLElement | null>(null);
+  const restoreBreakFocusRef = useRef(false);
   const attemptGenerationRef = useRef(0);
   const attemptReceiptRef = useRef<AttemptReceipt | null>(null);
   const learningControlsPaused =
@@ -187,6 +192,7 @@ function LearningSessionView({
     waiting ||
     idleUi?.phase === "paused" ||
     breakPaused;
+  automaticNextAllowedRef.current = active && !breakPaused;
 
   useEffect(() => {
     let active = true;
@@ -359,12 +365,14 @@ function LearningSessionView({
 
   const scheduleAutomaticNext = useCallback((receiptId: string, generation: number) => {
     clearAutomaticNext();
+    if (!automaticNextAllowedRef.current) return;
     automaticNextReceiptIdRef.current = receiptId;
     automaticNextTimerRef.current = setTimeout(() => {
       automaticNextTimerRef.current = null;
       if (
         attemptGenerationRef.current === generation &&
-        automaticNextReceiptIdRef.current === receiptId
+        automaticNextReceiptIdRef.current === receiptId &&
+        automaticNextAllowedRef.current
       ) {
         automaticNextReceiptIdRef.current = null;
         onNext?.();
@@ -373,6 +381,10 @@ function LearningSessionView({
   }, [clearAutomaticNext, onNext]);
 
   useEffect(() => clearAutomaticNext, [clearAutomaticNext]);
+
+  useEffect(() => {
+    if (!active || breakPaused) clearAutomaticNext();
+  }, [active, breakPaused, clearAutomaticNext]);
 
   const beginAttempt = useCallback(() => {
     attemptGenerationRef.current += 1;
@@ -438,7 +450,7 @@ function LearningSessionView({
   ]);
 
   useEffect(() => {
-    if (!attemptReceipt?.completed || attemptReceipt.duplicate) return;
+    if (!active || breakPaused || !attemptReceipt?.completed || attemptReceipt.duplicate) return;
     const generation = attemptGenerationRef.current;
     const receiptId = attemptReceipt.id;
     const timer = setTimeout(() => {
@@ -460,7 +472,7 @@ function LearningSessionView({
         completionCueTimerRef.current = null;
       }
     };
-  }, [attemptReceipt?.completed, attemptReceipt?.duplicate, attemptReceipt?.id]);
+  }, [active, attemptReceipt?.completed, attemptReceipt?.duplicate, attemptReceipt?.id, breakPaused]);
 
   const judgeTranscript = useCallback((transcript: string) => {
     if (learningControlsPaused) return;
@@ -657,13 +669,60 @@ function LearningSessionView({
 
   function pauseForBreak(): void {
     if (breakPaused) return;
+    breakInvokerRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
     controllerRef.current?.pause("guardian-break");
     setBreakPaused(true);
   }
 
   function resumeAfterBreak(): void {
+    restoreBreakFocusRef.current = true;
     setBreakPaused(false);
     controllerRef.current?.resume("guardian-break");
+  }
+
+  useEffect(() => {
+    if (breakPaused) {
+      breakDialogRef.current?.querySelector<HTMLButtonElement>(
+        "button:not([disabled])"
+      )?.focus();
+      return;
+    }
+    if (!restoreBreakFocusRef.current) return;
+    restoreBreakFocusRef.current = false;
+    const invoker = breakInvokerRef.current;
+    const invokerHidden = invoker?.closest("[hidden], [aria-hidden='true']") !== null;
+    if (invoker?.isConnected && !invokerHidden) {
+      invoker.focus();
+      return;
+    }
+    document.querySelector<HTMLButtonElement>(
+      '.learning-responsive-shell button[aria-label="메뉴 열기"]'
+    )?.focus();
+  }, [breakPaused]);
+
+  function containBreakFocus(event: KeyboardEvent<HTMLElement>): void {
+    const focusable = Array.from(
+      breakDialogRef.current?.querySelectorAll<HTMLElement>(
+        "button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])"
+      ) ?? []
+    );
+    if (event.key === "Escape") {
+      event.preventDefault();
+      focusable[0]?.focus();
+      return;
+    }
+    if (event.key !== "Tab" || focusable.length === 0) return;
+    const first = focusable[0]!;
+    const last = focusable[focusable.length - 1]!;
+    if (focusable.length === 1 || (event.shiftKey && document.activeElement === first)) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
   }
 
   function toggleSpeech(): void {
@@ -732,6 +791,11 @@ function LearningSessionView({
 
   return (
     <div className="responsive-shell learning-responsive-shell">
+      <div
+        aria-hidden={breakPaused || undefined}
+        className="learning-responsive-shell__navigation"
+        inert={breakPaused || undefined}
+      >
       <StudentNavigation
         activeId={breakPaused ? "break" : navigationHelpOpen ? "help" : "today"}
         getDrawerSelectionFocusTarget={getNavigationDestinationFocusTarget}
@@ -740,7 +804,12 @@ function LearningSessionView({
         onPauseForBreak={pauseForBreak}
         onToday={() => (onNavigateToday ?? onExit)?.()}
       />
-      <div className="responsive-shell__content">
+      </div>
+      <div
+        aria-hidden={breakPaused || undefined}
+        className="responsive-shell__content"
+        inert={breakPaused || undefined}
+      >
         <section
           className="learning-session"
           aria-label={`${item.title} 학습`}
@@ -945,12 +1014,6 @@ function LearningSessionView({
           <p>문제를 천천히 읽고 힌트나 학습 친구의 도움을 받아 보세요.</p>
         </aside>
       ) : null}
-      {breakPaused ? (
-        <aside role="alert" aria-label="잠깐 쉬기">
-          <p>쉬는 동안에는 무반응 시간을 세거나 별을 차감하지 않아요.</p>
-          <button type="button" onClick={resumeAfterBreak}>학습 계속</button>
-        </aside>
-      ) : null}
       <StarCelebration
         starAward={attemptReceipt?.starAward ?? null}
         reducedMotion={reducedMotion}
@@ -971,6 +1034,19 @@ function LearningSessionView({
       </button>
         </section>
       </div>
+      {breakPaused ? (
+        <aside
+          aria-label="잠깐 쉬기"
+          aria-modal="true"
+          className="learning-break-dialog"
+          onKeyDown={containBreakFocus}
+          ref={breakDialogRef}
+          role="dialog"
+        >
+          <p>쉬는 동안에는 무반응 시간을 세거나 별을 차감하지 않아요.</p>
+          <button type="button" onClick={resumeAfterBreak}>학습 계속</button>
+        </aside>
+      ) : null}
     </div>
   );
 }

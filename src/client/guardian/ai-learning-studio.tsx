@@ -153,6 +153,10 @@ export function AiLearningStudio({
   const [settingsFailed, setSettingsFailed] = useState(false);
 
   useEffect(() => {
+    setFocusedItem(selectedLeaf);
+  }, [selectedLeaf]);
+
+  useEffect(() => {
     if (!focusRequested.current) return;
     focusRequested.current = false;
     treeItemRefs.current.get(focusedItem)?.focus();

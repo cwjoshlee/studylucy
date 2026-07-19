@@ -5,6 +5,10 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GuardianDashboard } from "../../src/client/guardian/guardian-dashboard";
+import {
+  AiLearningStudio,
+  type AiStudioTreeState
+} from "../../src/client/guardian/ai-learning-studio";
 import { ApiError } from "../../src/client/api/client";
 import type { AiDraftView, GuardianOfflineRejection } from "../../src/shared/learning";
 import type {
@@ -1093,6 +1097,41 @@ describe("GuardianDashboard", () => {
       .toHaveAttribute("aria-selected", "true");
     expect(screen.getByRole("treeitem", { name: "문제 생성" }))
       .toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("synchronizes controlled tree roving state without stealing an API-key input", async () => {
+    const user = userEvent.setup();
+    const api = createGuardianApi();
+    const initialTree: AiStudioTreeState = {
+      selectedLeaf: "provider-model",
+      openGroups: ["settings"]
+    };
+    const updatedTree: AiStudioTreeState = {
+      selectedLeaf: "api-keys",
+      openGroups: ["settings"]
+    };
+    const view = (treeState: AiStudioTreeState) => (
+      <AiLearningStudio
+        api={api}
+        panel="settings"
+        onPanelChange={vi.fn()}
+        treeState={treeState}
+        onTreeStateChange={vi.fn()}
+      />
+    );
+    const { rerender } = render(view(initialTree));
+    const apiKey = await screen.findByLabelText("Gemini API 키");
+    await user.type(apiKey, "guardian-secret");
+    expect(apiKey).toHaveFocus();
+
+    rerender(view(updatedTree));
+
+    expect(apiKey).toHaveFocus();
+    expect(apiKey).toHaveValue("guardian-secret");
+    expect(screen.getByRole("treeitem", { name: "API 키 관리" }))
+      .toHaveAttribute("tabindex", "0");
+    expect(screen.getByRole("treeitem", { name: "제공자·모델 선택" }))
+      .toHaveAttribute("tabindex", "-1");
   });
 
   it("retains the selected settings leaf and expanded groups after AI studio re-entry", async () => {
