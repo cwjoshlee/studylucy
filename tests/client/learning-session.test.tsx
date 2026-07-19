@@ -23,7 +23,9 @@ import type {
 } from "../../src/shared/learning";
 import type { IdleEventResult } from "../../src/shared/stars";
 import { StarCelebration } from "../../src/client/delight/star-celebration";
+import { ChanaPingCoach } from "../../src/client/companions/chanaping";
 import {
+  isVisibleFocusableTarget,
   LearningSession,
   type LearningSessionProps
 } from "../../src/client/learning/learning-session";
@@ -224,15 +226,19 @@ async function flushLearningSessionIssue(): Promise<void> {
   });
 }
 
-function supportSpeechRecognition(): { emit(type: string, event?: unknown): void } {
+function supportSpeechRecognition(): {
+  abort: ReturnType<typeof vi.fn>;
+  emit(type: string, event?: unknown): void;
+} {
   const listeners = new Map<string, Array<(event?: unknown) => void>>();
+  const abort = vi.fn();
   class FakeRecognition {
     lang = "";
     interimResults = false;
     continuous = false;
     start = vi.fn();
     stop = vi.fn();
-    abort = vi.fn();
+    abort = abort;
     addEventListener(type: string, listener: (event?: unknown) => void) {
       const current = listeners.get(type) ?? [];
       current.push(listener);
@@ -244,6 +250,7 @@ function supportSpeechRecognition(): { emit(type: string, event?: unknown): void
     value: FakeRecognition
   });
   return {
+    abort,
     emit(type: string, event?: unknown) {
       listeners.get(type)?.forEach((listener) => listener(event));
     }
@@ -710,7 +717,7 @@ describe("LearningSession", () => {
     expect(onNext).toHaveBeenCalledOnce();
   });
 
-  it("cancels a completed receipt auto-next while hidden and preserves the answer on reopen", async () => {
+  it("pauses a completed receipt auto-next while hidden and schedules it once on reopen", async () => {
     vi.useFakeTimers();
     const api = createLearningApi();
     const onNext = vi.fn();
@@ -753,8 +760,49 @@ describe("LearningSession", () => {
       onNext={onNext}
     />);
     expect(screen.getByLabelText("답 쓰기")).toHaveValue("5");
-    act(() => vi.advanceTimersByTime(2_000));
+    act(() => vi.advanceTimersByTime(1_499));
     expect(onNext).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(1));
+    expect(onNext).toHaveBeenCalledOnce();
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(onNext).toHaveBeenCalledOnce();
+  });
+
+  it("aborts speech and ignores a late transcript after the mounted session becomes inactive", async () => {
+    const speech = supportSpeechRecognition();
+    const api = createLearningApi();
+    const { rerender } = render(<LearningSession
+      active
+      item={readingPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+    />);
+    await flushLearningSessionIssue();
+
+    fireEvent.click(screen.getByRole("button", { name: "읽기 시작" }));
+    act(() => speech.emit("result", {
+      resultIndex: 0,
+      results: [{ 0: { transcript: readingItem.text }, isFinal: true }]
+    }));
+    fireEvent.click(screen.getByRole("button", { name: "읽기 멈추기" }));
+
+    rerender(<LearningSession
+      active={false}
+      item={readingPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+    />);
+    act(() => speech.emit("end"));
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(speech.abort).toHaveBeenCalledOnce();
+    expect(api.saveAttempt).not.toHaveBeenCalled();
+    expect(screen.queryByRole("status", { name: "읽기 결과" })).not.toBeInTheDocument();
   });
 
   it("automatically advances once after a locally queued passing reading", async () => {
@@ -1923,6 +1971,40 @@ describe("LearningSession", () => {
     expect(api.sendIdleEvent).toHaveBeenCalledOnce();
   });
 
+  it("resumes a paused completed-receipt auto-next exactly once after guardian break", async () => {
+    vi.useFakeTimers();
+    const api = createLearningApi();
+    const onNext = vi.fn();
+    render(<LearningSession
+      item={mathPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      onNext={onNext}
+    />);
+    await flushLearningSessionIssue();
+
+    fireEvent.change(screen.getByLabelText("답 쓰기"), { target: { value: "5" } });
+    fireEvent.submit(screen.getByLabelText("답 쓰기").closest("form")!);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "메뉴 열기" }));
+    fireEvent.click(within(screen.getByRole("dialog", { name: "학생 메뉴" }))
+      .getByRole("button", { name: "잠깐 쉬기" }));
+
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(onNext).not.toHaveBeenCalled();
+    fireEvent.click(screen.getByRole("button", { name: "학습 계속" }));
+    act(() => vi.advanceTimersByTime(1_499));
+    expect(onNext).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(1));
+    expect(onNext).toHaveBeenCalledOnce();
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(onNext).toHaveBeenCalledOnce();
+  });
+
   it("contains focus in guardian break and restores the visible learning owner", async () => {
     const user = userEvent.setup();
     const api = createLearningApi();
@@ -1959,6 +2041,30 @@ describe("LearningSession", () => {
     expect(screen.queryByRole("dialog", { name: "잠깐 쉬기" }))
       .not.toBeInTheDocument();
     expect(menuButton).toHaveFocus();
+  });
+
+  it("skips a CSS-hidden mobile invoker and restores focus to the visible landscape rail", async () => {
+    const user = userEvent.setup();
+    render(<LearningSession
+      item={mathPlanItem}
+      api={createLearningApi()}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+    />);
+    await flushLearningSessionIssue();
+
+    const menuButton = screen.getByRole("button", { name: "메뉴 열기" });
+    const rail = screen.getByRole("navigation", { name: "학생 메뉴" });
+    await user.click(menuButton);
+    await user.click(within(screen.getByRole("dialog", { name: "학생 메뉴" }))
+      .getByRole("button", { name: "잠깐 쉬기" }));
+    menuButton.style.display = "none";
+    rail.style.display = "grid";
+
+    await user.click(screen.getByRole("button", { name: "학습 계속" }));
+
+    expect(within(rail).getByRole("button", { name: "오늘 학습" })).toHaveFocus();
+    expect(menuButton).not.toHaveFocus();
   });
 
   it("invokes student back navigation without exiting or clearing the current answer", async () => {
@@ -2086,6 +2192,32 @@ describe("LearningSession", () => {
   });
 });
 
+describe("break focus target visibility", () => {
+  it("rejects disconnected and CSS-invisible controls", () => {
+    const disconnected = document.createElement("button");
+    expect(isVisibleFocusableTarget(disconnected)).toBe(false);
+
+    const wrapper = document.createElement("div");
+    const button = document.createElement("button");
+    wrapper.append(button);
+    document.body.append(wrapper);
+    expect(isVisibleFocusableTarget(button)).toBe(true);
+
+    wrapper.style.visibility = "hidden";
+    expect(isVisibleFocusableTarget(button)).toBe(false);
+    wrapper.style.visibility = "visible";
+    button.style.display = "none";
+    expect(isVisibleFocusableTarget(button)).toBe(false);
+    button.style.display = "inline-block";
+    wrapper.style.opacity = "0";
+    expect(isVisibleFocusableTarget(button)).toBe(false);
+    wrapper.style.opacity = "1";
+    wrapper.setAttribute("inert", "");
+    expect(isVisibleFocusableTarget(button)).toBe(false);
+    wrapper.remove();
+  });
+});
+
 describe("StarCelebration", () => {
   it("plays an awarded event only once across rerenders and duplicate receipts", () => {
     const starAward = {
@@ -2171,6 +2303,142 @@ describe("StarCelebration", () => {
 
     expect(onComplete).toHaveBeenCalledOnce();
     expect(onComplete).toHaveBeenCalledWith("star-cleared-active-completion-1");
+  });
+
+  it("pauses completion while hidden and resumes the same event once visible", () => {
+    vi.useFakeTimers();
+    const onComplete = vi.fn();
+    const starAward = {
+      awarded: true,
+      amount: 1,
+      balance: 12,
+      eventId: "star-paused-completion-1"
+    };
+    const view = render(<StarCelebration
+      starAward={starAward}
+      onComplete={onComplete}
+    />);
+
+    act(() => vi.advanceTimersByTime(500));
+    view.rerender(<StarCelebration
+      paused
+      starAward={starAward}
+      onComplete={onComplete}
+    />);
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(onComplete).not.toHaveBeenCalled();
+    expect(screen.queryByRole("status", { name: "별 보상" })).not.toBeInTheDocument();
+
+    view.rerender(<StarCelebration
+      paused={false}
+      starAward={starAward}
+      onComplete={onComplete}
+    />);
+    act(() => vi.advanceTimersByTime(999));
+    expect(onComplete).not.toHaveBeenCalled();
+    act(() => vi.advanceTimersByTime(1));
+    expect(onComplete).toHaveBeenCalledOnce();
+  });
+
+  it("does not start an awarded event until its owner becomes active", () => {
+    vi.useFakeTimers();
+    const onPlay = vi.fn();
+    const starAward = {
+      awarded: true,
+      amount: 1,
+      balance: 13,
+      eventId: "star-hidden-before-play-1"
+    };
+    const view = render(<StarCelebration
+      paused
+      starAward={starAward}
+      onPlay={onPlay}
+    />);
+
+    act(() => vi.advanceTimersByTime(5_000));
+    expect(onPlay).not.toHaveBeenCalled();
+    expect(screen.queryByRole("status", { name: "별 보상" })).not.toBeInTheDocument();
+
+    view.rerender(<StarCelebration
+      paused={false}
+      starAward={starAward}
+      onPlay={onPlay}
+    />);
+    expect(onPlay).toHaveBeenCalledOnce();
+    expect(screen.getByRole("status", { name: "별 보상" })).toBeVisible();
+  });
+});
+
+describe("ChanaPingCoach activity lifecycle", () => {
+  it("does not issue a coach request while paused and starts once after resume", async () => {
+    const requestMessage = vi.fn().mockResolvedValue({
+      message: "차나~ 그래도 한 번 해 보자.",
+      source: "llm" as const
+    });
+    const view = render(<ChanaPingCoach
+      cueKey="paused-coach-1"
+      event="lesson-open"
+      hidden={false}
+      onHide={vi.fn()}
+      paused
+      requestMessage={requestMessage}
+      retryCount={0}
+      subject="math"
+    />);
+
+    await act(async () => {
+      await Promise.resolve();
+    });
+    expect(requestMessage).not.toHaveBeenCalled();
+    expect(screen.queryByRole("status", { name: "차나핑 코치" })).not.toBeInTheDocument();
+
+    view.rerender(<ChanaPingCoach
+      cueKey="paused-coach-1"
+      event="retry"
+      hidden={false}
+      onHide={vi.fn()}
+      paused={false}
+      requestMessage={requestMessage}
+      retryCount={1}
+      subject="math"
+    />);
+    await waitFor(() => expect(requestMessage).toHaveBeenCalledOnce());
+    expect(await screen.findByText("차나~ 그래도 한 번 해 보자.")).toBeVisible();
+  });
+
+  it("aborts and discards a late coach response while paused", async () => {
+    const response = deferred<{ message: string; source: "llm" }>();
+    const requestMessage = vi.fn().mockReturnValue(response.promise);
+    const view = render(<ChanaPingCoach
+      cueKey="late-coach-1"
+      event="retry"
+      hidden={false}
+      onHide={vi.fn()}
+      paused={false}
+      requestMessage={requestMessage}
+      retryCount={1}
+      subject="korean"
+    />);
+    await waitFor(() => expect(requestMessage).toHaveBeenCalledOnce());
+
+    view.rerender(<ChanaPingCoach
+      cueKey="late-coach-1"
+      event="retry"
+      hidden={false}
+      onHide={vi.fn()}
+      paused
+      requestMessage={requestMessage}
+      retryCount={1}
+      subject="korean"
+    />);
+    response.resolve({ message: "보이면 안 되는 늦은 응답", source: "llm" });
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(screen.queryByText("보이면 안 되는 늦은 응답")).not.toBeInTheDocument();
+    expect(requestMessage).toHaveBeenCalledOnce();
   });
 });
 

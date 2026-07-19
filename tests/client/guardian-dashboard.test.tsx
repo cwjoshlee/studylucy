@@ -1134,6 +1134,39 @@ describe("GuardianDashboard", () => {
       .toHaveAttribute("tabindex", "-1");
   });
 
+  it("moves controlled tree focus to the new roving item when the tree owns focus", async () => {
+    const api = createGuardianApi();
+    const initialTree: AiStudioTreeState = {
+      selectedLeaf: "provider-model",
+      openGroups: ["settings"]
+    };
+    const updatedTree: AiStudioTreeState = {
+      selectedLeaf: "api-keys",
+      openGroups: ["settings"]
+    };
+    const view = (treeState: AiStudioTreeState) => (
+      <AiLearningStudio
+        api={api}
+        panel="settings"
+        onPanelChange={vi.fn()}
+        treeState={treeState}
+        onTreeStateChange={vi.fn()}
+      />
+    );
+    const { rerender } = render(view(initialTree));
+    const initialItem = screen.getByRole("treeitem", { name: "제공자·모델 선택" });
+    initialItem.focus();
+    expect(initialItem).toHaveFocus();
+
+    rerender(view(updatedTree));
+
+    await waitFor(() => expect(screen.getByRole("treeitem", { name: "API 키 관리" }))
+      .toHaveFocus());
+    expect(screen.getByRole("treeitem", { name: "API 키 관리" }))
+      .toHaveAttribute("tabindex", "0");
+    expect(initialItem).toHaveAttribute("tabindex", "-1");
+  });
+
   it("retains the selected settings leaf and expanded groups after AI studio re-entry", async () => {
     const user = userEvent.setup();
     render(<GuardianDashboard api={createGuardianApi()} />);

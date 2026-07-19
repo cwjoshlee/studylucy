@@ -184,7 +184,9 @@ function LearningSessionView({
   const restoreBreakFocusRef = useRef(false);
   const attemptGenerationRef = useRef(0);
   const attemptReceiptRef = useRef<AttemptReceipt | null>(null);
+  const learningActivityPaused = !active || breakPaused;
   const learningControlsPaused =
+    learningActivityPaused ||
     (
       authority.phase !== "online-issued" &&
       authority.phase !== "offline-unissued"
@@ -192,6 +194,10 @@ function LearningSessionView({
     waiting ||
     idleUi?.phase === "paused" ||
     breakPaused;
+  const learningControlsPausedRef = useRef(learningControlsPaused);
+  const learningActivityAllowedRef = useRef(!learningActivityPaused);
+  learningControlsPausedRef.current = learningControlsPaused;
+  learningActivityAllowedRef.current = !learningActivityPaused;
   automaticNextAllowedRef.current = active && !breakPaused;
 
   useEffect(() => {
@@ -386,6 +392,24 @@ function LearningSessionView({
     if (!active || breakPaused) clearAutomaticNext();
   }, [active, breakPaused, clearAutomaticNext]);
 
+  useEffect(() => {
+    if (
+      !active ||
+      breakPaused ||
+      !attemptReceipt?.completed ||
+      attemptReceipt.duplicate ||
+      automaticNextReceiptIdRef.current === attemptReceipt.id
+    ) return;
+    scheduleAutomaticNext(attemptReceipt.id, attemptGenerationRef.current);
+  }, [
+    active,
+    attemptReceipt?.completed,
+    attemptReceipt?.duplicate,
+    attemptReceipt?.id,
+    breakPaused,
+    scheduleAutomaticNext
+  ]);
+
   const beginAttempt = useCallback(() => {
     attemptGenerationRef.current += 1;
     attemptReceiptRef.current = null;
@@ -460,7 +484,8 @@ function LearningSessionView({
         attemptGenerationRef.current === generation &&
         currentReceipt?.id === receiptId &&
         currentReceipt.completed &&
-        !currentReceipt.duplicate
+        !currentReceipt.duplicate &&
+        learningActivityAllowedRef.current
       ) {
         setShowNextCue(true);
       }
@@ -475,7 +500,7 @@ function LearningSessionView({
   }, [active, attemptReceipt?.completed, attemptReceipt?.duplicate, attemptReceipt?.id, breakPaused]);
 
   const judgeTranscript = useCallback((transcript: string) => {
-    if (learningControlsPaused) return;
+    if (learningControlsPausedRef.current) return;
     const result = judgeReading(item, transcript);
     setReadingResult(result);
     recordActivity("speech-result");
@@ -484,24 +509,29 @@ function LearningSessionView({
     } else if (!result.passed) {
       setNextUnlocked(false);
     }
-  }, [item, learningControlsPaused, recordActivity, saveReadingAttempt]);
+  }, [item, recordActivity, saveReadingAttempt]);
 
   useEffect(() => {
-    if (speechPhase !== "listening" || speechStartedAt === null) return;
+    if (
+      learningActivityPaused ||
+      speechPhase !== "listening" ||
+      speechStartedAt === null
+    ) return;
     setSpeechElapsedSeconds(Math.max(0, Math.floor((Date.now() - speechStartedAt) / 1_000)));
     const timer = setInterval(() => {
       setSpeechElapsedSeconds(Math.max(0, Math.floor((Date.now() - speechStartedAt) / 1_000)));
     }, 1_000);
     return () => clearInterval(timer);
-  }, [speechPhase, speechStartedAt]);
+  }, [learningActivityPaused, speechPhase, speechStartedAt]);
 
   useEffect(() => {
     if (item.kind !== "korean-reading") return;
     const speech = createSpeechController({
       onTranscript: (transcript) => {
-        if (transcript) judgeTranscript(transcript);
+        if (learningActivityAllowedRef.current && transcript) judgeTranscript(transcript);
       },
       onPhaseChange: (phase) => {
+        if (!learningActivityAllowedRef.current) return;
         setSpeechPhase(phase);
         if (phase === "listening") {
           setSpeechStartedAt(Date.now());
@@ -510,13 +540,19 @@ function LearningSessionView({
           setSpeechStartedAt(null);
         }
       },
-      onActivity: () => recordActivity("speech-result"),
+      onActivity: () => {
+        if (learningActivityAllowedRef.current) recordActivity("speech-result");
+      },
       onNoResult: () => {
-        setSpeechNotice("말한 내용이 들리지 않아요. 다시 읽어 볼까요?");
+        if (learningActivityAllowedRef.current) {
+          setSpeechNotice("말한 내용이 들리지 않아요. 다시 읽어 볼까요?");
+        }
       },
       onUnavailable: () => {
-        setSpeechUnavailable(true);
-        setSpeechNotice("마이크를 사용할 수 없어요. 직접 입력으로 읽기를 확인해 주세요.");
+        if (learningActivityAllowedRef.current) {
+          setSpeechUnavailable(true);
+          setSpeechNotice("마이크를 사용할 수 없어요. 직접 입력으로 읽기를 확인해 주세요.");
+        }
       }
     });
     speechRef.current = speech;
@@ -525,6 +561,14 @@ function LearningSessionView({
       speechRef.current = null;
     };
   }, [item.kind, judgeTranscript, recordActivity]);
+
+  useEffect(() => {
+    if (!learningActivityPaused) return;
+    speechRef.current?.cancel();
+    setSpeechPhase("ready");
+    setSpeechStartedAt(null);
+    setSpeechElapsedSeconds(0);
+  }, [learningActivityPaused]);
 
   async function checkMathAnswer(event: FormEvent): Promise<void> {
     event.preventDefault();
@@ -692,14 +736,28 @@ function LearningSessionView({
     if (!restoreBreakFocusRef.current) return;
     restoreBreakFocusRef.current = false;
     const invoker = breakInvokerRef.current;
-    const invokerHidden = invoker?.closest("[hidden], [aria-hidden='true']") !== null;
-    if (invoker?.isConnected && !invokerHidden) {
+    if (isVisibleFocusableTarget(invoker)) {
       invoker.focus();
       return;
     }
-    document.querySelector<HTMLButtonElement>(
-      '.learning-responsive-shell button[aria-label="메뉴 열기"]'
-    )?.focus();
+    const fallbackTargets = [
+      document.querySelector<HTMLElement>(
+        '.learning-responsive-shell button[aria-label="메뉴 열기"]'
+      ),
+      document.querySelector<HTMLElement>(
+        '.learning-responsive-shell .responsive-nav__rail [aria-current="page"]'
+      ),
+      document.querySelector<HTMLElement>(
+        ".learning-responsive-shell .responsive-nav__rail button:not([disabled])"
+      ),
+      document.querySelector<HTMLElement>(
+        ".learning-responsive-shell .learning-session button:not([disabled])"
+      ),
+      document.querySelector<HTMLElement>(
+        ".learning-responsive-shell .learning-session input:not([disabled]), .learning-responsive-shell .learning-session textarea:not([disabled])"
+      )
+    ];
+    fallbackTargets.find(isVisibleFocusableTarget)?.focus();
   }, [breakPaused]);
 
   function containBreakFocus(event: KeyboardEvent<HTMLElement>): void {
@@ -822,6 +880,7 @@ function LearningSessionView({
         </button>
       ) : null}
       <LearningCompanion
+        paused={learningActivityPaused}
         moment={companionMoment}
         studyDate={studyDate}
         item={item}
@@ -838,6 +897,7 @@ function LearningSessionView({
         retryCount={mathRetryCount + (readingResult !== null && !readingResult.passed ? 1 : 0)}
         cueKey={`${planId}:${item.id}:${contentVersion}`}
         hintStage={coachHintStage}
+        paused={learningActivityPaused}
         requestMessage={api.coachMessage === undefined ? undefined : (
           input: CoachMessageRequest,
           signal?: AbortSignal
@@ -1015,6 +1075,7 @@ function LearningSessionView({
         </aside>
       ) : null}
       <StarCelebration
+        paused={learningActivityPaused}
         starAward={attemptReceipt?.starAward ?? null}
         reducedMotion={reducedMotion}
         onPlay={() => controllerRef.current?.pause("celebration")}
@@ -1056,4 +1117,27 @@ function createClientId(prefix: string): string {
     ? globalThis.crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   return `${prefix}-${random}`;
+}
+
+export function isVisibleFocusableTarget(
+  target: HTMLElement | null | undefined
+): target is HTMLElement {
+  if (target === null || target === undefined || !target.isConnected) return false;
+  if (target.matches(":disabled") || target.tabIndex < 0) return false;
+  for (let current: HTMLElement | null = target; current !== null; current = current.parentElement) {
+    if (
+      current.hidden ||
+      current.hasAttribute("inert") ||
+      current.getAttribute("aria-hidden") === "true"
+    ) return false;
+    const style = window.getComputedStyle(current);
+    if (
+      style.display === "none" ||
+      style.opacity === "0" ||
+      style.visibility === "hidden" ||
+      style.visibility === "collapse" ||
+      style.contentVisibility === "hidden"
+    ) return false;
+  }
+  return true;
 }

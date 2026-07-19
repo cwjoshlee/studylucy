@@ -147,13 +147,18 @@ export function AiLearningStudio({
   const openGroups = new Set(currentTreeState.openGroups);
   const selectedLeaf = currentTreeState.selectedLeaf;
   const [focusedItem, setFocusedItem] = useState(currentTreeState.selectedLeaf);
+  const treeRef = useRef<HTMLElement>(null);
   const treeItemRefs = useRef(new Map<string, HTMLElement>());
   const focusRequested = useRef(false);
   const [settings, setSettings] = useState<AiStudioSettingsView | null>(null);
   const [settingsFailed, setSettingsFailed] = useState(false);
 
   useEffect(() => {
+    const activeElement = document.activeElement;
+    const treeOwnsFocus = activeElement instanceof HTMLElement &&
+      treeRef.current?.contains(activeElement) === true;
     setFocusedItem(selectedLeaf);
+    if (treeOwnsFocus) treeItemRefs.current.get(selectedLeaf)?.focus();
   }, [selectedLeaf]);
 
   useEffect(() => {
@@ -262,7 +267,12 @@ export function AiLearningStudio({
     <section className="ai-studio" aria-labelledby="ai-studio-title">
       <h2 id="ai-studio-title">AI 학습실</h2>
       <p>두 제공자가 만든 문제를 서로 감리한 뒤 보호자가 확인해 발행해요.</p>
-      <nav aria-label="AI 학습실 메뉴" className="ai-studio-tree" role="tree">
+      <nav
+        aria-label="AI 학습실 메뉴"
+        className="ai-studio-tree"
+        ref={treeRef}
+        role="tree"
+      >
         {TREE_GROUPS.map((group) => {
           const open = openGroups.has(group.id);
           const branchId = `group:${group.id}`;

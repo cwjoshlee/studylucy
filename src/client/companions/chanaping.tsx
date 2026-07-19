@@ -20,6 +20,7 @@ export function ChanaPingCoach({
   hintStage = "none",
   requestMessage,
   hidden,
+  paused = false,
   onHide
 }: {
   event: ChanaPingEvent;
@@ -29,6 +30,7 @@ export function ChanaPingCoach({
   hintStage?: CoachMessageRequest["hintStage"];
   requestMessage?: (input: CoachMessageRequest, signal?: AbortSignal) => Promise<CoachMessageResponse>;
   hidden: boolean;
+  paused?: boolean;
   onHide: () => void;
 }) {
   const mood = getChanaPingMood(event);
@@ -48,6 +50,7 @@ export function ChanaPingCoach({
   }, [requestMessage]);
 
   useEffect(() => {
+    if (paused) return;
     const nextCue = selectLocalChanaPingCue({ event, subject, retryCount, key: cueKey });
     const now = Date.now();
     if (
@@ -56,10 +59,10 @@ export function ChanaPingCoach({
     ) return;
     lastCueRef.current = { text: nextCue, at: now };
     setCue(nextCue);
-  }, [cueKey, event, retryCount, subject]);
+  }, [cueKey, event, paused, retryCount, subject]);
 
   useEffect(() => {
-    if (hidden) {
+    if (hidden || paused) {
       abortRef.current?.abort();
       abortRef.current = null;
       generationRef.current += 1;
@@ -90,9 +93,9 @@ export function ChanaPingCoach({
       }
     }).catch(() => undefined);
     return () => controller.abort();
-  }, [event, hidden, hintStage, retryCount, subject]);
+  }, [event, hidden, hintStage, paused, retryCount, subject]);
 
-  if (hidden) return null;
+  if (hidden || paused) return null;
 
   return (
     <aside

@@ -18,14 +18,17 @@ export function LearningCompanion({
   studyDate,
   item,
   saveState,
-  bunnyMoment
+  bunnyMoment,
+  paused = false
 }: {
   moment: CompanionMoment;
   studyDate: string;
   item: LearningItemPayload;
   saveState?: "saving" | "queued" | "failed";
   bunnyMoment?: BunnyMoment;
+  paused?: boolean;
 }) {
+  if (paused) return null;
   const cue = selectCompanionCue({
     moment,
     key: `${studyDate}:${item.id}:${moment}`,
