@@ -9,6 +9,7 @@ import {
   type AiDraftItemView,
   type AiDraftView,
   type AiProviderSettingsView,
+  type AiStudioSettingsView,
   type GuardianAiReport,
   type LearningItemPayload
 } from "../../shared/learning";
@@ -19,9 +20,12 @@ const DEFAULT_MODELS: Record<AiCoachProvider, string> = {
   openai: "gpt-5-nano"
 };
 const MODEL_PATTERN = /^[A-Za-z0-9._:-]{2,120}$/;
-const CALL_RESERVATION_WON = 1;
 const DEFAULT_TIMEOUT_MS = 10_000;
-const PROVIDER_OUTPUT_TOKEN_CAP = 8_192;
+const STUDIO_OUTPUT_TOKEN_CAPS = {
+  generate: 1_024,
+  review: 256,
+  report: 512
+} as const;
 const STUDIO_PERSONA = [
   "초등 1학년 학습 콘텐츠를 JSON으로만 다룬다.",
   "개인정보, 의학적 진단, 폭력적이거나 수치심을 주는 표현을 사용하지 않는다.",
@@ -54,7 +58,12 @@ type ProviderRow = {
   ciphertext: string | null;
   iv: string | null;
   tag: string | null;
+  inputWonPer1K: number;
+  outputWonPer1K: number;
 };
+
+type CompleteUsage = { inputTokens: number; outputTokens: number };
+type UsageReservation = { id: number; reservedWon: number };
 
 type DraftRow = {
   id: string;
@@ -104,6 +113,8 @@ export type AiProviderSettingsInput = {
   model?: string;
   apiKey?: string;
   deleteApiKey?: boolean;
+  inputWonPer1K?: number;
+  outputWonPer1K?: number;
 };
 
 export type AiStudioServiceDeps = {
@@ -191,24 +202,61 @@ function parseOpenAiOutputText(value: unknown): unknown {
     throw new AiStudioError("AI_STUDIO_PROVIDER_FAILED");
   }
   const output = (value as { output?: unknown }).output;
-  if (!Array.isArray(output) || output.length !== 1) {
+  if (!Array.isArray(output)) {
     throw new AiStudioError("AI_STUDIO_PROVIDER_FAILED");
   }
-  const item = output[0];
-  if (item === null || typeof item !== "object") {
+  const parts: string[] = [];
+  for (const item of output) {
+    if (item === null || typeof item !== "object" ||
+        (item as { type?: unknown }).type !== "message") continue;
+    const content = (item as { content?: unknown }).content;
+    if (!Array.isArray(content)) continue;
+    for (const entry of content) {
+      if (entry !== null && typeof entry === "object" &&
+          (entry as { type?: unknown }).type === "output_text" &&
+          typeof (entry as { text?: unknown }).text === "string") {
+        parts.push((entry as { text: string }).text);
+      }
+    }
+  }
+  const text = parts.join("");
+  if (text.trim().length === 0) {
     throw new AiStudioError("AI_STUDIO_PROVIDER_FAILED");
   }
-  const content = (item as { type?: unknown; content?: unknown }).content;
-  if ((item as { type?: unknown }).type !== "message" || !Array.isArray(content) || content.length !== 1) {
-    throw new AiStudioError("AI_STUDIO_PROVIDER_FAILED");
-  }
-  const entry = content[0];
-  if (entry === null || typeof entry !== "object" ||
-      (entry as { type?: unknown }).type !== "output_text" ||
-      typeof (entry as { text?: unknown }).text !== "string") {
-    throw new AiStudioError("AI_STUDIO_PROVIDER_FAILED");
-  }
-  return (entry as { text: string }).text;
+  return text;
+}
+
+function completeUsage(provider: AiCoachProvider, value: unknown): CompleteUsage | null {
+  if (value === null || typeof value !== "object") return null;
+  const body = value as {
+    usage?: { input_tokens?: unknown; output_tokens?: unknown };
+    usageMetadata?: { promptTokenCount?: unknown; candidatesTokenCount?: unknown };
+  };
+  const inputTokens = provider === "openai"
+    ? body.usage?.input_tokens
+    : body.usageMetadata?.promptTokenCount;
+  const outputTokens = provider === "openai"
+    ? body.usage?.output_tokens
+    : body.usageMetadata?.candidatesTokenCount;
+  return Number.isFinite(inputTokens) && Number.isInteger(inputTokens) && Number(inputTokens) >= 0 &&
+    Number.isFinite(outputTokens) && Number.isInteger(outputTokens) && Number(outputTokens) >= 0
+    ? { inputTokens: Number(inputTokens), outputTokens: Number(outputTokens) }
+    : null;
+}
+
+function estimatedInputTokens(persona: string, prompt: Record<string, unknown>): number {
+  return Math.max(1, Buffer.byteLength(`${persona}\n${JSON.stringify(prompt)}`, "utf8"));
+}
+
+function estimatedWon(
+  inputTokens: number,
+  outputTokens: number,
+  inputWonPer1K: number,
+  outputWonPer1K: number
+): number {
+  return Math.max(1, Math.ceil(
+    (inputTokens * inputWonPer1K + outputTokens * outputWonPer1K) / 1_000
+  ));
 }
 
 function parseProviderJson(value: unknown): unknown {
@@ -288,8 +336,34 @@ export class AiStudioService {
       provider: row.provider,
       enabled: row.enabled === 1,
       model: row.model,
-      hasApiKey: hasStoredKey(row)
+      hasApiKey: hasStoredKey(row),
+      inputWonPer1K: row.inputWonPer1K,
+      outputWonPer1K: row.outputWonPer1K
     }));
+  }
+
+  getSettings(): AiStudioSettingsView {
+    const budget = this.deps.db.prepare(`
+      SELECT monthly_budget_won AS monthlyBudgetWon
+      FROM ai_coach_settings WHERE singleton = 1
+    `).get() as { monthlyBudgetWon: number };
+    return {
+      providers: this.getProviderSettings(),
+      monthlyBudgetWon: budget.monthlyBudgetWon,
+      monthSpentWon: this.monthSpent()
+    };
+  }
+
+  updateBudget(input: { monthlyBudgetWon: number }): AiStudioSettingsView {
+    if (!Number.isInteger(input.monthlyBudgetWon) ||
+        input.monthlyBudgetWon < 0 || input.monthlyBudgetWon > 10_000) {
+      throw new AiStudioError("AI_STUDIO_INVALID_REQUEST");
+    }
+    this.deps.db.prepare(`
+      UPDATE ai_coach_settings SET monthly_budget_won = ?, updated_at = ?
+      WHERE singleton = 1
+    `).run(input.monthlyBudgetWon, this.now().toISOString());
+    return this.getSettings();
   }
 
   updateProvider(
@@ -299,7 +373,11 @@ export class AiStudioService {
     if ((input.model !== undefined && !MODEL_PATTERN.test(input.model)) ||
         Object.keys(input).length === 0 ||
         (input.apiKey !== undefined && input.deleteApiKey === true) ||
-        (input.apiKey !== undefined && (input.apiKey.length < 1 || input.apiKey.length > 500))) {
+        (input.apiKey !== undefined && (input.apiKey.length < 1 || input.apiKey.length > 500)) ||
+        (input.inputWonPer1K !== undefined &&
+          (!Number.isInteger(input.inputWonPer1K) || input.inputWonPer1K < 0 || input.inputWonPer1K > 1_000_000)) ||
+        (input.outputWonPer1K !== undefined &&
+          (!Number.isInteger(input.outputWonPer1K) || input.outputWonPer1K < 0 || input.outputWonPer1K > 1_000_000))) {
       throw new AiStudioError("AI_STUDIO_INVALID_REQUEST");
     }
     const previous = this.providerRow(provider);
@@ -320,7 +398,7 @@ export class AiStudioService {
     this.deps.db.prepare(`
       UPDATE ai_provider_settings
       SET enabled = ?, model = ?, api_key_ciphertext = ?, api_key_iv = ?,
-          api_key_tag = ?, updated_at = ?
+          api_key_tag = ?, input_won_per_1k = ?, output_won_per_1k = ?, updated_at = ?
       WHERE provider = ?
     `).run(
       enabled ? 1 : 0,
@@ -328,6 +406,8 @@ export class AiStudioService {
       input.deleteApiKey ? null : encrypted?.ciphertext ?? previous.ciphertext,
       input.deleteApiKey ? null : encrypted?.iv ?? previous.iv,
       input.deleteApiKey ? null : encrypted?.tag ?? previous.tag,
+      input.inputWonPer1K ?? previous.inputWonPer1K,
+      input.outputWonPer1K ?? previous.outputWonPer1K,
       this.now().toISOString(),
       provider
     );
@@ -354,9 +434,8 @@ export class AiStudioService {
     );
     const reviewed = await Promise.all(generated.flatMap(({ provider, items }) =>
       items.map(async (candidate) => {
-        const preReviewReasons = containsUnsafeChildContent(candidate)
-          ? ["UNSAFE_CONTENT"]
-          : [];
+        const validation = validateCandidate(candidate, request.data);
+        const preReviewReasons = validation.reasons;
         return {
           provider,
           candidate,
@@ -467,34 +546,42 @@ export class AiStudioService {
     itemId: string,
     input: { payload: LearningItemPayload }
   ): AiDraftView {
-    const draft = this.getDraft(draftId);
-    if (draft.status !== "draft") throw new AiStudioError("AI_STUDIO_NOT_REVIEWABLE");
-    const item = draft.items.find((candidate) => candidate.id === itemId);
-    if (item === undefined) throw new AiStudioError("AI_STUDIO_NOT_FOUND");
-    if (item.status === "rejected") throw new AiStudioError("AI_STUDIO_NOT_REVIEWABLE");
-    const validation = validateCandidate(
-      { ...input.payload, id: itemId },
-      {
-        subject: draft.subject,
-        step: draft.step,
-        count: draft.requestedCount,
-        difficulty: draft.difficulty,
-        weakTopics: draft.weakTopics
+    this.deps.db.transaction(() => {
+      const draft = this.getDraft(draftId);
+      if (draft.status !== "draft") throw new AiStudioError("AI_STUDIO_NOT_REVIEWABLE");
+      const item = draft.items.find((candidate) => candidate.id === itemId);
+      if (item === undefined) throw new AiStudioError("AI_STUDIO_NOT_FOUND");
+      if (item.status === "rejected") throw new AiStudioError("AI_STUDIO_NOT_REVIEWABLE");
+      const validation = validateCandidate(
+        { ...input.payload, id: itemId },
+        {
+          subject: draft.subject,
+          step: draft.step,
+          count: draft.requestedCount,
+          difficulty: draft.difficulty,
+          weakTopics: draft.weakTopics
+        }
+      );
+      if (validation.payload === null || validation.reasons.length > 0) {
+        throw new AiStudioError("AI_STUDIO_INVALID_REQUEST");
       }
-    );
-    if (validation.payload === null || validation.reasons.length > 0) {
-      throw new AiStudioError("AI_STUDIO_INVALID_REQUEST");
-    }
-    this.deps.db.prepare(`
-      UPDATE ai_generation_items
-      SET payload_json = ?, review_json = ?, status = 'edited'
-      WHERE id = ? AND draft_id = ?
-    `).run(
-      JSON.stringify({ ...validation.payload, id: itemId }),
-      JSON.stringify({ accepted: true, reasons: ["GUARDIAN_EDITED"] }),
-      itemId,
-      draftId
-    );
+      const result = this.deps.db.prepare(`
+        UPDATE ai_generation_items
+        SET payload_json = ?, review_json = ?, status = 'edited'
+        WHERE id = ? AND draft_id = ? AND status IN ('accepted', 'edited')
+          AND EXISTS (
+            SELECT 1 FROM ai_generation_drafts
+            WHERE id = ? AND status = 'draft'
+          )
+      `).run(
+        JSON.stringify({ ...validation.payload, id: itemId }),
+        JSON.stringify({ accepted: true, reasons: ["GUARDIAN_EDITED"] }),
+        itemId,
+        draftId,
+        draftId
+      );
+      if (result.changes !== 1) throw new AiStudioError("AI_STUDIO_NOT_REVIEWABLE");
+    }).immediate();
     return this.getDraft(draftId);
   }
 
@@ -552,7 +639,9 @@ export class AiStudioService {
   }
 
   async getReport(input: { from: string; to: string }): Promise<GuardianAiReport> {
-    const metrics = this.localReport(input.from, input.to);
+    const local = this.localReport(input.from, input.to);
+    const { attemptCount, ...metrics } = local;
+    if (attemptCount === 0) return metrics;
     const provider = this.providerRows().find((row) => row.enabled === 1 && hasStoredKey(row));
     if (provider === undefined || this.deps.encryptionKey === null) return metrics;
     try {
@@ -575,7 +664,9 @@ export class AiStudioService {
   private providerRows(): ProviderRow[] {
     return this.deps.db.prepare(`
       SELECT provider, enabled, model,
-        api_key_ciphertext AS ciphertext, api_key_iv AS iv, api_key_tag AS tag
+        api_key_ciphertext AS ciphertext, api_key_iv AS iv, api_key_tag AS tag,
+        input_won_per_1k AS inputWonPer1K,
+        output_won_per_1k AS outputWonPer1K
       FROM ai_provider_settings
       ORDER BY CASE provider WHEN 'gemini' THEN 0 ELSE 1 END
     `).all() as ProviderRow[];
@@ -642,9 +733,6 @@ export class AiStudioService {
     if (this.deps.encryptionKey === null || !hasStoredKey(settings)) {
       throw new AiStudioError("AI_STUDIO_API_KEY_REQUIRED");
     }
-    if (!this.reserveBudget(settings)) {
-      throw new AiStudioError("AI_STUDIO_BUDGET_EXCEEDED");
-    }
     let apiKey: string;
     try {
       apiKey = decryptApiKey({
@@ -654,6 +742,19 @@ export class AiStudioService {
       }, this.deps.encryptionKey);
     } catch {
       throw new AiStudioError("AI_STUDIO_API_KEY_REQUIRED");
+    }
+    const action = prompt.action;
+    if (action !== "generate" && action !== "review" && action !== "report") {
+      throw new AiStudioError("AI_STUDIO_INVALID_REQUEST");
+    }
+    const outputTokenCap = STUDIO_OUTPUT_TOKEN_CAPS[action];
+    const reservation = this.reserveBudget(
+      settings,
+      estimatedInputTokens(STUDIO_PERSONA, prompt),
+      outputTokenCap
+    );
+    if (reservation === null) {
+      throw new AiStudioError("AI_STUDIO_BUDGET_EXCEEDED");
     }
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
@@ -669,7 +770,7 @@ export class AiStudioService {
                 systemInstruction: { parts: [{ text: STUDIO_PERSONA }] },
                 generationConfig: {
                   responseMimeType: "application/json",
-                  maxOutputTokens: PROVIDER_OUTPUT_TOKEN_CAP
+                  maxOutputTokens: outputTokenCap
                 }
               }),
               signal: controller.signal
@@ -684,7 +785,7 @@ export class AiStudioService {
                 { role: "developer", content: STUDIO_PERSONA },
                 { role: "user", content: JSON.stringify(prompt) }
               ],
-              max_output_tokens: PROVIDER_OUTPUT_TOKEN_CAP,
+              max_output_tokens: outputTokenCap,
               store: false,
               text: { format: { type: "json_object" } }
             }),
@@ -692,6 +793,8 @@ export class AiStudioService {
           });
       if (!response.ok) throw new AiStudioError("AI_STUDIO_PROVIDER_FAILED");
       const body: unknown = await response.json();
+      const usage = completeUsage(settings.provider, body);
+      if (usage !== null) this.reconcileBudget(reservation, settings, usage);
       const text = settings.provider === "gemini"
         ? (body as { candidates?: Array<{ content?: { parts?: Array<{ text?: unknown }> } }> })
             .candidates?.[0]?.content?.parts?.[0]?.text
@@ -709,7 +812,19 @@ export class AiStudioService {
     }
   }
 
-  private reserveBudget(settings: ProviderRow): boolean {
+  private monthSpent(): number {
+    const spent = this.deps.db.prepare(`
+      SELECT COALESCE(SUM(estimated_won), 0) AS spent
+      FROM ai_coach_usage WHERE month = ?
+    `).get(monthAt(this.now())) as { spent: number };
+    return spent.spent;
+  }
+
+  private reserveBudget(
+    settings: ProviderRow,
+    inputTokens: number,
+    outputTokens: number
+  ): UsageReservation | null {
     return this.deps.db.transaction(() => {
       const budget = this.deps.db.prepare(`
         SELECT monthly_budget_won AS budget
@@ -719,21 +834,55 @@ export class AiStudioService {
         SELECT COALESCE(SUM(estimated_won), 0) AS spent
         FROM ai_coach_usage WHERE month = ?
       `).get(monthAt(this.now())) as { spent: number };
-      if (spent.spent + CALL_RESERVATION_WON > budget.budget) return false;
-      this.deps.db.prepare(`
+      const reservedWon = estimatedWon(
+        inputTokens,
+        outputTokens,
+        settings.inputWonPer1K,
+        settings.outputWonPer1K
+      );
+      if (spent.spent + reservedWon > budget.budget) return null;
+      const result = this.deps.db.prepare(`
         INSERT INTO ai_coach_usage (
           month, provider, model, input_tokens, output_tokens,
-          estimated_won, created_at
-        ) VALUES (?, ?, ?, 0, 0, ?, ?)
+          estimated_won, created_at, reserved_input_tokens,
+          reserved_output_tokens, input_won_per_1k, output_won_per_1k
+        ) VALUES (?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)
       `).run(
         monthAt(this.now()),
         settings.provider,
         settings.model,
-        CALL_RESERVATION_WON,
-        this.now().toISOString()
+        reservedWon,
+        this.now().toISOString(),
+        inputTokens,
+        outputTokens,
+        settings.inputWonPer1K,
+        settings.outputWonPer1K
       );
-      return true;
+      return { id: Number(result.lastInsertRowid), reservedWon };
     }).immediate();
+  }
+
+  private reconcileBudget(
+    reservation: UsageReservation,
+    settings: ProviderRow,
+    usage: CompleteUsage
+  ): void {
+    const observedWon = estimatedWon(
+      usage.inputTokens,
+      usage.outputTokens,
+      settings.inputWonPer1K,
+      settings.outputWonPer1K
+    );
+    this.deps.db.prepare(`
+      UPDATE ai_coach_usage
+      SET input_tokens = ?, output_tokens = ?, estimated_won = ?
+      WHERE id = ?
+    `).run(
+      usage.inputTokens,
+      usage.outputTokens,
+      Math.min(reservation.reservedWon, observedWon),
+      reservation.id
+    );
   }
 
   private activeContentSignatures(subject: "korean" | "math"): Set<string> {
@@ -793,7 +942,7 @@ export class AiStudioService {
         : "skill-math-story";
   }
 
-  private localReport(from: string, to: string): GuardianAiReport {
+  private localReport(from: string, to: string): GuardianAiReport & { attemptCount: number } {
     const rows = this.deps.db.prepare(`
       SELECT a.completed, a.reading_pass AS readingPass,
         a.math_pass AS mathPass, a.dictation_pass AS dictationPass,
@@ -823,7 +972,8 @@ export class AiStudioService {
         summary: "선택한 기간에 저장된 학습 기록이 없어요.",
         completionRate: 0,
         commonMistakes: [],
-        challengePerfect: false
+        challengePerfect: false,
+        attemptCount: 0
       };
     }
     const completed = rows.filter((row) => row.completed === 1).length;
@@ -842,17 +992,22 @@ export class AiStudioService {
       .sort((left, right) => right[1] - left[1] || left[0].localeCompare(right[0], "ko"))
       .slice(0, 5)
       .map(([topic]) => topic);
-    const challenges = rows.filter((row) => row.step === "challenge");
-    const challengePerfect = challenges.length > 0 && challenges.every((row) =>
-      row.completed === 1 && row.readingPass === 1 &&
-      row.mathPass !== 0 && row.dictationPass !== 0
-    );
+    const challengePerfect = (this.deps.db.prepare(`
+      SELECT EXISTS(
+        SELECT 1 FROM star_events AS event
+        JOIN users AS student ON student.id = event.student_id
+        WHERE student.role = 'student'
+          AND event.study_date BETWEEN ? AND ?
+          AND event.reason_code = 'CHALLENGE_PERFECT'
+      ) AS found
+    `).get(from, to) as { found: number }).found === 1;
     return {
       source: "local",
       summary: `총 ${rows.length}번의 학습 중 ${completed}번을 완료해 완료율은 ${completionRate}%예요.`,
       completionRate,
       commonMistakes,
-      challengePerfect
+      challengePerfect,
+      attemptCount: rows.length
     };
   }
 }

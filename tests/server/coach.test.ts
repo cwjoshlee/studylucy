@@ -23,6 +23,30 @@ function openAiResponse(message: string, inputTokens = 10, outputTokens = 10) {
 }
 
 describe("AI coach privacy and budget boundaries", () => {
+  it("accepts OpenAI reasoning items before fragmented message output", async () => {
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const text = JSON.stringify({ message: "한 걸음씩 해 보자" });
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      output: [
+        { type: "reasoning", summary: [] },
+        { type: "message", content: [
+          { type: "output_text", text: text.slice(0, 9) },
+          { type: "output_text", text: text.slice(9) }
+        ] },
+        { type: "tool_call", name: "ignored" }
+      ],
+      usage: { input_tokens: 20, output_tokens: 10 }
+    }), { status: 200 }));
+    const service = new AiCoachService({ db, encryptionKey: key, fetcher });
+    service.updateSettings({ enabled: true, provider: "openai", apiKey: "provider-secret" });
+
+    await expect(service.message({
+      event: "retry", subject: "korean", retryCount: 1, hintStage: "step"
+    })).resolves.toEqual({ message: "한 걸음씩 해 보자", source: "llm" });
+    db.close();
+  });
+
   it("rejects production legacy API-key updates over HTTP and whitespace keys", async () => {
     const harness = await createTestHarness({ nodeEnv: "production" });
     const guardian = harness.client();
@@ -222,12 +246,6 @@ describe("AI coach privacy and budget boundaries", () => {
   it.each([
     { output: [{ type: "message", content: [{ type: "output_text" }] }] },
     {
-      output: [
-        null,
-        openAiResponse("한 걸음씩 해 보자").output[0]
-      ]
-    },
-    {
       output: [{
         content: openAiResponse("한 걸음씩 해 보자").output[0]!.content
       }]
@@ -236,15 +254,6 @@ describe("AI coach privacy and budget boundaries", () => {
       output: [{
         type: "reasoning",
         content: openAiResponse("한 걸음씩 해 보자").output[0]!.content
-      }]
-    },
-    {
-      output: [{
-        type: "message",
-        content: [
-          { type: "refusal", refusal: "not available" },
-          openAiResponse("한 걸음씩 해 보자").output[0]!.content[0]
-        ]
       }]
     },
     { output: [{ type: "message", content: null }] },
@@ -259,12 +268,6 @@ describe("AI coach privacy and budget boundaries", () => {
         ]
       }]
     },
-    {
-      output: [
-        openAiResponse("한 걸음씩 해 보자").output[0],
-        { type: "reasoning" }
-      ]
-    }
   ])("falls back locally for malformed or ambiguous OpenAI raw output", async (providerBody) => {
     const db = openDatabase(":memory:");
     migrate(db);
@@ -318,6 +321,76 @@ describe("AI coach privacy and budget boundaries", () => {
       SELECT input_tokens AS inputTokens, output_tokens AS outputTokens, estimated_won AS estimatedWon
       FROM ai_coach_usage WHERE id = 2
     `).get()).toEqual({ inputTokens: 50_000, outputTokens: 50_000, estimatedWon: 1 });
+    db.close();
+  });
+
+  it("keeps a priced reservation when provider usage is incomplete", async () => {
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const response = openAiResponse("한 걸음씩 해 보자") as {
+      output: unknown;
+      usage: { input_tokens: number; output_tokens: number };
+    };
+    delete (response.usage as { output_tokens?: number }).output_tokens;
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(response), { status: 200 }));
+    const service = new AiCoachService({ db, encryptionKey: key, fetcher });
+    service.updateSettings({
+      enabled: true, provider: "openai", apiKey: "provider-secret", monthlyBudgetWon: 1000
+    });
+    db.prepare(`
+      UPDATE ai_provider_settings
+      SET input_won_per_1k = 100, output_won_per_1k = 100
+      WHERE provider = 'openai'
+    `).run();
+
+    await service.message({
+      event: "retry", subject: "korean", retryCount: 1, hintStage: "step"
+    });
+
+    expect(db.prepare(`
+      SELECT input_tokens AS inputTokens, output_tokens AS outputTokens,
+        estimated_won AS estimatedWon, reserved_input_tokens AS reservedInputTokens,
+        reserved_output_tokens AS reservedOutputTokens,
+        input_won_per_1k AS inputWonPer1K, output_won_per_1k AS outputWonPer1K
+      FROM ai_coach_usage
+    `).get()).toMatchObject({
+      inputTokens: 0,
+      outputTokens: 0,
+      estimatedWon: expect.any(Number),
+      reservedInputTokens: expect.any(Number),
+      reservedOutputTokens: 64,
+      inputWonPer1K: 100,
+      outputWonPer1K: 100
+    });
+    expect((db.prepare("SELECT estimated_won AS won FROM ai_coach_usage").get() as { won: number }).won)
+      .toBeGreaterThan(1);
+    db.close();
+  });
+
+  it("releases only the unused part of a complete priced reservation", async () => {
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(
+      openAiResponse("한 걸음씩 해 보자", 1, 1)
+    ), { status: 200 }));
+    const service = new AiCoachService({ db, encryptionKey: key, fetcher });
+    service.updateSettings({
+      enabled: true, provider: "openai", apiKey: "provider-secret", monthlyBudgetWon: 1000
+    });
+    db.prepare(`
+      UPDATE ai_provider_settings
+      SET input_won_per_1k = 100, output_won_per_1k = 100
+      WHERE provider = 'openai'
+    `).run();
+
+    await service.message({
+      event: "retry", subject: "korean", retryCount: 1, hintStage: "step"
+    });
+
+    expect(db.prepare(`
+      SELECT input_tokens AS inputTokens, output_tokens AS outputTokens,
+        estimated_won AS estimatedWon FROM ai_coach_usage
+    `).get()).toEqual({ inputTokens: 1, outputTokens: 1, estimatedWon: 1 });
     db.close();
   });
 

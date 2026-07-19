@@ -70,6 +70,14 @@ export type AiProviderSettingsView = {
   enabled: boolean;
   model: string;
   hasApiKey: boolean;
+  inputWonPer1K: number;
+  outputWonPer1K: number;
+};
+
+export type AiStudioSettingsView = {
+  providers: AiProviderSettingsView[];
+  monthlyBudgetWon: number;
+  monthSpentWon: number;
 };
 
 export const AiBatchRequestSchema = z.object({

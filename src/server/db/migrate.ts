@@ -7,6 +7,7 @@ import { trustedDeviceTypesMigration } from "./migrations/005-trusted-device-typ
 import { aiCoachMigration } from "./migrations/006-ai-coach";
 import { stepUpAiStudioMigration } from "./migrations/007-step-up-ai-studio";
 import { dictationInputFingerprintMigration } from "./migrations/008-dictation-input-fingerprint";
+import { aiStudioBudgetRatesMigration } from "./migrations/009-ai-studio-budget-rates";
 
 const migrations = [
   initialMigration,
@@ -16,7 +17,8 @@ const migrations = [
   trustedDeviceTypesMigration,
   aiCoachMigration,
   stepUpAiStudioMigration,
-  dictationInputFingerprintMigration
+  dictationInputFingerprintMigration,
+  aiStudioBudgetRatesMigration
 ];
 
 function hasMigrationTable(db: Database.Database): boolean {

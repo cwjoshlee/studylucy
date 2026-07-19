@@ -30,7 +30,9 @@ const ProviderInputSchema = z.object({
   enabled: z.boolean().optional(),
   model: z.string().regex(/^[A-Za-z0-9._:-]{2,120}$/).optional(),
   apiKey: z.string().trim().min(1).max(500).optional(),
-  deleteApiKey: z.literal(true).optional()
+  deleteApiKey: z.literal(true).optional(),
+  inputWonPer1K: z.number().int().min(0).max(1_000_000).optional(),
+  outputWonPer1K: z.number().int().min(0).max(1_000_000).optional()
 }).strict()
   .refine((input) => Object.keys(input).length > 0)
   .refine((input) => !(input.apiKey !== undefined && input.deleteApiKey === true));
@@ -47,6 +49,9 @@ const ReportQuerySchema = z.object({
   from: StudyDateSchema,
   to: StudyDateSchema
 }).strict().refine((input) => input.from <= input.to);
+const StudioBudgetInputSchema = z.object({
+  monthlyBudgetWon: z.number().int().min(0).max(10_000)
+}).strict();
 
 function invalid(reply: FastifyReply): void {
   void reply.code(400).send({ code: "INVALID_REQUEST" });
@@ -153,7 +158,17 @@ export function registerAiCoachRoutes(app: FastifyInstance, deps: AppDeps): void
     "/api/guardian/ai-studio/settings",
     { preHandler: requireRole("guardian") },
     async (_request, reply) => {
-      await reply.send(studio.getProviderSettings());
+      await reply.send(studio.getSettings());
+    }
+  );
+
+  app.put(
+    "/api/guardian/ai-studio/budget",
+    { preHandler: requireRole("guardian") },
+    async (request, reply) => {
+      const body = StudioBudgetInputSchema.safeParse(request.body);
+      if (!body.success) return invalid(reply);
+      await reply.send(studio.updateBudget(body.data));
     }
   );
 

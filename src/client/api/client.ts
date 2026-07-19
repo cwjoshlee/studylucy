@@ -10,6 +10,7 @@ import type {
   AiBatchRequest,
   AiDraftView,
   AiProviderSettingsView,
+  AiStudioSettingsView,
   AttemptInput,
   AttemptReceipt,
   GuardianOfflineRejections,
@@ -94,6 +95,8 @@ export type AiStudioProviderInput = {
   model?: string;
   apiKey?: string;
   deleteApiKey?: true;
+  inputWonPer1K?: number;
+  outputWonPer1K?: number;
 };
 
 export class ApiClient {
@@ -341,7 +344,17 @@ export class ApiClient {
   }
 
   getAiStudioSettings(): Promise<AiProviderSettingsView[]> {
+    return this.getAiStudioSettingsView().then((settings) => settings.providers);
+  }
+
+  getAiStudioSettingsView(): Promise<AiStudioSettingsView> {
     return this.request("GET", "/api/guardian/ai-studio/settings");
+  }
+
+  updateAiStudioBudget(
+    input: { monthlyBudgetWon: number }
+  ): Promise<AiStudioSettingsView> {
+    return this.request("PUT", "/api/guardian/ai-studio/budget", input);
   }
 
   updateAiStudioProvider(
@@ -434,6 +447,8 @@ export type ClientApi = Pick<ApiClient,
   | "updateAiCoachSettings"
   | "coachMessage"
   | "getAiStudioSettings"
+  | "getAiStudioSettingsView"
+  | "updateAiStudioBudget"
   | "updateAiStudioProvider"
   | "createAiDraft"
   | "getAiDraft"
