@@ -75,6 +75,22 @@ async function getToday(client: TestClient): Promise<TodayPlan> {
   return response.json() as TodayPlan;
 }
 
+function stagedItem(
+  plan: TodayPlan,
+  subject: "korean" | "math",
+  step: "foundation" | "current" | "challenge"
+): TodayPlan["items"][number] {
+  const item = plan.items.find((candidate) =>
+    candidate.payload.subject === subject && candidate.step === step
+  );
+  if (item === undefined) throw new Error(`missing ${subject} ${step} item`);
+  return item;
+}
+
+function offlineAttemptItem(plan: TodayPlan): TodayPlan["items"][number] {
+  return stagedItem(plan, "math", "foundation");
+}
+
 async function issueLearningSession(
   client: TestClient,
   plan: TodayPlan,
@@ -112,6 +128,9 @@ function passingAttempt(
     mathAnswer: item.payload.kind === "math-story"
       ? item.payload.answer
       : null,
+    dictationText: item.payload.kind === "korean-dictation"
+      ? item.payload.answerText
+      : undefined,
     durationMs: 12_000,
     difficultyFeedback: null,
     ...overrides
@@ -246,9 +265,7 @@ describe("ordered offline activity batches", () => {
     const student = harness.client();
     await bootstrapStudent(harness, student);
     const plan = await getToday(student);
-    const required = plan.items.find((item) =>
-      plan.requiredItemIds.includes(item.id)
-    )!;
+    const required = offlineAttemptItem(plan);
     const session = await issueLearningSession(student, plan, required);
     harness.db.prepare(`
       UPDATE issued_learning_sessions
@@ -337,9 +354,7 @@ describe("ordered offline activity batches", () => {
     const student = harness.client();
     await bootstrapStudent(harness, student);
     const plan = await getToday(student);
-    const required = plan.items.find((item) =>
-      plan.requiredItemIds.includes(item.id)
-    )!;
+    const required = offlineAttemptItem(plan);
     const transaction = vi.spyOn(harness.db, "transaction");
 
     const response = await student.request(
@@ -366,11 +381,12 @@ describe("ordered offline activity batches", () => {
     const student = harness.client();
     await bootstrapStudent(harness, student);
     const plan = await getToday(student);
-    const item = plan.items[0]!;
+    const item = offlineAttemptItem(plan);
     const session = await issueLearningSession(student, plan, item);
     let clockCalls = 0;
     const service = new OfflineBatchService({
       db: harness.db,
+      config: harness.config,
       now: () => new Date(
         Date.parse("2026-07-15T03:05:00.000Z") + clockCalls++ * 1_000
       )
@@ -416,9 +432,10 @@ describe("ordered offline activity batches", () => {
     const student = harness.client();
     await bootstrapStudent(harness, student);
     const plan = await getToday(student);
-    const [firstItem, secondItem] = plan.items;
-    const firstSession = await issueLearningSession(student, plan, firstItem!);
-    const secondSession = await issueLearningSession(student, plan, secondItem!);
+    const firstItem = offlineAttemptItem(plan);
+    const secondItem = stagedItem(plan, "korean", "foundation");
+    const firstSession = await issueLearningSession(student, plan, firstItem);
+    const secondSession = await issueLearningSession(student, plan, secondItem);
     new StarRepository(harness.db).apply({
       studentId: studentId(harness),
       delta: 3,
@@ -436,14 +453,14 @@ describe("ordered offline activity batches", () => {
     };
     const first = idlePayload(
       plan,
-      firstItem!,
+      firstItem,
       firstSession.learningSessionId,
       "idle-equal-z-0001",
       sameTime
     );
     const second = idlePayload(
       plan,
-      secondItem!,
+      secondItem,
       secondSession.learningSessionId,
       "idle-equal-a-0001",
       {
@@ -453,7 +470,7 @@ describe("ordered offline activity batches", () => {
     );
     const third = idlePayload(
       plan,
-      firstItem!,
+      firstItem,
       firstSession.learningSessionId,
       "idle-equal-cap-0001",
       sameTime
@@ -488,7 +505,7 @@ describe("ordered offline activity batches", () => {
     const student = harness.client();
     await bootstrapStudent(harness, student);
     const plan = await getToday(student);
-    const item = plan.items[0]!;
+    const item = offlineAttemptItem(plan);
     const tooMany = Array.from({ length: 101 }, (_, index) =>
       attemptEvent(passingAttempt(
         plan,
@@ -547,9 +564,7 @@ describe("ordered offline activity batches", () => {
     const student = harness.client();
     await bootstrapStudent(harness, student);
     const plan = await getToday(student);
-    const item = plan.items.find((candidate) =>
-      plan.requiredItemIds.includes(candidate.id)
-    )!;
+    const item = offlineAttemptItem(plan);
     const unrelatedItemId = "unissued-existing-item";
     const unknownItemId = "unknown-sensitive-item";
     insertUnissuedPublishedItem(harness, item, unrelatedItemId);
@@ -704,17 +719,18 @@ describe("ordered offline activity batches", () => {
     const student = harness.client();
     await bootstrapStudent(harness, student);
     const plan = await getToday(student);
-    const [attemptItem, idleItem] = plan.items;
+    const attemptItem = offlineAttemptItem(plan);
+    const idleItem = stagedItem(plan, "korean", "foundation");
     const legacyAttempt = passingAttempt(
       plan,
-      attemptItem!,
+      attemptItem,
       "attempt-legacy-reconciled-0001"
     );
     const { planId: _planId, occurredAt: _occurredAt, ...attemptPayload } =
       legacyAttempt;
     const legacyIdle = {
       clientIdleEventId: "idle-legacy-waiver-0001",
-      itemId: idleItem!.id,
+      itemId: idleItem.id,
       studyDate: plan.date,
       idleStartedAt: "2026-07-15T02:55:00.000Z",
       occurredAt: "2026-07-15T03:00:00.000Z"
@@ -762,9 +778,7 @@ describe("ordered offline activity batches", () => {
     const firstDevice = harness.client();
     await bootstrapStudent(harness, firstDevice);
     const firstPlan = await getToday(firstDevice);
-    const firstRequired = firstPlan.items.find((item) =>
-      firstPlan.requiredItemIds.includes(item.id)
-    )!;
+    const firstRequired = offlineAttemptItem(firstPlan);
     const request = batch(firstPlan, "batch-lost-response-0001", [
       attemptEvent(passingAttempt(
         firstPlan,
@@ -782,10 +796,7 @@ describe("ordered offline activity batches", () => {
     const secondDevice = harness.client();
     await loginStudentOnNewDevice(secondDevice, "수아 두 번째 태블릿");
     const secondPlan = await getToday(secondDevice);
-    const anotherRequired = secondPlan.items.find((item) =>
-      secondPlan.requiredItemIds.includes(item.id) &&
-      item.id !== firstRequired.id
-    )!;
+    const anotherRequired = stagedItem(secondPlan, "korean", "foundation");
     const later = await secondDevice.request(
       "POST",
       "/api/student/attempts",
@@ -835,7 +846,7 @@ describe("ordered offline activity batches", () => {
     const student = harness.client();
     await bootstrapStudent(harness, student);
     const plan = await getToday(student);
-    const item = plan.items[0]!;
+    const item = offlineAttemptItem(plan);
     const event = attemptEvent(passingAttempt(
       plan,
       item,
@@ -877,7 +888,7 @@ describe("ordered offline activity batches", () => {
     const plan = await getToday(student);
     const event = attemptEvent(passingAttempt(
       plan,
-      plan.items[0]!,
+      offlineAttemptItem(plan),
       "attempt-event-idempotent-0001"
     ), 1);
     const first = await student.request(
@@ -909,7 +920,7 @@ describe("ordered offline activity batches", () => {
     const plan = await getToday(student);
     const event = attemptEvent(passingAttempt(
       plan,
-      plan.items[0]!,
+      offlineAttemptItem(plan),
       "attempt-duplicate-in-batch-0001"
     ), 1);
 
@@ -940,13 +951,17 @@ describe("ordered offline activity batches", () => {
     const student = harness.client();
     await bootstrapStudent(harness, student);
     const plan = await getToday(student);
-    const item = plan.items[0]!;
+    const item = offlineAttemptItem(plan);
     const session = await issueLearningSession(student, plan, item);
     harness.advanceTime(5 * 60 * 1_000);
     const online = await student.request(
       "POST",
       "/api/student/attempts",
-      passingAttempt(plan, plan.items[1]!, "attempt-cursor-ahead-0001")
+      passingAttempt(
+        plan,
+        stagedItem(plan, "korean", "foundation"),
+        "attempt-cursor-ahead-0001"
+      )
     );
     expect(online.statusCode).toBe(201);
     new StarRepository(harness.db).apply({
@@ -1024,7 +1039,7 @@ describe("ordered offline activity batches", () => {
     const secondPlan = await getToday(secondDevice);
     const event = attemptEvent(passingAttempt(
       secondPlan,
-      secondPlan.items[0]!,
+      offlineAttemptItem(secondPlan),
       "attempt-hard-rejection-0001"
     ), 1);
     const before = mutationCounts(harness);
@@ -1069,7 +1084,7 @@ describe("ordered offline activity batches", () => {
       batch(plan, "batch-forced-rollback-0001", [
         attemptEvent(passingAttempt(
           plan,
-          plan.items.find((item) => plan.requiredItemIds.includes(item.id))!,
+          offlineAttemptItem(plan),
           "attempt-forced-rollback-0001"
         ), 1)
       ])
@@ -1092,7 +1107,7 @@ describe("ordered offline activity batches", () => {
     const request = batch(yesterday, "batch-midnight-reservation-0001", [
       attemptEvent(passingAttempt(
         yesterday,
-        yesterday.items[0]!,
+        offlineAttemptItem(yesterday),
         "attempt-midnight-reservation-0001"
       ), 1)
     ]);
@@ -1132,7 +1147,7 @@ describe("ordered offline activity batches", () => {
     const student = harness.client();
     await bootstrapStudent(harness, student);
     const oldPlan = await getToday(student);
-    const oldItem = oldPlan.items[0]!;
+    const oldItem = offlineAttemptItem(oldPlan);
     const unrelatedItemId = "expired-unissued-existing-item";
     insertUnissuedPublishedItem(harness, oldItem, unrelatedItemId);
     const valid = passingAttempt(
@@ -1298,7 +1313,7 @@ describe("ordered offline activity batches", () => {
     expect(duplicateIssue.statusCode).toBe(200);
     expect(duplicateIssue.json()).toEqual(recovery);
 
-    const item = recovery.items[0]!;
+    const item = offlineAttemptItem(recovery);
     const recoveredAttempt = passingAttempt(
       recovery,
       item,
@@ -1358,9 +1373,7 @@ describe("ordered offline activity batches", () => {
     const sourceClient = harness.client();
     const sourceDevice = await bootstrapStudent(harness, sourceClient);
     const sourcePlan = await getToday(sourceClient);
-    const sourceItem = sourcePlan.items.find((item) =>
-      sourcePlan.requiredItemIds.includes(item.id)
-    )!;
+    const sourceItem = offlineAttemptItem(sourcePlan);
     const newerVersion = sourceItem.version + 1;
     harness.db.prepare(`
       INSERT INTO content_versions (item_id, version, payload_json, created_at)
@@ -1433,29 +1446,36 @@ describe("ordered offline activity batches", () => {
     const sourceClient = harness.client();
     const sourceDevice = await bootstrapStudent(harness, sourceClient);
     const sourcePlan = await getToday(sourceClient);
-    const sourceRequired = sourcePlan.items.find((item) =>
-      sourcePlan.requiredItemIds.includes(item.id)
-    )!;
+    const sourceRequired = offlineAttemptItem(sourcePlan);
 
     harness.advanceTime(12 * 60 * 60 * 1_000);
     const currentClient = harness.client();
     await loginStudentOnNewDevice(currentClient, "수아 다음날 태블릿");
     const currentDaily = await getToday(currentClient);
     expect(currentDaily.date).not.toBe(sourcePlan.date);
-    const currentRequired = currentDaily.items.find((item) =>
-      currentDaily.requiredItemIds.includes(item.id) &&
-      item.id !== sourceRequired.id
-    )!;
-    expect(currentRequired).toBeDefined();
+    const currentFoundation = offlineAttemptItem(currentDaily);
+    const currentRequired = stagedItem(currentDaily, "math", "current");
     const currentOccurredAt = new Date(
       Date.parse(kstDayBounds(currentDaily.date).start) + 5 * 60 * 1_000
     ).toISOString();
+    const prerequisite = await currentClient.request(
+      "POST",
+      "/api/student/attempts",
+      passingAttempt(
+        currentDaily,
+        currentFoundation,
+        "attempt-current-day-foundation-0001",
+        currentOccurredAt
+      )
+    );
+    expect(prerequisite.statusCode).toBe(201);
+    const currentReady = await getToday(currentClient);
     const currentApplied = await currentClient.request(
       "POST",
       "/api/student/offline-batches",
-      batch(currentDaily, "batch-current-day-before-recovery-0001", [
+      batch(currentReady, "batch-current-day-before-recovery-0001", [
         attemptEvent(passingAttempt(
-          currentDaily,
+          currentReady,
           currentRequired,
           "attempt-current-day-before-recovery-0001",
           currentOccurredAt
@@ -1466,8 +1486,11 @@ describe("ordered offline activity batches", () => {
     expect(currentApplied.json()).toMatchObject({
       currentDailyPlan: {
         planId: currentDaily.planId,
-        completedItemIds: expect.arrayContaining([currentRequired.id]),
-        stars: { balance: 1, earnedToday: 1 }
+        completedItemIds: expect.arrayContaining([
+          currentFoundation.id,
+          currentRequired.id
+        ]),
+        stars: { balance: 2, earnedToday: 2 }
       }
     });
 
@@ -1501,22 +1524,31 @@ describe("ordered offline activity batches", () => {
         planKind: "recovery",
         date: sourcePlan.date,
         completedItemIds: expect.arrayContaining([sourceRequired.id]),
-        stars: { balance: 2, earnedToday: 1 }
+        stars: { balance: 3, earnedToday: 1 }
       },
       currentDailyPlan: {
         planId: currentDaily.planId,
         planKind: "daily",
         date: currentDaily.date,
-        completedItemIds: expect.arrayContaining([currentRequired.id]),
-        stars: { balance: 2, earnedToday: 1 }
+        completedItemIds: expect.arrayContaining([
+          currentFoundation.id,
+          currentRequired.id
+        ]),
+        stars: { balance: 3, earnedToday: 2 }
       },
-      stars: { balance: 2, earnedToday: 1 }
+      stars: { balance: 3, earnedToday: 2 }
     });
     expect(recoveryApplied.json().currentDailyPlan.planId)
       .not.toBe(recovery.planId);
-    expect(recoveryApplied.json().currentDailyPlan.completedItemIds)
-      .not.toContain(sourceRequired.id);
     expect(recoveryApplied.json().processedPlan.completedItemIds)
       .not.toContain(currentRequired.id);
+    expect(harness.db.prepare(`
+      SELECT issued_plan_id AS issuedPlanId, study_date AS studyDate
+      FROM attempts WHERE item_id = ?
+      ORDER BY study_date, issued_plan_id
+    `).all(sourceRequired.id)).toEqual([
+      { issuedPlanId: recovery.planId, studyDate: sourcePlan.date },
+      { issuedPlanId: currentDaily.planId, studyDate: currentDaily.date }
+    ]);
   });
 });

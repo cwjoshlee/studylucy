@@ -529,6 +529,9 @@ export class StarService {
       if (error instanceof Error && error.message === "PLAN_LOCKED") {
         throw new StarServiceError(409, "PLAN_LOCKED");
       }
+      if (error instanceof Error && error.message === "PLAN_VERSION_REQUIRED") {
+        throw new StarServiceError(409, "PLAN_VERSION_REQUIRED");
+      }
       throw error;
     }
   }

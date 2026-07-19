@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type Database from "better-sqlite3";
+import type { AppConfig } from "../config";
 import type {
   AttemptInput,
   AttemptReceipt,
@@ -29,6 +30,7 @@ export class LearningError extends Error {
     | "PLAN_NOT_ISSUED"
     | "PLAN_SUBMISSION_EXPIRED"
     | "CONTENT_VERSION_CONFLICT"
+    | "STEP_LOCKED"
     | "LEARNING_SESSION_INVALID"
     | "LEARNING_SESSION_EXPIRED"
     | "INVALID_REQUEST"
@@ -41,6 +43,7 @@ export class LearningError extends Error {
 export type LearningServiceDeps = {
   db: Database.Database;
   now: () => Date;
+  config: Pick<AppConfig, "sessionPepper">;
 };
 
 export class LearningService {
@@ -49,7 +52,10 @@ export class LearningService {
   private sessions: LearningSessionRepository;
 
   constructor(private deps: LearningServiceDeps) {
-    this.repository = new LearningRepository(deps.db);
+    this.repository = new LearningRepository(
+      deps.db,
+      deps.config.sessionPepper
+    );
     this.issuedPlans = new IssuedPlanRepository(deps.db, deps.now);
     this.sessions = new LearningSessionRepository(deps.db);
   }
@@ -70,9 +76,10 @@ export class LearningService {
         .filter((item) => item.isRequired)
         .map((item) => item.id),
       stars: getStudentStarSummary(this.deps.db, userId, issued.studyDate),
-      items: issued.items.map(({ id, version, payload }) => ({
+      items: issued.items.map(({ id, version, step, payload }) => ({
         id,
         version,
+        step,
         payload
       }))
     };
@@ -160,9 +167,7 @@ export class LearningService {
     }
     const completedItems = new Set(
       attempts
-        .filter(
-          (attempt) => attempt.readingPass && (attempt.mathPass ?? true)
-        )
+        .filter((attempt) => attempt.completed)
         .map((attempt) => `${attempt.studyDate}\0${attempt.itemId}`)
     ).size;
 

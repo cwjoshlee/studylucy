@@ -1,9 +1,9 @@
 import type Database from "better-sqlite3";
 import { randomUUID } from "node:crypto";
-import { getDailyItems } from "../../shared/daily-order";
 import {
   LearningItemPayloadSchema,
   type AttemptInput,
+  type LearningStep,
   type LearningItemPayload
 } from "../../shared/learning";
 import { kstDayBounds, kstStudyDate } from "../../shared/study-date";
@@ -13,6 +13,7 @@ export type IssuedPlanErrorCode =
   | "PLAN_NOT_ISSUED"
   | "PLAN_SUBMISSION_EXPIRED"
   | "CONTENT_VERSION_CONFLICT"
+  | "STEP_LOCKED"
   | "SOURCE_DEVICE_STILL_ACTIVE"
   | "INVALID_REQUEST";
 
@@ -25,6 +26,7 @@ export class IssuedPlanError extends Error {
 export type IssuedPlanItemSnapshot = {
   id: string;
   version: number;
+  step: LearningStep;
   payload: LearningItemPayload;
   isRequired: boolean;
   sortOrder: number;
@@ -49,6 +51,7 @@ export type ValidatedAttemptSnapshot = {
   contentVersion: number;
   payload: LearningItemPayload;
   isRequired: boolean;
+  step: LearningStep;
 };
 
 type CursorRow = {
@@ -70,6 +73,73 @@ type PlanAuthorityRow = PlanRow & {
   trustedDeviceId: string;
   originalDeviceId: string;
 };
+
+type IssuedStepAuthorityRow = {
+  itemId: string;
+  step: LearningStep;
+  payloadJson: string;
+  completed: number;
+};
+
+const STEP_RANK: Record<LearningStep, number> = {
+  foundation: 0,
+  current: 1,
+  challenge: 2
+};
+
+export function assertIssuedStepUnlocked(
+  db: Database.Database,
+  studentId: string,
+  planId: string,
+  itemId: string
+): void {
+  const rows = db.prepare(`
+    SELECT ipi.item_id AS itemId, ipi.step,
+           cv.payload_json AS payloadJson,
+           EXISTS (
+             SELECT 1
+             FROM attempts AS a
+             JOIN issued_daily_plans AS completed_plan
+               ON completed_plan.id = a.issued_plan_id
+              AND completed_plan.student_id = a.user_id
+              AND completed_plan.study_date = a.study_date
+             JOIN issued_plan_items AS completed_item
+               ON completed_item.plan_id = completed_plan.id
+              AND completed_item.item_id = a.item_id
+              AND completed_item.content_version = a.content_version
+             WHERE a.user_id = ?
+               AND a.study_date = requested.study_date
+               AND a.item_id = ipi.item_id
+               AND a.content_version = ipi.content_version
+               AND a.completed = 1
+           ) AS completed
+    FROM issued_plan_items AS ipi
+    JOIN issued_daily_plans AS requested ON requested.id = ipi.plan_id
+    JOIN content_versions AS cv
+      ON cv.item_id = ipi.item_id
+     AND cv.version = ipi.content_version
+    WHERE ipi.plan_id = ?
+    ORDER BY CASE ipi.step
+      WHEN 'foundation' THEN 0
+      WHEN 'current' THEN 1
+      WHEN 'challenge' THEN 2
+    END, ipi.sort_order, ipi.item_id
+  `).all(studentId, planId) as IssuedStepAuthorityRow[];
+  const target = rows.find((row) => row.itemId === itemId);
+  if (target === undefined) {
+    throw new IssuedPlanError("PLAN_NOT_ISSUED");
+  }
+  const targetSubject = LearningItemPayloadSchema.parse(
+    JSON.parse(target.payloadJson)
+  ).subject;
+  const blocked = rows.some((row) =>
+    STEP_RANK[row.step] < STEP_RANK[target.step] &&
+    LearningItemPayloadSchema.parse(JSON.parse(row.payloadJson)).subject ===
+      targetSubject &&
+    row.completed !== 1
+  );
+  if (blocked) throw new IssuedPlanError("STEP_LOCKED");
+}
 
 export type IssuedPlanAuthority = {
   snapshot: IssuedPlanSnapshot;
@@ -102,8 +172,7 @@ export class IssuedPlanRepository {
       let plan = this.findDailyPlan(studentId, trustedDeviceId, studyDate);
       if (plan === null) {
         const required = this.dailyPlan.ensureInTransaction(studentId, studyDate);
-        const activeItems = this.listActiveItems();
-        const deliveredItems = getDailyItems(activeItems, studyDate);
+        const deliveredItems = this.listRequiredItems(studentId, studyDate);
         const cursor = this.getCursor(studentId);
         const submitUntil = new Date(
           Date.parse(kstDayBounds(studyDate).end) + 86_400_000 - 1
@@ -128,8 +197,8 @@ export class IssuedPlanRepository {
         const requiredIds = new Set(required.requiredItemIds);
         const insertItem = this.db.prepare(`
           INSERT INTO issued_plan_items (
-            plan_id, item_id, content_version, is_required, sort_order
-          ) VALUES (?, ?, ?, ?, ?)
+            plan_id, item_id, content_version, is_required, sort_order, step
+          ) VALUES (?, ?, ?, ?, ?, ?)
         `);
         deliveredItems.forEach((item, sortOrder) => {
           insertItem.run(
@@ -137,7 +206,8 @@ export class IssuedPlanRepository {
             item.id,
             item.version,
             requiredIds.has(item.id) ? 1 : 0,
-            sortOrder
+            sortOrder,
+            item.step
           );
         });
         this.db.prepare(`
@@ -268,9 +338,9 @@ export class IssuedPlanRepository {
       );
       this.db.prepare(`
         INSERT INTO issued_plan_items (
-          plan_id, item_id, content_version, is_required, sort_order
+          plan_id, item_id, content_version, is_required, sort_order, step
         )
-        SELECT ?, item_id, content_version, is_required, sort_order
+        SELECT ?, item_id, content_version, is_required, sort_order, step
         FROM issued_plan_items WHERE plan_id = ?
       `).run(recoveryPlanId, source.id);
       this.db.prepare(`
@@ -327,6 +397,7 @@ export class IssuedPlanRepository {
     const item = this.db.prepare(`
       SELECT ipi.content_version AS contentVersion,
              ipi.is_required AS isRequired,
+             ipi.step AS step,
              cv.payload_json AS payloadJson
       FROM issued_plan_items AS ipi
       JOIN content_versions AS cv
@@ -334,7 +405,12 @@ export class IssuedPlanRepository {
        AND cv.version = ipi.content_version
       WHERE ipi.plan_id = ? AND ipi.item_id = ?
     `).get(input.planId, input.itemId) as
-      | { contentVersion: number; isRequired: number; payloadJson: string }
+      | {
+          contentVersion: number;
+          isRequired: number;
+          step: LearningStep;
+          payloadJson: string;
+        }
       | undefined;
     if (item === undefined) {
       throw new IssuedPlanError("PLAN_NOT_ISSUED");
@@ -342,12 +418,14 @@ export class IssuedPlanRepository {
     if (item.contentVersion !== input.contentVersion) {
       throw new IssuedPlanError("CONTENT_VERSION_CONFLICT");
     }
+    assertIssuedStepUnlocked(this.db, studentId, input.planId, input.itemId);
     return {
       issuedPlanId: plan.id,
       studyDate: plan.studyDate,
       contentVersion: item.contentVersion,
       payload: LearningItemPayloadSchema.parse(JSON.parse(item.payloadJson)),
-      isRequired: item.isRequired === 1
+      isRequired: item.isRequired === 1,
+      step: item.step
     };
   }
 
@@ -376,6 +454,7 @@ export class IssuedPlanRepository {
     const items = this.db.prepare(`
       SELECT ipi.item_id AS id, ipi.content_version AS version,
              ipi.is_required AS isRequired, ipi.sort_order AS sortOrder,
+             ipi.step AS step,
              cv.payload_json AS payloadJson
       FROM issued_plan_items AS ipi
       JOIN content_versions AS cv
@@ -388,6 +467,7 @@ export class IssuedPlanRepository {
       version: number;
       isRequired: number;
       sortOrder: number;
+      step: LearningStep;
       payloadJson: string;
     }>;
     return {
@@ -403,6 +483,7 @@ export class IssuedPlanRepository {
       items: items.map((item) => ({
         id: item.id,
         version: item.version,
+        step: item.step,
         isRequired: item.isRequired === 1,
         sortOrder: item.sortOrder,
         payload: LearningItemPayloadSchema.parse(JSON.parse(item.payloadJson))
@@ -410,22 +491,35 @@ export class IssuedPlanRepository {
     };
   }
 
-  private listActiveItems(): Array<{
+  private listRequiredItems(
+    studentId: string,
+    studyDate: string
+  ): Array<{
     id: string;
     version: number;
+    step: LearningStep;
     payload: LearningItemPayload;
   }> {
     const rows = this.db.prepare(`
-      SELECT ci.id, ci.active_version AS version, cv.payload_json AS payloadJson
-      FROM content_items AS ci
+      SELECT ci.id, ci.active_version AS version, dr.step,
+             cv.payload_json AS payloadJson
+      FROM daily_requirements AS dr
+      JOIN content_items AS ci ON ci.id = dr.item_id
       JOIN content_versions AS cv
         ON cv.item_id = ci.id AND cv.version = ci.active_version
-      WHERE ci.status = 'published'
-      ORDER BY ci.id
-    `).all() as Array<{ id: string; version: number; payloadJson: string }>;
+      WHERE dr.student_id = ? AND dr.study_date = ?
+        AND ci.status = 'published'
+      ORDER BY dr.sort_order, dr.item_id
+    `).all(studentId, studyDate) as Array<{
+      id: string;
+      version: number;
+      step: LearningStep;
+      payloadJson: string;
+    }>;
     return rows.map((row) => ({
       id: row.id,
       version: row.version,
+      step: row.step,
       payload: LearningItemPayloadSchema.parse(JSON.parse(row.payloadJson))
     }));
   }

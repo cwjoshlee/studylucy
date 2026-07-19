@@ -26,6 +26,59 @@ async function today(client: TestClient): Promise<TodayPlan> {
   return response.json() as TodayPlan;
 }
 
+async function setupTwoStudentDevices(harness: Harness): Promise<{
+  deviceA: TestClient;
+  deviceB: TestClient;
+  planA: TodayPlan;
+  planB: TodayPlan;
+}> {
+  const guardian = harness.client();
+  expect((await guardian.request("POST", "/api/auth/setup", {
+    ...FAMILY,
+    setupSecret: harness.config.setupSecret
+  })).statusCode).toBe(201);
+  expect((await guardian.request("POST", "/api/auth/guardian/login", {
+    password: FAMILY.password
+  })).statusCode).toBe(204);
+
+  expect((await guardian.request(
+    "POST",
+    "/api/guardian/devices/current",
+    { name: "Galaxy Tab A", deviceType: "tablet" }
+  )).statusCode).toBe(201);
+  const tokenA = guardian.cookie("sua_device")!;
+
+  guardian.setCookie("sua_device", "new-browser-for-stage-device-b");
+  expect((await guardian.request(
+    "POST",
+    "/api/guardian/devices/current",
+    { name: "Galaxy Tab B", deviceType: "tablet" }
+  )).statusCode).toBe(201);
+  const tokenB = guardian.cookie("sua_device")!;
+  expect((await guardian.request("PUT", "/api/auth/student-pin", {
+    pin: "2580"
+  })).statusCode).toBe(204);
+
+  const deviceA = harness.client();
+  const deviceB = harness.client();
+  deviceA.setCookie("sua_device", tokenA);
+  deviceB.setCookie("sua_device", tokenB);
+  await studentLogin(deviceA);
+  await studentLogin(deviceB);
+  const planA = await today(deviceA);
+  const planB = await today(deviceB);
+  expect(planA.planId).not.toBe(planB.planId);
+  return { deviceA, deviceB, planA, planB };
+}
+
+function mathStage(plan: TodayPlan, step: "foundation" | "current") {
+  const item = plan.items.find((candidate) =>
+    candidate.payload.subject === "math" && candidate.step === step
+  );
+  expect(item).toBeDefined();
+  return item!;
+}
+
 function passingAttempt(
   plan: TodayPlan,
   item: TodayPlan["items"][number],
@@ -42,6 +95,9 @@ function passingAttempt(
     readingScore: 100,
     missedTokens: [],
     mathAnswer: item.payload.kind === "math-story" ? item.payload.answer : null,
+    dictationText: item.payload.kind === "korean-dictation"
+      ? item.payload.answerText
+      : undefined,
     durationMs: 12_000,
     difficultyFeedback: null
   };
@@ -49,6 +105,33 @@ function passingAttempt(
 
 function attemptEvent(payload: ReturnType<typeof passingAttempt>, sequence: number) {
   return { kind: "attempt" as const, deviceSequence: sequence, legacy: false, payload };
+}
+
+function authorityWriteSnapshot(harness: Harness) {
+  return harness.db.prepare(`
+    SELECT
+      (SELECT COUNT(*) FROM issued_learning_sessions) AS learningSessions,
+      (SELECT COUNT(*) FROM attempts) AS attempts,
+      (SELECT COUNT(*) FROM star_events) AS starEvents,
+      (SELECT SUM(current_cursor) FROM student_activity_cursors) AS activityCursor
+  `).get();
+}
+
+async function expectCurrentLockedWithoutWrites(
+  harness: Harness,
+  device: TestClient,
+  plan: TodayPlan,
+  current: TodayPlan["items"][number]
+): Promise<void> {
+  const before = authorityWriteSnapshot(harness);
+  const locked = await device.request(
+    "POST",
+    "/api/student/learning-sessions",
+    { planId: plan.planId, itemId: current.id, contentVersion: current.version }
+  );
+  expect(locked.statusCode).toBe(409);
+  expect(locked.json()).toEqual({ code: "STEP_LOCKED" });
+  expect(authorityWriteSnapshot(harness)).toEqual(before);
 }
 
 describe("predeployment authority integration", () => {
@@ -60,6 +143,158 @@ describe("predeployment authority integration", () => {
 
   afterEach(async () => {
     await harness.close();
+  });
+
+  it("unlocks device B current after device A completes the same-day foundation", async () => {
+    const { deviceA, deviceB, planA, planB } = await setupTwoStudentDevices(harness);
+    const foundationA = mathStage(planA, "foundation");
+    const foundationB = mathStage(planB, "foundation");
+    const currentB = mathStage(planB, "current");
+    expect(foundationA.id).toBe(foundationB.id);
+    expect(foundationA.version).toBe(foundationB.version);
+
+    const completed = await deviceA.request(
+      "POST",
+      "/api/student/attempts",
+      passingAttempt(planA, foundationA, "cross-device-foundation-0001")
+    );
+    expect(completed.statusCode).toBe(201);
+    expect(completed.json()).toMatchObject({ completed: true });
+
+    const projected = await today(deviceB);
+    expect(projected.completedItemIds).toContain(foundationB.id);
+    const opened = await deviceB.request(
+      "POST",
+      "/api/student/learning-sessions",
+      { planId: planB.planId, itemId: currentB.id, contentVersion: currentB.version }
+    );
+    expect(opened.statusCode).toBe(201);
+    expect(opened.json()).toMatchObject({
+      learningSessionId: expect.any(String),
+      submitUntil: planB.submitUntil
+    });
+  });
+
+  it("does not project or unlock a completion without its issued-plan source", async () => {
+    const { deviceA, deviceB, planA, planB } = await setupTwoStudentDevices(harness);
+    const foundationA = mathStage(planA, "foundation");
+    const foundationB = mathStage(planB, "foundation");
+    const currentB = mathStage(planB, "current");
+    const clientAttemptId = "cross-device-null-source-plan-0001";
+    expect((await deviceA.request(
+      "POST",
+      "/api/student/attempts",
+      passingAttempt(planA, foundationA, clientAttemptId)
+    )).statusCode).toBe(201);
+
+    harness.db.prepare(`
+      UPDATE attempts SET issued_plan_id = NULL
+      WHERE client_attempt_id = ?
+    `).run(clientAttemptId);
+
+    expect((await today(deviceB)).completedItemIds).not.toContain(foundationB.id);
+    await expectCurrentLockedWithoutWrites(harness, deviceB, planB, currentB);
+  });
+
+  it.each(["study-date", "content-version"] as const)(
+    "keeps device B current locked for a %s-mismatched historical completion",
+    async (mismatch) => {
+      const { deviceA, deviceB, planA, planB } = await setupTwoStudentDevices(harness);
+      const foundationA = mathStage(planA, "foundation");
+      const foundationB = mathStage(planB, "foundation");
+      const currentB = mathStage(planB, "current");
+      const clientAttemptId = `cross-device-${mismatch}-0001`;
+      expect((await deviceA.request(
+        "POST",
+        "/api/student/attempts",
+        passingAttempt(planA, foundationA, clientAttemptId)
+      )).statusCode).toBe(201);
+
+      if (mismatch === "study-date") {
+        harness.db.prepare(`
+          UPDATE attempts SET study_date = '2026-07-14'
+          WHERE client_attempt_id = ?
+        `).run(clientAttemptId);
+      } else {
+        const nextVersion = foundationA.version + 1;
+        harness.db.prepare(`
+          INSERT INTO content_versions (item_id, version, payload_json, created_at)
+          SELECT item_id, ?, payload_json, created_at
+          FROM content_versions WHERE item_id = ? AND version = ?
+        `).run(nextVersion, foundationA.id, foundationA.version);
+        harness.db.prepare(`
+          UPDATE issued_plan_items SET content_version = ?
+          WHERE plan_id = ? AND item_id = ?
+        `).run(nextVersion, planA.planId, foundationA.id);
+        harness.db.prepare(`
+          UPDATE attempts SET content_version = ?
+          WHERE client_attempt_id = ?
+        `).run(nextVersion, clientAttemptId);
+      }
+
+      expect((await today(deviceB)).completedItemIds).not.toContain(foundationB.id);
+      const locked = await deviceB.request(
+        "POST",
+        "/api/student/learning-sessions",
+        { planId: planB.planId, itemId: currentB.id, contentVersion: currentB.version }
+      );
+      expect(locked.statusCode).toBe(409);
+      expect(locked.json()).toEqual({ code: "STEP_LOCKED" });
+    }
+  );
+
+  it("keeps current locked when a matching completion points at another student's source plan", async () => {
+    const { deviceA, deviceB, planA, planB } = await setupTwoStudentDevices(harness);
+    const foundationA = mathStage(planA, "foundation");
+    const currentB = mathStage(planB, "current");
+    const clientAttemptId = "cross-device-other-student-source-0001";
+    expect((await deviceA.request(
+      "POST",
+      "/api/student/attempts",
+      passingAttempt(planA, foundationA, clientAttemptId)
+    )).statusCode).toBe(201);
+
+    harness.db.prepare(`
+      INSERT INTO users (id, role, display_name, created_at)
+      VALUES ('other-student-source-plan', 'student', '다른 학생', ?)
+    `).run("2026-07-15T03:00:00.000Z");
+    harness.db.prepare(`
+      UPDATE issued_daily_plans SET student_id = 'other-student-source-plan'
+      WHERE id = ?
+    `).run(planA.planId);
+
+    expect((await today(deviceB)).completedItemIds).not.toContain(foundationA.id);
+    await expectCurrentLockedWithoutWrites(
+      harness,
+      deviceB,
+      planB,
+      currentB
+    );
+  });
+
+  it("keeps current locked when a completion source plan lacks issued item membership", async () => {
+    const { deviceA, deviceB, planA, planB } = await setupTwoStudentDevices(harness);
+    const foundationA = mathStage(planA, "foundation");
+    const currentB = mathStage(planB, "current");
+    const clientAttemptId = "cross-device-missing-source-item-0001";
+    expect((await deviceA.request(
+      "POST",
+      "/api/student/attempts",
+      passingAttempt(planA, foundationA, clientAttemptId)
+    )).statusCode).toBe(201);
+
+    harness.db.prepare(`
+      DELETE FROM issued_plan_items
+      WHERE plan_id = ? AND item_id = ?
+    `).run(planA.planId, foundationA.id);
+
+    expect((await today(deviceB)).completedItemIds).not.toContain(foundationA.id);
+    await expectCurrentLockedWithoutWrites(
+      harness,
+      deviceB,
+      planB,
+      currentB
+    );
   });
 
   it("preserves stale A work, waives idle, recovers after revoke, and leaves B authoritative", async () => {
@@ -110,15 +345,32 @@ describe("predeployment authority integration", () => {
     const requiredB = planB.requiredItemIds.map((id) =>
       planB.items.find((item) => item.id === id)!
     );
-    expect(requiredA).toHaveLength(4);
+    expect(requiredA).toHaveLength(6);
     expect(requiredB.map((item) => item.id)).toEqual(
       requiredA.map((item) => item.id)
     );
 
-    const aItem = requiredA[0]!;
-    const bFirstItem = requiredB[1]!;
-    const preservedSourceItem = requiredA[2]!;
-    const bContinuationItem = requiredB[3]!;
+    const aItem = requiredA.find((item) =>
+      item.payload.subject === "math" && item.step === "foundation"
+    )!;
+    const bFirstItem = requiredB.find((item) =>
+      item.payload.subject === "korean" && item.step === "foundation"
+    )!;
+    const preservedSourceItem = requiredA.find((item) =>
+      item.payload.subject === "math" && item.step === "current"
+    )!;
+    const bContinuationItem = requiredB.find((item) =>
+      item.payload.subject === "korean" && item.step === "current"
+    )!;
+    expect(aItem).toMatchObject({
+      step: "foundation",
+      payload: { subject: "math" }
+    });
+    expect(aItem.payload.kind).not.toBe("korean-dictation");
+    expect(bFirstItem).toMatchObject({
+      step: "foundation",
+      payload: { subject: "korean" }
+    });
     const preservedSourceAttempt = passingAttempt(
       planA,
       preservedSourceItem,
@@ -265,6 +517,9 @@ describe("predeployment authority integration", () => {
     const recoveredItem = recovery.items.find((item) =>
       item.id === preservedSourceItem.id
     )!;
+    const recoveredFoundation = recovery.items.find((item) =>
+      item.id === aItem.id
+    )!;
     const reboundPreservedAttempt = {
       ...preservedSourceAttempt,
       planId: recovery.planId
@@ -289,9 +544,17 @@ describe("predeployment authority integration", () => {
           idleStartedAt: "2026-07-15T03:00:00.000Z",
           occurredAt: "2026-07-15T03:05:00.000Z"
         }
-      }, attemptEvent(reboundPreservedAttempt, 5)]
+      }, attemptEvent(
+        passingAttempt(
+          recovery,
+          recoveredFoundation,
+          "attempt-device-a-recovery-foundation-0001",
+          "2026-07-15T03:05:00.000Z"
+        ),
+        5
+      ), attemptEvent(reboundPreservedAttempt, 6)]
     };
-    expect(recoveryBatch.events[1]!.payload).toEqual({
+    expect(recoveryBatch.events[2]!.payload).toEqual({
       ...preservedSourceAttempt,
       planId: recovery.planId
     });
@@ -302,7 +565,7 @@ describe("predeployment authority integration", () => {
     );
     expect(recovered.statusCode).toBe(200);
     expect(recovered.json()).toMatchObject({
-      activityCursor: 5,
+      activityCursor: 6,
       stars: {
         balance: 3,
         earnedToday: 3,
@@ -315,6 +578,11 @@ describe("predeployment authority integration", () => {
         {
           status: "ORDER_CONFLICT_WAIVED",
           idle: { outcome: "order-conflict-waived" }
+        },
+        {
+          clientId: "attempt-device-a-recovery-foundation-0001",
+          status: "APPLIED",
+          attempt: { completed: true, starAward: { amount: 0, balance: 2 } }
         },
         {
           clientId: preservedSourceAttempt.clientAttemptId,
@@ -371,7 +639,7 @@ describe("predeployment authority integration", () => {
     expect(bStillCurrent).toMatchObject({
       planId: planB.planId,
       offlineEpoch: planB.offlineEpoch,
-      activityCursor: 5,
+      activityCursor: 6,
       completedItemIds: completedBeforeContinuation,
       stars: {
         balance: 3,
@@ -401,15 +669,21 @@ describe("predeployment authority integration", () => {
     expect(continuation.statusCode).toBe(201);
     expect(continuation.json()).toMatchObject({
       completed: true,
-      activityCursor: 6,
+      activityCursor: 7,
       starAward: { awarded: true, amount: 1, balance: 4 }
     });
+    const completedAfterContinuation = planB.items
+      .filter((item) => new Set([
+        ...completedBeforeContinuation,
+        bContinuationItem.id
+      ]).has(item.id))
+      .map((item) => item.id);
     const bAfterContinuation = await today(b);
     expect(bAfterContinuation).toMatchObject({
       planId: planB.planId,
       offlineEpoch: planB.offlineEpoch,
-      activityCursor: 6,
-      completedItemIds: planB.requiredItemIds,
+      activityCursor: 7,
+      completedItemIds: completedAfterContinuation,
       stars: {
         balance: 4,
         earnedToday: 4,
@@ -584,6 +858,14 @@ describe("predeployment authority integration", () => {
     await studentLogin(client);
 
     const yesterday = await today(client);
+    const offlineEligibleItem = yesterday.items.find((item) =>
+      item.payload.subject === "math" && item.step === "foundation"
+    )!;
+    expect(offlineEligibleItem).toMatchObject({
+      step: "foundation",
+      payload: { subject: "math" }
+    });
+    expect(offlineEligibleItem.payload.kind).not.toBe("korean-dictation");
     const completeBatch = {
       clientBatchId: "batch-kst-boundary-complete-0001",
       planId: yesterday.planId,
@@ -591,7 +873,7 @@ describe("predeployment authority integration", () => {
       startCursor: yesterday.activityCursor,
       events: [attemptEvent(passingAttempt(
         yesterday,
-        yesterday.items[0]!,
+        offlineEligibleItem,
         "attempt-kst-boundary-complete-0001"
       ), 1)]
     };
@@ -652,12 +934,20 @@ describe("predeployment authority integration", () => {
     expect(afterCutoffRetry.json()).toMatchObject({ duplicate: true });
     expect(afterCutoffRetry.json().receipts).toEqual(canonicalReceipts);
 
+    const expiredEligibleItem = yesterday.items.find((item) =>
+      item.payload.subject === "math" && item.step === "current"
+    )!;
+    expect(expiredEligibleItem).toMatchObject({
+      step: "current",
+      payload: { subject: "math" }
+    });
+    expect(expiredEligibleItem.payload.kind).not.toBe("korean-dictation");
     const newExpiredBatch = {
       ...completeBatch,
       clientBatchId: "batch-kst-boundary-expired-0002",
       events: [attemptEvent(passingAttempt(
         yesterday,
-        yesterday.items[1]!,
+        expiredEligibleItem,
         "attempt-kst-boundary-expired-0002"
       ), 2)]
     };

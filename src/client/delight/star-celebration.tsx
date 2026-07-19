@@ -9,12 +9,14 @@ export function StarCelebration({
   starAward,
   reducedMotion = prefersReducedMotion(),
   onPlay,
-  onComplete
+  onComplete,
+  paused = false
 }: {
   starAward: StarAwardReceipt | null;
   reducedMotion?: boolean;
   onPlay?: (eventId: string) => void;
   onComplete?: (eventId: string) => void;
+  paused?: boolean;
 }) {
   const [visibleEventId, setVisibleEventId] = useState<string | null>(null);
   const onPlayRef = useRef(onPlay);
@@ -25,6 +27,7 @@ export function StarCelebration({
   useEffect(() => {
     const eventId = starAward?.eventId;
     if (
+      paused ||
       !starAward?.awarded ||
       typeof eventId !== "string" ||
       celebratedEventIds.has(eventId)
@@ -34,19 +37,20 @@ export function StarCelebration({
     celebratedEventIds.add(eventId);
     setVisibleEventId(eventId);
     onPlayRef.current?.(eventId);
-  }, [starAward?.awarded, starAward?.eventId]);
+  }, [paused, starAward?.awarded, starAward?.eventId]);
 
   useEffect(() => {
-    if (visibleEventId === null) return;
+    if (paused || visibleEventId === null) return;
     const eventId = visibleEventId;
     const timer = setTimeout(() => {
       setVisibleEventId(null);
       onCompleteRef.current?.(eventId);
     }, CELEBRATION_DISPLAY_MS);
     return () => clearTimeout(timer);
-  }, [visibleEventId]);
+  }, [paused, visibleEventId]);
 
   if (
+    paused ||
     !starAward?.awarded ||
     starAward.eventId === null ||
     starAward.eventId !== visibleEventId

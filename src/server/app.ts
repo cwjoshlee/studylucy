@@ -21,6 +21,7 @@ export type AppDeps = {
   db: Database.Database;
   now: () => Date;
   randomToken: () => string;
+  aiFetcher?: typeof fetch;
   clientDistDir?: string;
 };
 

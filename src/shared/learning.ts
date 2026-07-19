@@ -30,7 +30,7 @@ export const CoachMessageRequestSchema = z.object({
 export type CoachMessageRequest = z.infer<typeof CoachMessageRequestSchema>;
 export type CoachMessageResponse = { message: string; source: "llm" | "local" };
 
-const BaseItem = z.object({
+const BaseItemSchema = z.object({
   id: z.string().min(1),
   subject: z.enum(["korean", "math"]),
   unit: z.string().min(1),
@@ -60,7 +60,76 @@ export const CalculationExtensionSchema = z.object({
   layout: z.enum(["horizontal", "vertical"])
 }).strict();
 
-const MathStoryItemSchema = BaseItem.extend({
+type BaseItem = z.infer<typeof BaseItemSchema>;
+
+export const LearningStepSchema = z.enum(["foundation", "current", "challenge"]);
+export type LearningStep = z.infer<typeof LearningStepSchema>;
+
+export type AiProviderSettingsView = {
+  provider: "gemini" | "openai";
+  enabled: boolean;
+  model: string;
+  hasApiKey: boolean;
+  inputWonPer1K: number;
+  outputWonPer1K: number;
+};
+
+export type AiStudioSettingsView = {
+  providers: AiProviderSettingsView[];
+  monthlyBudgetWon: number;
+  monthSpentWon: number;
+};
+
+export const AiBatchRequestSchema = z.object({
+  subject: z.enum(["korean", "math"]),
+  step: LearningStepSchema,
+  count: z.number().int().min(2).max(40),
+  difficulty: z.number().int().min(1).max(5),
+  weakTopics: z.array(z.string().trim().min(1).max(40)).max(8)
+}).strict();
+export type AiBatchRequest = z.infer<typeof AiBatchRequestSchema>;
+
+export type AiDraftItemView = {
+  id: string;
+  sourceProvider: AiCoachProvider;
+  payload: LearningItemPayload;
+  review: { accepted: boolean; reasons: string[] };
+  status: "accepted" | "rejected" | "edited" | "published";
+};
+
+export type AiDraftView = {
+  id: string;
+  subject: "korean" | "math";
+  step: LearningStep;
+  requestedCount: number;
+  difficulty: number;
+  weakTopics: string[];
+  status: "draft" | "failed" | "published";
+  items: AiDraftItemView[];
+};
+
+export type GuardianAiReport = {
+  source: "llm" | "local";
+  summary: string;
+  completionRate: number;
+  commonMistakes: string[];
+  challengePerfect: boolean;
+};
+
+export const KoreanDictationItemSchema = BaseItemSchema.extend({
+  kind: z.literal("korean-dictation"),
+  promptText: z.string().min(1),
+  answerText: z.string().min(1),
+  mode: z.enum(["word", "sentence"])
+});
+export type KoreanDictationItem = BaseItem & {
+  kind: "korean-dictation";
+  promptText: string;
+  answerText: string;
+  mode: "word" | "sentence";
+};
+
+const MathStoryItemSchema = BaseItemSchema.extend({
   kind: z.literal("math-story"),
   question: z.string().min(1),
   answer: z.number().int(),
@@ -134,11 +203,18 @@ const MathStoryItemSchema = BaseItem.extend({
 });
 
 export const LearningItemPayloadSchema = z.discriminatedUnion("kind", [
-  BaseItem.extend({ kind: z.literal("korean-reading") }),
+  BaseItemSchema.extend({ kind: z.literal("korean-reading") }),
+  KoreanDictationItemSchema,
   MathStoryItemSchema
 ]);
 
 export type LearningItemPayload = z.infer<typeof LearningItemPayloadSchema>;
+export type PlanItem = {
+  id: string;
+  version: number;
+  step: LearningStep;
+  payload: LearningItemPayload;
+};
 export type CalculationItem = Extract<LearningItemPayload, { kind: "math-story" }> & {
   calculation: z.infer<typeof CalculationExtensionSchema>;
 };
@@ -149,8 +225,12 @@ export function isCalculationItem(payload: LearningItemPayload): payload is Calc
 
 export function evaluateAttemptCompletion(
   payload: LearningItemPayload,
-  input: Pick<AttemptInput, "readingScore" | "missedTokens" | "mathAnswer">
-): Pick<AttemptReceipt, "readingPass" | "mathPass" | "completed"> {
+  input: Pick<AttemptInput,
+    "readingScore" | "missedTokens" | "mathAnswer" | "dictationText"
+  >
+): Pick<AttemptReceipt,
+  "readingPass" | "mathPass" | "dictationPass" | "completed"
+> {
   const isCalculation = isCalculationItem(payload);
   const readingPass = isCalculation
     ? true
@@ -158,11 +238,21 @@ export function evaluateAttemptCompletion(
   const mathPass = payload.kind === "math-story" || isCalculation
     ? input.mathAnswer !== null && input.mathAnswer === payload.answer
     : null;
+  const dictationPass = payload.kind === "korean-dictation"
+    ? normalizeDictationText(input.dictationText ?? "") ===
+      normalizeDictationText(payload.answerText)
+    : null;
   return {
     readingPass,
     mathPass,
-    completed: isCalculation ? mathPass === true : readingPass && (mathPass ?? true)
+    dictationPass,
+    completed: dictationPass ??
+      (isCalculation ? mathPass === true : readingPass && (mathPass ?? true))
   };
+}
+
+export function normalizeDictationText(value: string): string {
+  return value.normalize("NFC").replace(/\s+/gu, "").trim();
 }
 
 export const AttemptInputSchema = z.object({
@@ -175,6 +265,7 @@ export const AttemptInputSchema = z.object({
   readingScore: z.number().int().min(0).max(100),
   missedTokens: z.array(z.string().min(1)).max(20),
   mathAnswer: z.number().int().nullable(),
+  dictationText: z.string().max(200).optional(),
   durationMs: z.number().int().min(0).max(3_600_000),
   difficultyFeedback: z.enum(["easy", "thinking", "hard"]).nullable()
 });
@@ -212,6 +303,7 @@ export const TodayPlanSchema = z.object({
   items: z.array(z.object({
     id: z.string().min(1),
     version: z.number().int().positive(),
+    step: LearningStepSchema.default("current"),
     payload: LearningItemPayloadSchema
   }))
 });
@@ -257,13 +349,25 @@ export const StarAwardReceiptSchema = z.object({
 
 export type StarAwardReceipt = z.infer<typeof StarAwardReceiptSchema>;
 
+export const ChallengeBonusReceiptSchema = z.object({
+  eligible: z.boolean(),
+  awarded: z.boolean(),
+  amount: z.number().int().nonnegative()
+}).strict();
+
+export type ChallengeBonusReceipt = z.infer<
+  typeof ChallengeBonusReceiptSchema
+>;
+
 export const AttemptReceiptSchema = z.object({
   id: z.string().min(1),
   duplicate: z.boolean(),
   readingPass: z.boolean(),
   mathPass: z.boolean().nullable(),
+  dictationPass: z.boolean().nullable(),
   completed: z.boolean(),
   starAward: StarAwardReceiptSchema,
+  challengeBonus: ChallengeBonusReceiptSchema.optional(),
   activityCursor: z.number().int().nonnegative()
 });
 

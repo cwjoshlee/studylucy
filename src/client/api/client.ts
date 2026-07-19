@@ -7,9 +7,14 @@ import type {
 import type {
   AiCoachProvider,
   AiCoachSettingsView,
+  AiBatchRequest,
+  AiDraftView,
+  AiProviderSettingsView,
+  AiStudioSettingsView,
   AttemptInput,
   AttemptReceipt,
   GuardianOfflineRejections,
+  GuardianAiReport,
   GuardianProgress,
   CoachMessageRequest,
   CoachMessageResponse,
@@ -84,6 +89,76 @@ export type AiCoachSettingsInput = {
   apiKey?: string;
   deleteApiKey?: true;
 };
+
+export type AiStudioProviderInput = {
+  enabled?: boolean;
+  model?: string;
+  apiKey?: string;
+  deleteApiKey?: true;
+  inputWonPer1K?: number;
+  outputWonPer1K?: number;
+};
+
+export type AiStudioProviderSettingsReadView = Omit<AiProviderSettingsView,
+  "inputWonPer1K" | "outputWonPer1K"> & {
+  inputWonPer1K?: number;
+  outputWonPer1K?: number;
+};
+
+export type AiStudioSettingsReadView = Omit<AiStudioSettingsView, "providers"> & {
+  providers: AiStudioProviderSettingsReadView[];
+};
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isNonnegativeSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isAiProviderSettingsView(value: unknown): value is AiProviderSettingsView {
+  if (!isRecord(value)) return false;
+  return (value.provider === "gemini" || value.provider === "openai") &&
+    typeof value.enabled === "boolean" &&
+    typeof value.model === "string" && value.model.trim().length > 0 &&
+    typeof value.hasApiKey === "boolean" &&
+    isNonnegativeSafeInteger(value.inputWonPer1K) &&
+    isNonnegativeSafeInteger(value.outputWonPer1K);
+}
+
+function readAiProviderSettings(value: unknown): AiProviderSettingsView[] | null {
+  return Array.isArray(value) && value.every(isAiProviderSettingsView)
+    ? value
+    : null;
+}
+
+function isLegacyAiProviderSettingsView(value: unknown): value is AiStudioProviderSettingsReadView {
+  if (!isRecord(value)) return false;
+  return (value.provider === "gemini" || value.provider === "openai") &&
+    typeof value.enabled === "boolean" &&
+    typeof value.model === "string" && value.model.trim().length > 0 &&
+    typeof value.hasApiKey === "boolean";
+}
+
+function readLegacyAiProviderSettings(value: unknown): AiStudioProviderSettingsReadView[] | null {
+  return Array.isArray(value) && value.every(isLegacyAiProviderSettingsView)
+    ? value
+    : null;
+}
+
+function readAiStudioSettings(value: unknown): AiStudioSettingsView | null {
+  if (!isRecord(value)) return null;
+  const providers = readAiProviderSettings(value.providers);
+  if (providers === null ||
+      !isNonnegativeSafeInteger(value.monthlyBudgetWon) ||
+      !isNonnegativeSafeInteger(value.monthSpentWon)) return null;
+  return {
+    providers,
+    monthlyBudgetWon: value.monthlyBudgetWon,
+    monthSpentWon: value.monthSpentWon
+  };
+}
 
 export class ApiClient {
   constructor(
@@ -329,6 +404,98 @@ export class ApiClient {
     return this.request("PUT", "/api/guardian/ai-coach-settings", input);
   }
 
+  async getAiStudioSettings(): Promise<AiProviderSettingsView[]> {
+    const value = await this.request<unknown>(
+      "GET",
+      "/api/guardian/ai-studio/settings"
+    );
+    const fullSettings = readAiStudioSettings(value);
+    if (fullSettings !== null) return fullSettings.providers;
+    const providers = readAiProviderSettings(value);
+    if (providers !== null) return providers;
+    throw new ApiError(502, "AI_STUDIO_SETTINGS_UNAVAILABLE");
+  }
+
+  async getAiStudioSettingsView(): Promise<AiStudioSettingsReadView> {
+    try {
+      const current = await this.request<unknown>("GET", "/api/guardian/ai-studio/settings/view");
+      const settings = readAiStudioSettings(current);
+      if (settings === null) throw new ApiError(502, "AI_STUDIO_SETTINGS_UNAVAILABLE");
+      return settings;
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.status !== 404) throw error;
+      const predecessor = await this.request<unknown>(
+        "GET",
+        "/api/guardian/ai-studio/settings"
+      );
+      const fullSettings = readAiStudioSettings(predecessor);
+      if (fullSettings !== null) return fullSettings;
+      const providers = readLegacyAiProviderSettings(predecessor);
+      if (providers === null) {
+        throw new ApiError(502, "AI_STUDIO_SETTINGS_UNAVAILABLE");
+      }
+      const coach = await this.getAiCoachSettings();
+      return {
+        providers,
+        monthlyBudgetWon: coach.monthlyBudgetWon,
+        monthSpentWon: coach.monthSpentWon
+      };
+    }
+  }
+
+  updateAiStudioBudget(
+    input: { monthlyBudgetWon: number }
+  ): Promise<AiStudioSettingsView> {
+    return this.request("PUT", "/api/guardian/ai-studio/budget", input);
+  }
+
+  updateAiStudioProvider(
+    provider: AiCoachProvider,
+    input: AiStudioProviderInput
+  ): Promise<AiProviderSettingsView> {
+    return this.request(
+      "PUT",
+      `/api/guardian/ai-studio/settings/${encodeURIComponent(provider)}`,
+      input
+    );
+  }
+
+  createAiDraft(input: AiBatchRequest): Promise<AiDraftView> {
+    return this.request("POST", "/api/guardian/ai-studio/drafts", input);
+  }
+
+  getAiDraft(draftId: string): Promise<AiDraftView> {
+    return this.request(
+      "GET",
+      `/api/guardian/ai-studio/drafts/${encodeURIComponent(draftId)}`
+    );
+  }
+
+  updateAiDraftItem(
+    draftId: string,
+    itemId: string,
+    payload: AiDraftView["items"][number]["payload"]
+  ): Promise<AiDraftView> {
+    return this.request(
+      "PATCH",
+      `/api/guardian/ai-studio/drafts/${encodeURIComponent(draftId)}` +
+        `/items/${encodeURIComponent(itemId)}`,
+      { payload }
+    );
+  }
+
+  publishAiDraft(draftId: string): Promise<AiDraftView> {
+    return this.request(
+      "POST",
+      `/api/guardian/ai-studio/drafts/${encodeURIComponent(draftId)}/publish`
+    );
+  }
+
+  getGuardianAiReport(from: string, to: string): Promise<GuardianAiReport> {
+    const query = new URLSearchParams({ from, to });
+    return this.request("GET", `/api/guardian/ai-studio/report?${query}`);
+  }
+
   coachMessage(
     input: CoachMessageRequest,
     signal?: AbortSignal
@@ -371,4 +538,13 @@ export type ClientApi = Pick<ApiClient,
   | "getAiCoachSettings"
   | "updateAiCoachSettings"
   | "coachMessage"
+  | "getAiStudioSettings"
+  | "getAiStudioSettingsView"
+  | "updateAiStudioBudget"
+  | "updateAiStudioProvider"
+  | "createAiDraft"
+  | "getAiDraft"
+  | "updateAiDraftItem"
+  | "publishAiDraft"
+  | "getGuardianAiReport"
 >>;

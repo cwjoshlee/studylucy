@@ -1,6 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { getDailyItems } from "../../src/shared/daily-order";
-import type { TodayPlan } from "../../src/shared/learning";
+import {
+  isCalculationItem,
+  type TodayPlan
+} from "../../src/shared/learning";
+import { DailyPlanService } from "../../src/server/stars/daily-plan";
 import { INITIAL_ITEMS } from "../../src/server/db/seed";
 import { StarRepository } from "../../src/server/stars/repository";
 import {
@@ -105,17 +108,6 @@ function boundIdleEvent(
   };
 }
 
-function expectedRequiredIds(studyDate: string): string[] {
-  const counts = { korean: 0, math: 0 };
-  return getDailyItems(INITIAL_ITEMS, studyDate)
-    .filter((item) => {
-      if (counts[item.subject] >= 2) return false;
-      counts[item.subject] += 1;
-      return true;
-    })
-    .map((item) => item.id);
-}
-
 function passingAttempt(
   plan: TodayPlan,
   item: TodayPlan["items"][number],
@@ -134,10 +126,28 @@ function passingAttempt(
     mathAnswer: item.payload.kind === "math-story"
       ? item.payload.answer
       : null,
+    dictationText: item.payload.kind === "korean-dictation"
+      ? item.payload.answerText
+      : undefined,
     durationMs: 12_000,
     difficultyFeedback: null,
     ...overrides
   };
+}
+
+function failingAttempt(
+  plan: TodayPlan,
+  item: TodayPlan["items"][number],
+  clientAttemptId: string
+) {
+  const input = passingAttempt(plan, item, clientAttemptId);
+  if (item.payload.kind === "korean-dictation") {
+    return { ...input, dictationText: "틀린 답" };
+  }
+  if (item.payload.kind === "math-story") {
+    return { ...input, mathAnswer: item.payload.answer + 1 };
+  }
+  return { ...input, readingScore: 0, missedTokens: [item.payload.tokens[0]!] };
 }
 
 describe("issued-plan required learning star awards", () => {
@@ -157,7 +167,8 @@ describe("issued-plan required learning star awards", () => {
 
     const first = await getToday(student);
     const second = await getToday(student);
-    expect(first.requiredItemIds).toEqual(expectedRequiredIds("2026-07-15"));
+    expect(first.requiredItemIds).toEqual(first.items.map((item) => item.id));
+    expect(first.requiredItemIds).toHaveLength(6);
     expect(second.requiredItemIds).toEqual(first.requiredItemIds);
     expect(second.items).toEqual(first.items);
     expect(first.stars).toEqual({
@@ -182,6 +193,325 @@ describe("issued-plan required learning star awards", () => {
     ).isRequired === 1)).toEqual(
       first.requiredItemIds.map((itemId) => ({ itemId, isRequired: 1 }))
     );
+  });
+
+  it("locks requirement replacement after either device receives the daily plan", async () => {
+    const firstDevice = harness.client();
+    await authenticateStudent(harness, firstDevice);
+    const firstPlan = await getToday(firstDevice);
+
+    const secondDevice = harness.client();
+    await loginStudentOnNewDevice(secondDevice, "수아 두 번째 태블릿");
+    const secondPlan = await getToday(secondDevice);
+    expect(secondPlan.planId).not.toBe(firstPlan.planId);
+    expect(secondPlan.items).toEqual(firstPlan.items);
+
+    const guardian = harness.client();
+    expect((await guardian.request("POST", "/api/auth/guardian/login", {
+      password: FAMILY.password
+    })).statusCode).toBe(204);
+    const locked = await guardian.request(
+      "PUT",
+      "/api/guardian/daily-plans/2026-07-15",
+      {
+        koreanTarget: 1,
+        mathTarget: 3,
+        isRestDay: false,
+        subjectSettings: {
+          korean: { difficulty: 5, challengeBonusStars: 5 },
+          math: { difficulty: 1, challengeBonusStars: 0 }
+        }
+      }
+    );
+    expect(locked.statusCode).toBe(409);
+    expect(locked.json()).toEqual({ code: "PLAN_LOCKED" });
+    expect(harness.db.prepare(`
+      SELECT korean_target AS koreanTarget, math_target AS mathTarget,
+             is_rest_day AS isRestDay
+      FROM daily_plan_settings
+      WHERE study_date = '2026-07-15'
+    `).get()).toEqual({ koreanTarget: 2, mathTarget: 2, isRestDay: 0 });
+    expect(harness.db.prepare(`
+      SELECT subject, difficulty,
+             challenge_bonus_stars AS challengeBonusStars
+      FROM daily_step_settings
+      WHERE study_date = '2026-07-15'
+      ORDER BY subject
+    `).all()).toEqual([
+      { subject: "korean", difficulty: 3, challengeBonusStars: 2 },
+      { subject: "math", difficulty: 3, challengeBonusStars: 2 }
+    ]);
+    expect(harness.db.prepare(`
+      SELECT COUNT(*) AS count FROM daily_requirements
+      WHERE study_date = '2026-07-15'
+    `).get()).toEqual({ count: 6 });
+  });
+
+  it("rejects legacy target-only plan updates with a stable version code", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    const guardian = harness.client();
+    expect((await guardian.request("POST", "/api/auth/guardian/login", {
+      password: FAMILY.password
+    })).statusCode).toBe(204);
+
+    const response = await guardian.request(
+      "PUT",
+      "/api/guardian/daily-plans/2026-07-15",
+      { koreanTarget: 1, mathTarget: 3, isRestDay: false }
+    );
+
+    expect(response.statusCode).toBe(409);
+    expect(response.json()).toEqual({ code: "PLAN_VERSION_REQUIRED" });
+    expect(harness.db.prepare(`
+      SELECT
+        (SELECT COUNT(*) FROM daily_plan_settings) AS settings,
+        (SELECT COUNT(*) FROM daily_step_settings) AS stepSettings,
+        (SELECT COUNT(*) FROM daily_requirements) AS requirements,
+        (SELECT COUNT(*) FROM issued_daily_plans) AS issuedPlans
+    `).get()).toEqual({
+      settings: 0,
+      stepSettings: 0,
+      requirements: 0,
+      issuedPlans: 0
+    });
+  });
+
+  it("issues one authoritative foundation, current, and challenge item per subject", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    expect((await student.request("POST", "/api/auth/guardian/login", {
+      password: FAMILY.password
+    })).statusCode).toBe(204);
+    const configured = await student.request(
+      "PUT",
+      "/api/guardian/daily-plans/2026-07-15",
+      {
+        koreanTarget: 2,
+        mathTarget: 2,
+        isRestDay: false,
+        subjectSettings: {
+          korean: { difficulty: 3, challengeBonusStars: 2 },
+          math: { difficulty: 3, challengeBonusStars: 4 }
+        }
+      }
+    );
+    expect(configured.statusCode).toBe(200);
+    expect(configured.json()).toMatchObject({
+      subjectSettings: {
+        korean: { difficulty: 3, challengeBonusStars: 2 },
+        math: { difficulty: 3, challengeBonusStars: 4 }
+      }
+    });
+    expect((await student.request("POST", "/api/auth/logout")).statusCode)
+      .toBe(204);
+    expect((await student.request("POST", "/api/auth/student/login", {
+      pin: "2580"
+    })).statusCode).toBe(200);
+
+    const today = await getToday(student);
+    expect(today.items).toHaveLength(6);
+    expect(today.requiredItemIds).toEqual(today.items.map((item) => item.id));
+    for (const subject of ["korean", "math"] as const) {
+      expect(today.items.filter((item) => item.payload.subject === subject)
+        .map((item) => item.step)).toEqual([
+          "foundation", "current", "challenge"
+        ]);
+    }
+    const korean = today.items.filter((item) =>
+      item.payload.subject === "korean"
+    );
+    expect(korean.map((item) => item.payload.kind)).toEqual([
+      "korean-dictation", "korean-dictation", "korean-dictation"
+    ]);
+    expect(korean.map((item) =>
+      item.payload.kind === "korean-dictation" ? item.payload.mode : null
+    )).toEqual(["word", "word", "sentence"]);
+    expect(harness.db.prepare(`
+      SELECT subject, step FROM daily_requirements
+      ORDER BY sort_order
+    `).all()).toEqual([
+      { subject: "korean", step: "foundation" },
+      { subject: "korean", step: "current" },
+      { subject: "korean", step: "challenge" },
+      { subject: "math", step: "foundation" },
+      { subject: "math", step: "current" },
+      { subject: "math", step: "challenge" }
+    ]);
+  });
+
+  it("hard-filters difficulty-five Korean stages by dictation mode", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    const studentId = (harness.db.prepare(`
+      SELECT id FROM users WHERE role = 'student'
+    `).get() as { id: string }).id;
+    harness.db.prepare(`
+      INSERT INTO daily_step_settings (
+        student_id, study_date, subject, difficulty, challenge_bonus_stars
+      ) VALUES (?, '2026-07-15', 'korean', 5, 2)
+    `).run(studentId);
+
+    const today = await getToday(student);
+    const korean = today.items.filter((item) =>
+      item.payload.subject === "korean"
+    );
+
+    expect(korean.map((item) => [
+      item.step,
+      item.payload.kind,
+      item.payload.kind === "korean-dictation" ? item.payload.mode : null
+    ])).toEqual([
+      ["foundation", "korean-dictation", "word"],
+      ["current", "korean-dictation", "word"],
+      ["challenge", "korean-dictation", "sentence"]
+    ]);
+  });
+
+  it("fails with an explicit stage error when required Korean content is unavailable", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    const studentId = (harness.db.prepare(`
+      SELECT id FROM users WHERE role = 'student'
+    `).get() as { id: string }).id;
+    harness.db.prepare(`
+      UPDATE content_items
+      SET status = 'archived'
+      WHERE id IN (
+        SELECT ci.id
+        FROM content_items AS ci
+        JOIN content_versions AS cv
+          ON cv.item_id = ci.id AND cv.version = ci.active_version
+        WHERE json_extract(cv.payload_json, '$.kind') = 'korean-dictation'
+          AND json_extract(cv.payload_json, '$.mode') = 'sentence'
+      )
+    `).run();
+
+    const dailyPlan = new DailyPlanService(
+      harness.db,
+      () => new Date("2026-07-15T03:00:00.000Z")
+    );
+    expect(() => dailyPlan.ensure(studentId, "2026-07-15"))
+      .toThrow("DAILY_STEP_ITEM_MISSING:korean:challenge");
+    expect(harness.db.prepare(`
+      SELECT COUNT(*) AS count FROM daily_requirements
+    `).get()).toEqual({ count: 0 });
+  });
+
+  it("never issues a guardian-authored multiplication story at difficulty five", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    const studentId = (harness.db.prepare(`
+      SELECT id FROM users WHERE role = 'student'
+    `).get() as { id: string }).id;
+    const multiplication = {
+      id: "guardian-multiplication-story",
+      kind: "math-story",
+      subject: "math",
+      unit: "곱셈 이야기",
+      title: "다섯 묶음",
+      level: "5단계",
+      readLabel: "문제 읽기",
+      text: "사탕이 다섯 개씩 세 묶음 있어요.",
+      hint: "같은 수를 여러 번 더해 보세요.",
+      tokens: ["다섯 개씩", "세 묶음"],
+      question: "사탕은 모두 몇 개인가요?",
+      answer: 15,
+      unitLabel: "개",
+      checkHint: "5가 세 번 있어요."
+    };
+    harness.db.prepare(`
+      INSERT INTO content_items (
+        id, skill_id, subject, status, active_version, created_at
+      ) VALUES (?, 'skill-math-story', 'math', 'published', 5, ?)
+    `).run(multiplication.id, "2026-07-15T02:00:00.000Z");
+    harness.db.prepare(`
+      INSERT INTO content_versions (item_id, version, payload_json, created_at)
+      VALUES (?, 5, ?, ?)
+    `).run(
+      multiplication.id,
+      JSON.stringify(multiplication),
+      "2026-07-15T02:00:00.000Z"
+    );
+    harness.db.prepare(`
+      INSERT INTO daily_step_settings (
+        student_id, study_date, subject, difficulty, challenge_bonus_stars
+      ) VALUES (?, '2026-07-15', 'math', 5, 2)
+    `).run(studentId);
+
+    const today = await getToday(student);
+    const math = today.items.filter((item) => item.payload.subject === "math");
+    expect(math).toHaveLength(3);
+    expect(math.every((item) => isCalculationItem(item.payload))).toBe(true);
+    expect(math.map((item) => item.id)).not.toContain(multiplication.id);
+  });
+
+  it("prefers a recent failed calculation at a farther allowed level", async () => {
+    const student = harness.client();
+    await authenticateStudent(harness, student);
+    const studentId = (harness.db.prepare(`
+      SELECT id FROM users WHERE role = 'student'
+    `).get() as { id: string }).id;
+    const calculation = INITIAL_ITEMS.find((item) =>
+      item.kind === "math-story" && isCalculationItem(item)
+    )!;
+    const candidates = [
+      {
+        ...calculation,
+        id: "ranking-close",
+        level: "2단계",
+        unit: "받아올림과 받아내림"
+      },
+      {
+        ...calculation,
+        id: "ranking-current",
+        level: "3단계",
+        unit: "받아올림과 받아내림"
+      },
+      {
+        ...calculation,
+        id: "ranking-recent-failed",
+        level: "4단계",
+        unit: "세 수의 혼합 계산"
+      }
+    ];
+    harness.db.prepare("UPDATE content_items SET status = 'archived' WHERE subject = 'math'")
+      .run();
+    const insertItem = harness.db.prepare(`
+      INSERT INTO content_items (
+        id, skill_id, subject, status, active_version, created_at
+      ) VALUES (?, 'skill-math-calculation', 'math', 'published', 4, ?)
+    `);
+    const insertVersion = harness.db.prepare(`
+      INSERT INTO content_versions (item_id, version, payload_json, created_at)
+      VALUES (?, 4, ?, ?)
+    `);
+    for (const candidate of candidates) {
+      insertItem.run(candidate.id, "2026-07-14T00:00:00.000Z");
+      insertVersion.run(
+        candidate.id,
+        JSON.stringify(candidate),
+        "2026-07-14T00:00:00.000Z"
+      );
+    }
+    harness.db.prepare(`
+      INSERT INTO attempts (
+        id, client_attempt_id, user_id, item_id, content_version, study_date,
+        reading_score, reading_pass, missed_tokens_json, math_answer_json,
+        math_pass, duration_ms, difficulty_feedback, created_at
+      ) VALUES (
+        'ranking-recent-failure', 'ranking-recent-failure-client', ?,
+        'ranking-recent-failed', 4, '2026-07-14', 100, 1, '[]', '0', 0,
+        12000, NULL, '2026-07-14T03:00:00.000Z'
+      )
+    `).run(studentId);
+
+    const today = await getToday(student);
+    const foundation = today.items.find((item) =>
+      item.payload.subject === "math" && item.step === "foundation"
+    );
+
+    expect(foundation?.id).toBe("ranking-recent-failed");
   });
 
   it("awards one required-item source and keeps retry receipts idempotent", async () => {
@@ -270,20 +600,11 @@ describe("issued-plan required learning star awards", () => {
     const student = harness.client();
     await authenticateStudent(harness, student);
     const plan = await getToday(student);
-    const item = plan.items.find(
-      (candidate) => !plan.requiredItemIds.includes(candidate.id)
-    )!;
+    const item = plan.items[0]!;
     harness.db.prepare(`
-      INSERT INTO daily_requirements (
-        student_id, study_date, item_id, subject, sort_order, created_at
-      ) VALUES (?, ?, ?, ?, 99, ?)
-    `).run(
-      studentId(harness),
-      plan.date,
-      item.id,
-      item.payload.subject,
-      "2026-07-15T03:03:00.000Z"
-    );
+      UPDATE issued_plan_items SET is_required = 0
+      WHERE plan_id = ? AND item_id = ?
+    `).run(plan.planId, item.id);
 
     const response = await student.request(
       "POST",
@@ -308,17 +629,20 @@ describe("issued-plan required learning star awards", () => {
     const student = harness.client();
     await authenticateStudent(harness, student);
     const plan = await getToday(student);
-    const required = plan.items.find(
-      (candidate) => candidate.id === plan.requiredItemIds[0]
+    const required = plan.items.find((item) => item.step === "foundation")!;
+    const optional = plan.items.find((item) =>
+      item.step === "foundation" && item.id !== required.id
     )!;
-    const optional = plan.items.find(
-      (candidate) => !plan.requiredItemIds.includes(candidate.id)
-    )!;
+    harness.db.prepare(`
+      UPDATE issued_plan_items SET is_required = 0
+      WHERE plan_id = ? AND item_id = ?
+    `).run(plan.planId, optional.id);
 
-    const failed = await student.request("POST", "/api/student/attempts", {
-      ...passingAttempt(plan, required, "attempt-failed-required-0001"),
-      readingScore: 0
-    });
+    const failed = await student.request(
+      "POST",
+      "/api/student/attempts",
+      failingAttempt(plan, required, "attempt-failed-required-0001")
+    );
     expect(failed.statusCode).toBe(201);
     expect(failed.json().starAward).toEqual({
       awarded: false,
@@ -365,20 +689,14 @@ describe("issued-plan required learning star awards", () => {
 
     const plan = await getToday(student);
     expect(plan.requiredItemIds).toEqual([]);
+    expect(plan.items).toEqual([]);
     expect(harness.db.prepare(`
       SELECT COUNT(*) AS count FROM issued_plan_items WHERE is_required = 1
     `).get()).toEqual({ count: 0 });
-    const attempt = await student.request(
-      "POST",
-      "/api/student/attempts",
-      passingAttempt(plan, plan.items[0]!, "attempt-rest-day-0001")
-    );
-    expect(attempt.json().starAward).toEqual({
-      awarded: false,
-      amount: 0,
-      balance: 0,
-      eventId: null
-    });
+    expect(harness.db.prepare(`
+      SELECT COUNT(*) AS count FROM star_events
+      WHERE reason_code = 'CHALLENGE_PERFECT'
+    `).get()).toEqual({ count: 0 });
   });
 
   it("rolls back attempt, star, receipt, and cursor when receipt persistence fails", async () => {

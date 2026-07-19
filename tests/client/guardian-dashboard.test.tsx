@@ -5,16 +5,45 @@ import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testi
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { GuardianDashboard } from "../../src/client/guardian/guardian-dashboard";
-import { ApiError } from "../../src/client/api/client";
-import type { GuardianOfflineRejection } from "../../src/shared/learning";
+import {
+  AiLearningStudio,
+  type AiStudioTreeState
+} from "../../src/client/guardian/ai-learning-studio";
+import { ApiClient, ApiError } from "../../src/client/api/client";
+import type { AiDraftView, GuardianOfflineRejection } from "../../src/shared/learning";
 import type {
   AppliedStarResult,
   ProcessedStarAdjustment
 } from "../../src/shared/stars";
 
-afterEach(cleanup);
+afterEach(() => {
+  cleanup();
+  vi.useRealTimers();
+});
 
 function createGuardianApi(overrides: Record<string, unknown> = {}) {
+  const studioSettings = {
+    monthlyBudgetWon: 3000,
+    monthSpentWon: 1250,
+    providers: [
+      {
+        provider: "gemini" as const,
+        enabled: true,
+        model: "gemini-2.5-flash",
+        hasApiKey: true,
+        inputWonPer1K: 2,
+        outputWonPer1K: 8
+      },
+      {
+        provider: "openai" as const,
+        enabled: true,
+        model: "gpt-5-mini",
+        hasApiKey: true,
+        inputWonPer1K: 3,
+        outputWonPer1K: 12
+      }
+    ]
+  };
   return {
     getGuardianProgress: vi.fn().mockResolvedValue({
       completedItems: 4,
@@ -57,6 +86,10 @@ function createGuardianApi(overrides: Record<string, unknown> = {}) {
       koreanTarget: 2,
       mathTarget: 2,
       isRestDay: false,
+      subjectSettings: {
+        korean: { difficulty: 3, challengeBonusStars: 1 },
+        math: { difficulty: 3, challengeBonusStars: 1 }
+      },
       requiredItemIds: ["ko-private", "math-private"]
     }),
     updateGuardianDailyPlan: vi.fn(),
@@ -70,6 +103,15 @@ function createGuardianApi(overrides: Record<string, unknown> = {}) {
       hasApiKey: false
     }),
     updateAiCoachSettings: vi.fn(),
+    getAiStudioSettings: vi.fn().mockResolvedValue(studioSettings.providers),
+    getAiStudioSettingsView: vi.fn().mockResolvedValue(studioSettings),
+    updateAiStudioBudget: vi.fn().mockResolvedValue(studioSettings),
+    updateAiStudioProvider: vi.fn(),
+    createAiDraft: vi.fn(),
+    getAiDraft: vi.fn(),
+    updateAiDraftItem: vi.fn(),
+    publishAiDraft: vi.fn(),
+    getGuardianAiReport: vi.fn(),
     registerDevice: vi.fn().mockResolvedValue({
       publicId: "public-current",
       name: "현재 태블릿",
@@ -96,46 +138,1580 @@ function deferred<T>() {
   return { promise, reject, resolve };
 }
 
+function createAcceptedMathDraft(id = "draft-1"): AiDraftView {
+  return {
+    id,
+    subject: "math",
+    step: "current",
+    requestedCount: 8,
+    difficulty: 4,
+    weakTopics: [],
+    status: "draft",
+    items: [{
+      id: "accepted-1",
+      sourceProvider: "gemini",
+      payload: {
+        id: "accepted-1",
+        kind: "math-story",
+        subject: "math",
+        unit: "받아올림과 받아내림",
+        title: "받아올림 더하기",
+        level: "4단계",
+        readLabel: "식을 읽고 계산하기",
+        text: "28에 7을 더해요.",
+        hint: "일의 자리부터 계산해요.",
+        tokens: ["28", "7"],
+        question: "28 + 7은 얼마일까요?",
+        answer: 35,
+        unitLabel: "",
+        checkHint: "받아올림을 확인해요.",
+        calculation: { operands: [28, 7], operators: ["+"], layout: "vertical" }
+      },
+      review: { accepted: true, reasons: [] },
+      status: "accepted"
+    }]
+  };
+}
+
 describe("GuardianDashboard", () => {
-  it("saves AI coach settings without rendering the provider key", async () => {
+  it("loads the current AI studio without requiring the legacy provider-array method", async () => {
     const user = userEvent.setup();
-    const updateAiCoachSettings = vi.fn().mockResolvedValue({
-      enabled: true,
-      provider: "openai",
-      model: "gpt-5-nano",
-      monthlyBudgetWon: 300,
-      monthSpentWon: 1,
-      hasApiKey: true
-    });
+    const api = createGuardianApi({ getAiStudioSettings: undefined });
+
+    render(<GuardianDashboard api={api} />);
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+
+    expect(await screen.findByRole("heading", { name: "AI 학습실" })).toBeVisible();
+  });
+
+  it("shows a controlled AI studio availability state when settings routes are unavailable", async () => {
+    const user = userEvent.setup();
     const api = createGuardianApi({
-      getAiCoachSettings: vi.fn().mockResolvedValue({
-        enabled: false,
+      getAiStudioSettingsView: vi.fn().mockRejectedValue(new ApiError(404, "HTTP_404"))
+    });
+
+    render(<GuardianDashboard api={api} />);
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+
+    expect(await screen.findByRole("alert"))
+      .toHaveTextContent("AI 학습실 설정을 불러오지 못했어요.");
+    expect(screen.queryByText(/TypeError/)).not.toBeInTheDocument();
+  });
+
+  it("retries a failed settings read from the affected generation panel without duplicate reads", async () => {
+    const user = userEvent.setup();
+    const recovered = {
+      monthlyBudgetWon: 3000,
+      monthSpentWon: 1250,
+      providers: [
+        {
+          provider: "gemini" as const,
+          enabled: true,
+          model: "gemini-2.5-flash",
+          hasApiKey: true,
+          inputWonPer1K: 2,
+          outputWonPer1K: 8
+        },
+        {
+          provider: "openai" as const,
+          enabled: true,
+          model: "gpt-5-mini",
+          hasApiKey: true,
+          inputWonPer1K: 3,
+          outputWonPer1K: 12
+        }
+      ]
+    };
+    const retryRead = deferred<typeof recovered>();
+    const getAiStudioSettingsView = vi.fn()
+      .mockRejectedValueOnce(new Error("temporary settings failure"))
+      .mockReturnValueOnce(retryRead.promise);
+    render(<GuardianDashboard api={createGuardianApi({ getAiStudioSettingsView })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    expect(await screen.findByRole("alert"))
+      .toHaveTextContent("AI 학습실 설정을 불러오지 못했어요.");
+
+    const tree = screen.getByRole("tree", { name: "AI 학습실 메뉴" });
+    await user.click(within(tree).getByRole("button", { name: "문제 생성" }));
+    await user.click(within(tree).getByRole("treeitem", { name: "수학 문제 배치" }));
+    const createDraft = screen.getByRole("button", { name: "초안 만들기" });
+    expect(createDraft).toBeDisabled();
+
+    const retry = screen.getByRole("button", { name: "AI 학습실 설정 다시 불러오기" });
+    await user.click(retry);
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(2));
+    expect(retry).toBeDisabled();
+    await user.click(retry);
+    expect(getAiStudioSettingsView).toHaveBeenCalledTimes(2);
+
+    await act(async () => retryRead.resolve(recovered));
+    await waitFor(() => expect(createDraft).toBeEnabled());
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("shows the real legacy budget while keeping unavailable rate editing controlled", async () => {
+    const legacyProviders = [{
+      provider: "gemini" as const,
+      enabled: true,
+      model: "gemini-2.5-flash-lite",
+      hasApiKey: true
+    }, {
+      provider: "openai" as const,
+      enabled: false,
+      model: "gpt-5-nano",
+      hasApiKey: false
+    }];
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: "HTTP_404" }), {
+        status: 404,
+        headers: { "content-type": "application/json" }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(legacyProviders), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({
+        enabled: true,
         provider: "gemini",
         model: "gemini-2.5-flash-lite",
-        monthlyBudgetWon: 1000,
-        monthSpentWon: 0,
-        hasApiKey: false
-      }),
-      updateAiCoachSettings
+        monthlyBudgetWon: 4321,
+        monthSpentWon: 876,
+        hasApiKey: true
+      }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }));
+    const api = new ApiClient(fetcher);
+    render(<AiLearningStudio
+      api={api}
+      onPanelChange={vi.fn()}
+      onTreeStateChange={vi.fn()}
+      panel="settings"
+      treeState={{ selectedLeaf: "budget", openGroups: ["settings"] }}
+    />);
+
+    expect(await screen.findByText("월 예상 예산 4,321원")).toBeVisible();
+    expect(screen.getByText("이번 달 사용 876원")).toBeVisible();
+    expect(screen.getByRole("status"))
+      .toHaveTextContent("이전 서버에서는 예상 요금을 수정할 수 없어요.");
+    expect(screen.queryByRole("button", { name: "예산 저장" })).not.toBeInTheDocument();
+    expect(screen.queryByLabelText("Gemini 예상 입력 요금 (원/1K 토큰)"))
+      .not.toBeInTheDocument();
+    expect(fetcher.mock.calls.map(([path, init]) => ({ path, method: init?.method }))).toEqual([
+      { path: "/api/guardian/ai-studio/settings/view", method: "GET" },
+      { path: "/api/guardian/ai-studio/settings", method: "GET" },
+      { path: "/api/guardian/ai-coach-settings", method: "GET" }
+    ]);
+  });
+
+  it("exposes the guardian sections, AI hierarchy, and separate device management in responsive navigation", async () => {
+    const user = userEvent.setup();
+    render(<GuardianDashboard api={createGuardianApi()} />);
+
+    for (const label of [
+      "진도", "별 기록", "차감 승인", "학습 계획", "AI 학습실", "백업", "기기 관리"
+    ]) {
+      expect(screen.getByRole("button", { name: label })).toBeVisible();
+    }
+
+    const navigation = screen.getByRole("navigation", { name: "보호자 메뉴" });
+    await user.click(within(navigation).getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(navigation).getByRole("button", { name: "문제 생성" }));
+    await user.click(within(navigation).getByRole("button", { name: "수학 문제 배치" }));
+    expect(screen.getByRole("heading", { name: "수학 문제 배치" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "기기 관리" }));
+    expect(await screen.findByRole("heading", { name: "기기 관리" })).toBeVisible();
+  });
+
+  it("labels guardian content as the main landmark without orphaned tabpanel semantics", async () => {
+    render(<GuardianDashboard api={createGuardianApi()} />);
+
+    expect(await screen.findByRole("main", { name: "진도" })).toBeVisible();
+    expect(screen.queryByRole("tabpanel")).not.toBeInTheDocument();
+  });
+
+  it("expands the exact AI learning studio tree and blanks each saved provider key", async () => {
+    const user = userEvent.setup();
+    let authoritativeSettings = {
+      monthlyBudgetWon: 3000,
+      monthSpentWon: 0,
+      providers: [
+        {
+          provider: "gemini" as const, enabled: false, model: "gemini-2.5-flash",
+          hasApiKey: false, inputWonPer1K: 2, outputWonPer1K: 8
+        },
+        {
+          provider: "openai" as const, enabled: false, model: "gpt-5-mini",
+          hasApiKey: false, inputWonPer1K: 3, outputWonPer1K: 12
+        }
+      ]
+    };
+    const updateAiStudioProvider = vi.fn(async (
+      provider: "gemini" | "openai",
+      input: { enabled?: boolean; model?: string; apiKey?: string }
+    ) => {
+      const current = authoritativeSettings.providers.find((item) => item.provider === provider)!;
+      const updated = {
+        ...current,
+        enabled: input.enabled ?? current.enabled,
+        model: input.model ?? current.model,
+        hasApiKey: input.apiKey !== undefined || current.hasApiKey
+      };
+      authoritativeSettings = {
+        ...authoritativeSettings,
+        providers: authoritativeSettings.providers.map((item) => item.provider === provider
+          ? updated
+          : item)
+      };
+      return updated;
+    });
+    const api = createGuardianApi({
+      getAiStudioSettingsView: vi.fn(async () => authoritativeSettings),
+      updateAiStudioProvider
     });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "AI 코치" }));
-    const key = await screen.findByLabelText("API 키");
-    await user.type(key, "provider-secret-never-rendered");
-    await user.selectOptions(screen.getByLabelText("제공자"), "openai");
-    await user.clear(screen.getByLabelText("월 예산"));
-    await user.type(screen.getByLabelText("월 예산"), "300");
-    await user.click(screen.getByRole("button", { name: "AI 코치 저장" }));
+    const studioTab = screen.getByRole("button", { name: "AI 학습실" });
+    expect(studioTab).toBeVisible();
+    await user.click(studioTab);
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "보고서" }));
+    for (const label of [
+      "제공자·모델 선택", "API 키 관리", "월 예산·사용량",
+      "수학 문제 배치", "국어·받아쓰기 배치", "오늘의 학습 요약", "주간 변화"
+    ]) {
+      expect(screen.getByRole("treeitem", { name: label })).toBeVisible();
+    }
 
-    await waitFor(() => expect(updateAiCoachSettings).toHaveBeenCalledWith({
-      enabled: false,
-      provider: "openai",
-      monthlyBudgetWon: 300,
-      apiKey: "provider-secret-never-rendered"
+    await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
+    expect(screen.getByRole("button", { name: "초안 만들기" })).toBeDisabled();
+    expect(screen.getByText(
+      "Gemini와 OpenAI를 모두 켜고 두 API 키를 저장해야 초안을 만들 수 있어요."
+    )).toBeVisible();
+
+    await user.click(screen.getByRole("treeitem", { name: "제공자·모델 선택" }));
+    expect(screen.getAllByText("API 키 저장되지 않음")).toHaveLength(2);
+    await user.click(screen.getByLabelText("Gemini 사용"));
+    const geminiKey = screen.getByLabelText("Gemini API 키");
+    await user.type(geminiKey, "gemini-secret-never-rendered");
+    await user.click(screen.getByRole("button", { name: "Gemini 설정 저장" }));
+    await waitFor(() => expect(updateAiStudioProvider).toHaveBeenCalledWith("gemini", {
+      enabled: true,
+      model: "gemini-2.5-flash",
+      apiKey: "gemini-secret-never-rendered"
     }));
-    expect(screen.getByLabelText("API 키")).toHaveValue("");
-    expect(document.body.textContent).not.toContain("provider-secret-never-rendered");
+    expect(geminiKey).toHaveValue("");
+
+    await user.click(screen.getByLabelText("OpenAI 사용"));
+    const openAiKey = screen.getByLabelText("OpenAI API 키");
+    await user.type(openAiKey, "openai-secret-never-rendered");
+    await user.click(screen.getByRole("button", { name: "OpenAI 설정 저장" }));
+    await waitFor(() => expect(updateAiStudioProvider).toHaveBeenCalledWith("openai", {
+      enabled: true,
+      model: "gpt-5-mini",
+      apiKey: "openai-secret-never-rendered"
+    }));
+    expect(openAiKey).toHaveValue("");
+    expect(screen.getAllByText("API 키 저장됨")).toHaveLength(2);
+    expect(document.body.textContent).not.toMatch(/gemini-secret|openai-secret/);
+    expect(document.documentElement.outerHTML).not.toMatch(/gemini-secret|openai-secret/);
+  });
+
+  it("saves authoritative estimated budget and provider rates then reloads server truth", async () => {
+    const user = userEvent.setup();
+    const initial = {
+      monthlyBudgetWon: 3000,
+      monthSpentWon: 1250,
+      providers: [
+        {
+          provider: "gemini" as const, enabled: true, model: "gemini-2.5-flash",
+          hasApiKey: true, inputWonPer1K: 2, outputWonPer1K: 8
+        },
+        {
+          provider: "openai" as const, enabled: true, model: "gpt-5-mini",
+          hasApiKey: true, inputWonPer1K: 3, outputWonPer1K: 12
+        }
+      ]
+    };
+    const refreshed = {
+      monthlyBudgetWon: 5000,
+      monthSpentWon: 1300,
+      providers: [
+        { ...initial.providers[0], inputWonPer1K: 4, outputWonPer1K: 10 },
+        { ...initial.providers[1], inputWonPer1K: 5, outputWonPer1K: 14 }
+      ]
+    };
+    const getAiStudioSettingsView = vi.fn()
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(refreshed);
+    const updateAiStudioBudget = vi.fn().mockResolvedValue(refreshed);
+    const updateAiStudioProvider = vi.fn().mockImplementation(async (
+      provider: "gemini" | "openai",
+      input: { inputWonPer1K: number; outputWonPer1K: number }
+    ) => ({
+      ...initial.providers.find((value) => value.provider === provider)!,
+      ...input
+    }));
+    render(<GuardianDashboard api={createGuardianApi({
+      getAiStudioSettingsView,
+      updateAiStudioBudget,
+      updateAiStudioProvider
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(screen.getByRole("treeitem", { name: "월 예산·사용량" }));
+    expect(await screen.findByText("이번 달 사용 1,250원")).toBeVisible();
+    expect(screen.getByText("남은 예상 예산 1,750원")).toBeVisible();
+
+    await user.clear(screen.getByLabelText("월 예산 (원)"));
+    await user.type(screen.getByLabelText("월 예산 (원)"), "5000");
+    await user.clear(screen.getByLabelText("Gemini 예상 입력 요금 (원/1K 토큰)"));
+    await user.type(screen.getByLabelText("Gemini 예상 입력 요금 (원/1K 토큰)"), "4");
+    await user.clear(screen.getByLabelText("Gemini 예상 출력 요금 (원/1K 토큰)"));
+    await user.type(screen.getByLabelText("Gemini 예상 출력 요금 (원/1K 토큰)"), "10");
+    await user.clear(screen.getByLabelText("OpenAI 예상 입력 요금 (원/1K 토큰)"));
+    await user.type(screen.getByLabelText("OpenAI 예상 입력 요금 (원/1K 토큰)"), "5");
+    await user.clear(screen.getByLabelText("OpenAI 예상 출력 요금 (원/1K 토큰)"));
+    await user.type(screen.getByLabelText("OpenAI 예상 출력 요금 (원/1K 토큰)"), "14");
+    await user.click(screen.getByRole("button", { name: "예산 저장" }));
+
+    await waitFor(() => expect(updateAiStudioBudget).toHaveBeenCalledWith({
+      monthlyBudgetWon: 5000
+    }));
+    expect(updateAiStudioProvider).toHaveBeenCalledWith("gemini", {
+      inputWonPer1K: 4,
+      outputWonPer1K: 10
+    });
+    expect(updateAiStudioProvider).toHaveBeenCalledWith("openai", {
+      inputWonPer1K: 5,
+      outputWonPer1K: 14
+    });
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(2));
+    expect(await screen.findByText("이번 달 사용 1,300원")).toBeVisible();
+    expect(screen.getByLabelText("월 예산 (원)")).toHaveValue(5000);
+  });
+
+  it("reloads authoritative budget truth after a partial multi-call save failure", async () => {
+    const user = userEvent.setup();
+    const initial = {
+      monthlyBudgetWon: 3000,
+      monthSpentWon: 1250,
+      providers: [
+        {
+          provider: "gemini" as const, enabled: true, model: "gemini-2.5-flash",
+          hasApiKey: true, inputWonPer1K: 2, outputWonPer1K: 8
+        },
+        {
+          provider: "openai" as const, enabled: true, model: "gpt-5-mini",
+          hasApiKey: true, inputWonPer1K: 3, outputWonPer1K: 12
+        }
+      ]
+    };
+    const authoritativeAfterPartialSave = {
+      ...initial,
+      monthlyBudgetWon: 5000,
+      monthSpentWon: 1300
+    };
+    const getAiStudioSettingsView = vi.fn()
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(authoritativeAfterPartialSave);
+    const updateAiStudioBudget = vi.fn().mockResolvedValue(authoritativeAfterPartialSave);
+    const updateAiStudioProvider = vi.fn().mockImplementation(async (
+      provider: "gemini" | "openai"
+    ) => {
+      if (provider === "gemini") throw new Error("rate write failed");
+      return initial.providers[1];
+    });
+    render(<GuardianDashboard api={createGuardianApi({
+      getAiStudioSettingsView,
+      updateAiStudioBudget,
+      updateAiStudioProvider
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(screen.getByRole("treeitem", { name: "월 예산·사용량" }));
+    const budget = await screen.findByLabelText("월 예산 (원)");
+    await user.clear(budget);
+    await user.type(budget, "5000");
+    await user.click(screen.getByRole("button", { name: "예산 저장" }));
+
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(2));
+    expect(screen.getByLabelText("월 예산 (원)")).toHaveValue(5000);
+    expect(screen.getByText("이번 달 사용 1,300원")).toBeVisible();
+    expect(screen.getByText(/저장 요청 중 오류가 있었지만 서버의 최신 값을 다시 불러왔어요/))
+      .toBeVisible();
+  });
+
+  it("reloads authoritative budget truth when the first write request rejects ambiguously", async () => {
+    const user = userEvent.setup();
+    const initial = {
+      monthlyBudgetWon: 3000,
+      monthSpentWon: 1250,
+      providers: [
+        {
+          provider: "gemini" as const, enabled: true, model: "gemini-2.5-flash",
+          hasApiKey: true, inputWonPer1K: 2, outputWonPer1K: 8
+        },
+        {
+          provider: "openai" as const, enabled: true, model: "gpt-5-mini",
+          hasApiKey: true, inputWonPer1K: 3, outputWonPer1K: 12
+        }
+      ]
+    };
+    const authoritative = { ...initial, monthlyBudgetWon: 5000, monthSpentWon: 1300 };
+    const getAiStudioSettingsView = vi.fn()
+      .mockResolvedValueOnce(initial)
+      .mockResolvedValueOnce(authoritative);
+    render(<GuardianDashboard api={createGuardianApi({
+      getAiStudioSettingsView,
+      updateAiStudioBudget: vi.fn().mockRejectedValue(new Error("ambiguous response failure"))
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(screen.getByRole("treeitem", { name: "월 예산·사용량" }));
+    const budget = await screen.findByLabelText("월 예산 (원)");
+    await user.clear(budget);
+    await user.type(budget, "5000");
+    await user.click(screen.getByRole("button", { name: "예산 저장" }));
+
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(2));
+    expect(screen.getByLabelText("월 예산 (원)")).toHaveValue(5000);
+    expect(screen.getByText("이번 달 사용 1,300원")).toBeVisible();
+    expect(screen.getByText(/저장 요청 중 오류가 있었지만 서버의 최신 값을 다시 불러왔어요/))
+      .toBeVisible();
+    expect(screen.queryByText(/서버 설정은 변경되지 않았어요/)).not.toBeInTheDocument();
+  });
+
+  it("labels a successful reconciliation after writes succeeded but the first reload failed", async () => {
+    const user = userEvent.setup();
+    const initial = {
+      monthlyBudgetWon: 3000,
+      monthSpentWon: 1250,
+      providers: [
+        {
+          provider: "gemini" as const, enabled: true, model: "gemini-2.5-flash",
+          hasApiKey: true, inputWonPer1K: 2, outputWonPer1K: 8
+        },
+        {
+          provider: "openai" as const, enabled: true, model: "gpt-5-mini",
+          hasApiKey: true, inputWonPer1K: 3, outputWonPer1K: 12
+        }
+      ]
+    };
+    const authoritative = { ...initial, monthlyBudgetWon: 5000, monthSpentWon: 1300 };
+    const getAiStudioSettingsView = vi.fn()
+      .mockResolvedValueOnce(initial)
+      .mockRejectedValueOnce(new Error("reload failed"))
+      .mockResolvedValueOnce(authoritative);
+    render(<GuardianDashboard api={createGuardianApi({
+      getAiStudioSettingsView,
+      updateAiStudioBudget: vi.fn().mockResolvedValue(authoritative),
+      updateAiStudioProvider: vi.fn().mockResolvedValue(initial.providers[0])
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(screen.getByRole("treeitem", { name: "월 예산·사용량" }));
+    const budget = await screen.findByLabelText("월 예산 (원)");
+    await user.clear(budget);
+    await user.type(budget, "5000");
+    await user.click(screen.getByRole("button", { name: "예산 저장" }));
+
+    const retry = await screen.findByRole("button", { name: "최신 설정 다시 불러오기" });
+    expect(screen.getByText(/저장 요청은 완료했지만 현재 서버 상태를 확인하지 못했어요/))
+      .toBeVisible();
+    await user.click(retry);
+
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(3));
+    expect(screen.getByLabelText("월 예산 (원)")).toHaveValue(5000);
+    expect(screen.getByText("설정 저장을 완료했고 서버의 최신 값을 다시 확인했어요."))
+      .toBeVisible();
+    expect(screen.queryByText(/일부 설정이 저장/)).not.toBeInTheDocument();
+  });
+
+  it("keeps reconciliation retry available when two authoritative reloads fail", async () => {
+    const user = userEvent.setup();
+    const getAiStudioSettingsView = vi.fn()
+      .mockResolvedValueOnce({
+        monthlyBudgetWon: 3000,
+        monthSpentWon: 1250,
+        providers: [
+          {
+            provider: "gemini" as const, enabled: true, model: "gemini-2.5-flash",
+            hasApiKey: true, inputWonPer1K: 2, outputWonPer1K: 8
+          },
+          {
+            provider: "openai" as const, enabled: true, model: "gpt-5-mini",
+            hasApiKey: true, inputWonPer1K: 3, outputWonPer1K: 12
+          }
+        ]
+      })
+      .mockRejectedValue(new Error("reload unavailable"));
+    render(<GuardianDashboard api={createGuardianApi({ getAiStudioSettingsView })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(screen.getByRole("treeitem", { name: "월 예산·사용량" }));
+    await user.click(await screen.findByRole("button", { name: "예산 저장" }));
+    await user.click(await screen.findByRole("button", { name: "최신 설정 다시 불러오기" }));
+
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(3));
+    expect(screen.getByText(/현재 서버 상태를 확인하지 못했어요/)).toBeVisible();
+    expect(screen.getByRole("button", { name: "최신 설정 다시 불러오기" })).toBeEnabled();
+    expect(screen.queryByText(/서버 설정은 변경되지 않았어요/)).not.toBeInTheDocument();
+  });
+
+  it("replaces a pending initial settings read after studio navigation", async () => {
+    const user = userEvent.setup();
+    const older = {
+      monthlyBudgetWon: 3000,
+      monthSpentWon: 1250,
+      providers: [
+        {
+          provider: "gemini" as const, enabled: true, model: "gemini-old",
+          hasApiKey: true, inputWonPer1K: 2, outputWonPer1K: 8
+        },
+        {
+          provider: "openai" as const, enabled: true, model: "gpt-old",
+          hasApiKey: true, inputWonPer1K: 3, outputWonPer1K: 12
+        }
+      ]
+    };
+    const initialRead = deferred<typeof older>();
+    const replacementRead = deferred<typeof older>();
+    const fresh = { ...older, monthlyBudgetWon: 5000, monthSpentWon: 2400 };
+    const getAiStudioSettingsView = vi.fn()
+      .mockReturnValueOnce(initialRead.promise)
+      .mockReturnValueOnce(replacementRead.promise);
+    render(<GuardianDashboard api={createGuardianApi({ getAiStudioSettingsView })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole("treeitem", { name: "월 예산·사용량" }));
+
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(2));
+    await act(async () => replacementRead.resolve(fresh));
+    expect(await screen.findByText("이번 달 사용 2,400원")).toBeVisible();
+    expect(screen.queryByText("제공자 설정을 불러오고 있어요.")).not.toBeInTheDocument();
+
+    await act(async () => initialRead.resolve(older));
+    expect(screen.getByText("이번 달 사용 2,400원")).toBeVisible();
+    expect(screen.queryByText("이번 달 사용 1,250원")).not.toBeInTheDocument();
+  });
+
+  it("replaces a pending provider reconciliation after switching settings leaves", async () => {
+    const user = userEvent.setup();
+    const initial = {
+      monthlyBudgetWon: 3000,
+      monthSpentWon: 1250,
+      providers: [
+        {
+          provider: "gemini" as const, enabled: true, model: "gemini-current",
+          hasApiKey: true, inputWonPer1K: 2, outputWonPer1K: 8
+        },
+        {
+          provider: "openai" as const, enabled: true, model: "gpt-current",
+          hasApiKey: true, inputWonPer1K: 3, outputWonPer1K: 12
+        }
+      ]
+    };
+    const staleReconciliation = deferred<typeof initial>();
+    const replacementRead = deferred<typeof initial>();
+    const fresh = { ...initial, monthlyBudgetWon: 4800, monthSpentWon: 2200 };
+    const getAiStudioSettingsView = vi.fn()
+      .mockResolvedValueOnce(initial)
+      .mockReturnValueOnce(staleReconciliation.promise)
+      .mockReturnValueOnce(replacementRead.promise);
+    render(<GuardianDashboard api={createGuardianApi({
+      getAiStudioSettingsView,
+      updateAiStudioProvider: vi.fn(async (provider: "gemini" | "openai") =>
+        initial.providers.find((value) => value.provider === provider)!)
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await screen.findByLabelText("Gemini 모델");
+    await user.click(screen.getByRole("button", { name: "Gemini 설정 저장" }));
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(2));
+
+    await user.click(screen.getByRole("treeitem", { name: "월 예산·사용량" }));
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(3));
+    await act(async () => replacementRead.resolve(fresh));
+    expect(await screen.findByText("이번 달 사용 2,200원")).toBeVisible();
+
+    await act(async () => staleReconciliation.reject(new Error("stale reload failed")));
+    await waitFor(() => expect(screen.queryByText(/현재 서버 상태를 확인하지 못했어요/))
+      .not.toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "최신 설정 다시 불러오기" }))
+      .not.toBeInTheDocument();
+    expect(screen.getByText("이번 달 사용 2,200원")).toBeVisible();
+  });
+
+  it("keeps the newest settings when an older budget reconciliation resolves last", async () => {
+    const user = userEvent.setup();
+    const initial = {
+      monthlyBudgetWon: 3000,
+      monthSpentWon: 1250,
+      providers: [
+        {
+          provider: "gemini" as const, enabled: true, model: "gemini-old",
+          hasApiKey: true, inputWonPer1K: 2, outputWonPer1K: 8
+        },
+        {
+          provider: "openai" as const, enabled: true, model: "gpt-old",
+          hasApiKey: true, inputWonPer1K: 3, outputWonPer1K: 12
+        }
+      ]
+    };
+    const older = { ...initial, monthlyBudgetWon: 4000, monthSpentWon: 1300 };
+    const newest = {
+      ...initial,
+      monthlyBudgetWon: 5000,
+      monthSpentWon: 2400,
+      providers: initial.providers.map((provider) => provider.provider === "gemini"
+        ? { ...provider, model: "gemini-new" }
+        : provider)
+    };
+    const oldRead = deferred<typeof initial>();
+    const navigationRead = deferred<typeof initial>();
+    const newRead = deferred<typeof initial>();
+    const getAiStudioSettingsView = vi.fn()
+      .mockResolvedValueOnce(initial)
+      .mockReturnValueOnce(oldRead.promise)
+      .mockReturnValueOnce(navigationRead.promise)
+      .mockReturnValueOnce(newRead.promise);
+    const updateAiStudioProvider = vi.fn(async (
+      provider: "gemini" | "openai",
+      input: { model?: string; inputWonPer1K?: number; outputWonPer1K?: number }
+    ) => ({
+      ...initial.providers.find((value) => value.provider === provider)!,
+      ...input
+    }));
+    render(<GuardianDashboard api={createGuardianApi({
+      getAiStudioSettingsView,
+      updateAiStudioBudget: vi.fn().mockResolvedValue(older),
+      updateAiStudioProvider
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(screen.getByRole("treeitem", { name: "월 예산·사용량" }));
+    await user.click(await screen.findByRole("button", { name: "예산 저장" }));
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(2));
+
+    await user.click(screen.getByRole("treeitem", { name: "제공자·모델 선택" }));
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(3));
+    await act(async () => navigationRead.resolve(initial));
+    const geminiModel = await screen.findByLabelText("Gemini 모델");
+    await user.clear(geminiModel);
+    await user.type(geminiModel, "gemini-new");
+    await user.click(screen.getByRole("button", { name: "Gemini 설정 저장" }));
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(4));
+
+    await act(async () => newRead.resolve(newest));
+    await waitFor(() => expect(screen.getByLabelText("Gemini 모델")).toHaveValue("gemini-new"));
+    await user.click(screen.getByRole("treeitem", { name: "월 예산·사용량" }));
+    expect(await screen.findByText("이번 달 사용 2,400원")).toBeVisible();
+
+    await act(async () => oldRead.resolve(older));
+    await waitFor(() => expect(screen.queryByText("이번 달 사용 1,300원")).not.toBeInTheDocument());
+    expect(screen.getByText("이번 달 사용 2,400원")).toBeVisible();
+  });
+
+  it("ignores an older settings rejection after a newer provider reconciliation succeeds", async () => {
+    const user = userEvent.setup();
+    const initial = {
+      monthlyBudgetWon: 3000,
+      monthSpentWon: 1250,
+      providers: [
+        {
+          provider: "gemini" as const, enabled: true, model: "gemini-current",
+          hasApiKey: true, inputWonPer1K: 2, outputWonPer1K: 8
+        },
+        {
+          provider: "openai" as const, enabled: true, model: "gpt-current",
+          hasApiKey: true, inputWonPer1K: 3, outputWonPer1K: 12
+        }
+      ]
+    };
+    const oldRead = deferred<typeof initial>();
+    const newRead = deferred<typeof initial>();
+    const getAiStudioSettingsView = vi.fn()
+      .mockResolvedValueOnce(initial)
+      .mockReturnValueOnce(oldRead.promise)
+      .mockReturnValueOnce(newRead.promise);
+    const updateAiStudioProvider = vi.fn(async (provider: "gemini" | "openai") =>
+      initial.providers.find((value) => value.provider === provider)!);
+    render(<GuardianDashboard api={createGuardianApi({
+      getAiStudioSettingsView,
+      updateAiStudioProvider
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await screen.findByLabelText("Gemini 모델");
+    await user.click(screen.getByRole("button", { name: "Gemini 설정 저장" }));
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(2));
+    await user.click(screen.getByRole("button", { name: "OpenAI 설정 저장" }));
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(3));
+
+    await act(async () => newRead.resolve(initial));
+    expect(await screen.findByText("설정을 저장했어요.")).toBeVisible();
+    await act(async () => oldRead.reject(new Error("older reload failed")));
+
+    await waitFor(() => expect(screen.queryByText(/현재 서버 상태를 확인하지 못했어요/))
+      .not.toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "최신 설정 다시 불러오기" }))
+      .not.toBeInTheDocument();
+    expect(screen.getByText("설정을 저장했어요.")).toBeVisible();
+  });
+
+  it("clears an API key entry even when the save request fails", async () => {
+    const user = userEvent.setup();
+    const updateAiStudioProvider = vi.fn().mockRejectedValue(new Error("save failed"));
+    const getAiStudioSettingsView = createGuardianApi().getAiStudioSettingsView;
+    render(<GuardianDashboard api={createGuardianApi({
+      getAiStudioSettingsView,
+      updateAiStudioProvider
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    const apiKey = await screen.findByLabelText("Gemini API 키");
+    await user.type(apiKey, "key-that-must-not-stay");
+    await user.click(screen.getByRole("button", { name: "Gemini 설정 저장" }));
+
+    expect(await screen.findByText(/설정 저장 요청 중 오류가 있었지만 서버의 최신 설정을 다시 불러왔어요/))
+      .toBeVisible();
+    expect(getAiStudioSettingsView).toHaveBeenCalledTimes(2);
+    expect(apiKey).toHaveValue("");
+    expect(document.documentElement.outerHTML).not.toContain("key-that-must-not-stay");
+  });
+
+  it("clears a typed API key even when deleting the saved key fails", async () => {
+    const user = userEvent.setup();
+    const updateAiStudioProvider = vi.fn().mockRejectedValue(new Error("delete failed"));
+    const getAiStudioSettingsView = createGuardianApi().getAiStudioSettingsView;
+    render(<GuardianDashboard api={createGuardianApi({
+      getAiStudioSettingsView,
+      updateAiStudioProvider
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    const apiKey = await screen.findByLabelText("Gemini API 키");
+    await user.type(apiKey, "typed-key-that-must-not-stay");
+    await user.click(screen.getByRole("button", { name: "Gemini API 키 삭제" }));
+
+    expect(await screen.findByText(/설정 저장 요청 중 오류가 있었지만 서버의 최신 설정을 다시 불러왔어요/))
+      .toBeVisible();
+    expect(getAiStudioSettingsView).toHaveBeenCalledTimes(2);
+    expect(apiKey).toHaveValue("");
+    expect(document.documentElement.outerHTML).not.toContain("typed-key-that-must-not-stay");
+  });
+
+  it("blocks invalid estimated budget values before any save request", async () => {
+    const user = userEvent.setup();
+    const updateAiStudioBudget = vi.fn();
+    const updateAiStudioProvider = vi.fn();
+    render(<GuardianDashboard api={createGuardianApi({
+      updateAiStudioBudget,
+      updateAiStudioProvider
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(screen.getByRole("treeitem", { name: "월 예산·사용량" }));
+    const monthlyBudget = await screen.findByLabelText("월 예산 (원)");
+    fireEvent.change(monthlyBudget, { target: { value: "10001" } });
+
+    expect(screen.getByRole("button", { name: "예산 저장" })).toBeDisabled();
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "월 예산은 0원에서 10,000원 사이의 정수로 입력해 주세요."
+    );
+    expect(updateAiStudioBudget).not.toHaveBeenCalled();
+    expect(updateAiStudioProvider).not.toHaveBeenCalled();
+  });
+
+  it("drops a late math draft after the guardian switches to Korean", async () => {
+    const user = userEvent.setup();
+    const lateMath = deferred<{
+      id: string;
+      subject: "math";
+      step: "current";
+      requestedCount: number;
+      difficulty: number;
+      weakTopics: string[];
+      status: "draft";
+      items: [];
+    }>();
+    const createAiDraft = vi.fn().mockReturnValue(lateMath.promise);
+    render(<GuardianDashboard api={createGuardianApi({ createAiDraft })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+    await waitFor(() => expect(createAiDraft).toHaveBeenCalledOnce());
+    await user.click(screen.getByRole("treeitem", { name: "국어·받아쓰기 배치" }));
+
+    await act(async () => lateMath.resolve({
+      id: "late-math",
+      subject: "math",
+      step: "current",
+      requestedCount: 8,
+      difficulty: 4,
+      weakTopics: [],
+      status: "draft",
+      items: []
+    }));
+
+    expect(screen.getByRole("heading", { name: "국어·받아쓰기 배치" })).toBeVisible();
+    expect(screen.queryByText(/감리 통과/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "초안 발행" })).not.toBeInTheDocument();
+  });
+
+  it("drops the first same-selection generation after leaving, returning, and restarting", async () => {
+    const user = userEvent.setup();
+    const firstGeneration = deferred<AiDraftView>();
+    const restartedGeneration = deferred<AiDraftView>();
+    const createAiDraft = vi.fn()
+      .mockReturnValueOnce(firstGeneration.promise)
+      .mockReturnValueOnce(restartedGeneration.promise);
+    render(<GuardianDashboard api={createGuardianApi({ createAiDraft })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+    await waitFor(() => expect(createAiDraft).toHaveBeenCalledTimes(1));
+
+    await user.selectOptions(screen.getByLabelText("학습 단계"), "challenge");
+    await user.selectOptions(screen.getByLabelText("학습 단계"), "current");
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+    await waitFor(() => expect(createAiDraft).toHaveBeenCalledTimes(2));
+
+    const oldDraft = createAcceptedMathDraft("same-draft");
+    oldDraft.items[0]!.payload = {
+      ...oldDraft.items[0]!.payload,
+      title: "돌아오기 전 요청 결과"
+    };
+    await act(async () => firstGeneration.resolve(oldDraft));
+
+    expect(screen.queryByRole("article", { name: "돌아오기 전 요청 결과 초안" }))
+      .not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "초안 발행" })).not.toBeInTheDocument();
+
+    const currentDraft = createAcceptedMathDraft("same-draft");
+    currentDraft.items[0]!.payload = {
+      ...currentDraft.items[0]!.payload,
+      title: "다시 시작한 요청 결과"
+    };
+    await act(async () => restartedGeneration.resolve(currentDraft));
+
+    expect(await screen.findByRole("article", { name: "다시 시작한 요청 결과 초안" }))
+      .toBeVisible();
+    expect(screen.queryByRole("article", { name: "돌아오기 전 요청 결과 초안" }))
+      .not.toBeInTheDocument();
+  });
+
+  it("drops an old generation error after the guardian changes learning step", async () => {
+    const user = userEvent.setup();
+    const oldRequest = deferred<never>();
+    const createAiDraft = vi.fn().mockReturnValue(oldRequest.promise);
+    render(<GuardianDashboard api={createGuardianApi({ createAiDraft })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+    await waitFor(() => expect(createAiDraft).toHaveBeenCalledOnce());
+    await user.selectOptions(screen.getByLabelText("학습 단계"), "challenge");
+
+    await act(async () => oldRequest.reject(new Error("late failure")));
+
+    expect(screen.queryByText("초안을 만들지 못했어요.")).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "초안 발행" })).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["subject", (draft: AiDraftView) => ({ ...draft, subject: "korean" as const })],
+    ["step", (draft: AiDraftView) => ({ ...draft, step: "challenge" as const })],
+    ["status", (draft: AiDraftView) => ({ ...draft, status: "published" as const })]
+  ])("keeps a generated draft with a mismatched %s invisible", async (_dimension, change) => {
+    const user = userEvent.setup();
+    render(<GuardianDashboard api={createGuardianApi({
+      createAiDraft: vi.fn().mockResolvedValue(change(createAcceptedMathDraft()))
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+
+    expect(await screen.findByText(/초안의 과목이나 학습 단계 또는 상태가 요청과 달라서/))
+      .toBeVisible();
+    expect(screen.queryByRole("article", { name: "받아올림 더하기 초안" }))
+      .not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "초안 발행" })).not.toBeInTheDocument();
+  });
+
+  it("creates, edits, and publishes only reviewed math draft items", async () => {
+    const user = userEvent.setup();
+    const acceptedPayload = {
+      id: "accepted-1",
+      kind: "math-story" as const,
+      subject: "math" as const,
+      unit: "받아올림과 받아내림",
+      title: "받아올림 더하기",
+      level: "4단계",
+      readLabel: "식을 읽고 계산하기",
+      text: "28에 7을 더해요.",
+      hint: "일의 자리부터 계산해요.",
+      tokens: ["28", "7"],
+      question: "28 + 7은 얼마일까요?",
+      answer: 35,
+      unitLabel: "",
+      checkHint: "받아올림을 확인해요.",
+      calculation: { operands: [28, 7] as [number, number], operators: ["+"] as ["+"], layout: "vertical" as const }
+    };
+    const rejectedPayload = { ...acceptedPayload, id: "rejected-1", title: "중복 문제" };
+    const draft = {
+      id: "draft-1",
+      subject: "math" as const,
+      step: "current" as const,
+      requestedCount: 8,
+      difficulty: 4,
+      weakTopics: ["받아올림"],
+      status: "draft" as const,
+      items: [
+        { id: "accepted-1", sourceProvider: "gemini" as const, payload: acceptedPayload, review: { accepted: true, reasons: [] }, status: "accepted" as const },
+        { id: "rejected-1", sourceProvider: "openai" as const, payload: rejectedPayload, review: { accepted: false, reasons: ["REVIEW_DUPLICATE"] }, status: "rejected" as const }
+      ]
+    };
+    const createAiDraft = vi.fn().mockResolvedValue(draft);
+    const updateAiDraftItem = vi.fn().mockImplementation(async (
+      _draftId: string,
+      _itemId: string,
+      payload: typeof acceptedPayload
+    ) => ({
+      ...draft,
+      items: [{ ...draft.items[0], payload, status: "edited" as const }, draft.items[1]]
+    }));
+    const publishAiDraft = vi.fn().mockResolvedValue({
+      ...draft,
+      status: "published",
+      items: [{ ...draft.items[0], status: "published" }, draft.items[1]]
+    });
+    const api = createGuardianApi({ createAiDraft, updateAiDraftItem, publishAiDraft });
+    render(<GuardianDashboard api={api} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
+    await user.type(screen.getByLabelText("자주 틀린 유형"), "받아올림");
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+    await waitFor(() => expect(createAiDraft).toHaveBeenCalledWith({
+      subject: "math",
+      step: "current",
+      count: 8,
+      difficulty: 4,
+      weakTopics: ["받아올림"]
+    }));
+
+    const accepted = await screen.findByRole("article", { name: "받아올림 더하기 초안" });
+    const rejected = screen.getByRole("article", { name: "중복 문제 초안" });
+    expect(within(rejected).getByText("감리 탈락 · 발행 제외")).toBeVisible();
+    expect(within(rejected).queryByRole("button", { name: "수정 저장" })).not.toBeInTheDocument();
+    const answer = within(accepted).getByLabelText("정답");
+    await user.clear(answer);
+    await user.type(answer, "36");
+    await user.click(within(accepted).getByRole("button", { name: "수정 저장" }));
+    expect(await within(accepted).findByText("문제 형식을 다시 확인해 주세요.")).toBeVisible();
+    expect(updateAiDraftItem).not.toHaveBeenCalled();
+    await user.clear(answer);
+    await user.type(answer, "35");
+    const title = within(accepted).getByLabelText("문제 제목");
+    await user.clear(title);
+    await user.type(title, "받아올림 더하기 연습");
+    await user.click(within(accepted).getByRole("button", { name: "수정 저장" }));
+    await waitFor(() => expect(updateAiDraftItem).toHaveBeenCalledWith(
+      "draft-1",
+      "accepted-1",
+      expect.objectContaining({ title: "받아올림 더하기 연습" })
+    ));
+
+    await user.click(screen.getByRole("button", { name: "초안 발행" }));
+    await waitFor(() => expect(publishAiDraft).toHaveBeenCalledWith("draft-1"));
+    expect(await screen.findByText("발행을 완료했어요.")).toBeVisible();
+  });
+
+  it("does not publish a draft while an accepted item save is still pending", async () => {
+    const user = userEvent.setup();
+    const acceptedPayload = {
+      id: "accepted-1",
+      kind: "math-story" as const,
+      subject: "math" as const,
+      unit: "받아올림과 받아내림",
+      title: "받아올림 더하기",
+      level: "4단계",
+      readLabel: "식을 읽고 계산하기",
+      text: "28에 7을 더해요.",
+      hint: "일의 자리부터 계산해요.",
+      tokens: ["28", "7"],
+      question: "28 + 7은 얼마일까요?",
+      answer: 35,
+      unitLabel: "",
+      checkHint: "받아올림을 확인해요.",
+      calculation: { operands: [28, 7] as [number, number], operators: ["+"] as ["+"], layout: "vertical" as const }
+    };
+    const draft = {
+      id: "draft-1",
+      subject: "math" as const,
+      step: "current" as const,
+      requestedCount: 8,
+      difficulty: 4,
+      weakTopics: [],
+      status: "draft" as const,
+      items: [{
+        id: "accepted-1",
+        sourceProvider: "gemini" as const,
+        payload: acceptedPayload,
+        review: { accepted: true, reasons: [] },
+        status: "accepted" as "accepted" | "edited"
+      }]
+    };
+    const itemSave = deferred<typeof draft>();
+    const updateAiDraftItem = vi.fn().mockReturnValue(itemSave.promise);
+    const publishAiDraft = vi.fn();
+    const api = createGuardianApi({
+      createAiDraft: vi.fn().mockResolvedValue(draft),
+      updateAiDraftItem,
+      publishAiDraft
+    });
+    render(<GuardianDashboard api={api} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+    const accepted = await screen.findByRole("article", { name: "받아올림 더하기 초안" });
+    const title = within(accepted).getByLabelText("문제 제목");
+    await user.clear(title);
+    await user.type(title, "저장 중인 새 제목");
+    await user.click(within(accepted).getByRole("button", { name: "수정 저장" }));
+
+    await waitFor(() => expect(updateAiDraftItem).toHaveBeenCalledWith(
+      "draft-1", "accepted-1", expect.objectContaining({ title: "저장 중인 새 제목" })
+    ));
+    const publish = screen.getByRole("button", { name: "초안 발행" });
+    expect(publish).toBeDisabled();
+    await user.click(publish);
+    expect(publishAiDraft).not.toHaveBeenCalled();
+
+    itemSave.resolve({
+      ...draft,
+      items: [{ ...draft.items[0]!, payload: { ...acceptedPayload, title: "저장 중인 새 제목" }, status: "edited" }]
+    });
+    await waitFor(() => expect(screen.getByRole("button", { name: "초안 발행" })).toBeEnabled());
+  });
+
+  it("serializes accepted item saves so a full draft response cannot roll back another editor", async () => {
+    const user = userEvent.setup();
+    const draft = createAcceptedMathDraft();
+    draft.items.push({
+      ...draft.items[0]!,
+      id: "accepted-2",
+      payload: {
+        ...draft.items[0]!.payload,
+        id: "accepted-2",
+        title: "두 번째 받아올림"
+      }
+    });
+    const itemSave = deferred<AiDraftView>();
+    const updateAiDraftItem = vi.fn().mockReturnValue(itemSave.promise);
+    render(<GuardianDashboard api={createGuardianApi({
+      createAiDraft: vi.fn().mockResolvedValue(draft),
+      updateAiDraftItem
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+    const first = await screen.findByRole("article", { name: "받아올림 더하기 초안" });
+    const second = screen.getByRole("article", { name: "두 번째 받아올림 초안" });
+    const firstTitle = within(first).getByLabelText("문제 제목");
+    await user.clear(firstTitle);
+    await user.type(firstTitle, "서버가 확정한 최신 문제");
+    await user.click(within(first).getByRole("button", { name: "수정 저장" }));
+    await waitFor(() => expect(updateAiDraftItem).toHaveBeenCalledOnce());
+
+    expect(within(second).getByLabelText("문제 제목")).toBeDisabled();
+    expect(within(second).getByRole("button", { name: "수정 저장" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "초안 발행" })).toBeDisabled();
+    await user.click(within(second).getByRole("button", { name: "수정 저장" }));
+    expect(updateAiDraftItem).toHaveBeenCalledOnce();
+
+    const updated = createAcceptedMathDraft();
+    updated.items[0]!.payload = {
+      ...updated.items[0]!.payload,
+      title: "서버가 확정한 최신 문제"
+    };
+    updated.items[0]!.status = "edited";
+    updated.items.push(draft.items[1]!);
+    await act(async () => itemSave.resolve(updated));
+
+    expect(await screen.findByRole("article", { name: "서버가 확정한 최신 문제 초안" }))
+      .toBeVisible();
+    expect(updateAiDraftItem).toHaveBeenCalledOnce();
+  });
+
+  it("does not let an old edit replace a restarted same-identity generation", async () => {
+    const user = userEvent.setup();
+    const oldEdit = deferred<AiDraftView>();
+    const restartedGeneration = deferred<AiDraftView>();
+    const initialDraft = createAcceptedMathDraft("same-draft");
+    const createAiDraft = vi.fn()
+      .mockResolvedValueOnce(initialDraft)
+      .mockReturnValueOnce(restartedGeneration.promise);
+    const updateAiDraftItem = vi.fn().mockReturnValue(oldEdit.promise);
+    render(<GuardianDashboard api={createGuardianApi({ createAiDraft, updateAiDraftItem })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+    const initialCard = await screen.findByRole("article", { name: "받아올림 더하기 초안" });
+    await user.click(within(initialCard).getByRole("button", { name: "수정 저장" }));
+    await waitFor(() => expect(updateAiDraftItem).toHaveBeenCalledOnce());
+
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+    await waitFor(() => expect(createAiDraft).toHaveBeenCalledTimes(2));
+    const currentDraft = createAcceptedMathDraft("same-draft");
+    currentDraft.items[0]!.payload = {
+      ...currentDraft.items[0]!.payload,
+      title: "새 요청이 만든 현재 문제"
+    };
+    await act(async () => restartedGeneration.resolve(currentDraft));
+    expect(await screen.findByRole("article", { name: "새 요청이 만든 현재 문제 초안" }))
+      .toBeVisible();
+
+    const staleEditResult = createAcceptedMathDraft("same-draft");
+    staleEditResult.items[0]!.payload = {
+      ...staleEditResult.items[0]!.payload,
+      title: "이전 수정 요청이 돌려준 문제"
+    };
+    staleEditResult.items[0]!.status = "edited";
+    await act(async () => oldEdit.resolve(staleEditResult));
+
+    expect(screen.getByRole("article", { name: "새 요청이 만든 현재 문제 초안" }))
+      .toBeVisible();
+    expect(screen.queryByRole("article", { name: "이전 수정 요청이 돌려준 문제 초안" }))
+      .not.toBeInTheDocument();
+  });
+
+  it("rejects an item edit response for a different active draft identity", async () => {
+    const user = userEvent.setup();
+    const draft = createAcceptedMathDraft();
+    const mismatched = createAcceptedMathDraft("other-draft");
+    mismatched.items[0]!.payload = {
+      ...mismatched.items[0]!.payload,
+      title: "다른 초안이 보낸 제목"
+    };
+    const updateAiDraftItem = vi.fn().mockResolvedValue(mismatched);
+    render(<GuardianDashboard api={createGuardianApi({
+      createAiDraft: vi.fn().mockResolvedValue(draft),
+      updateAiDraftItem
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+    const card = await screen.findByRole("article", { name: "받아올림 더하기 초안" });
+    await user.click(within(card).getByRole("button", { name: "수정 저장" }));
+
+    expect(await within(card).findByText("수정 결과가 현재 초안과 달라서 반영하지 않았어요."))
+      .toBeVisible();
+    expect(screen.queryByRole("article", { name: "다른 초안이 보낸 제목 초안" }))
+      .not.toBeInTheDocument();
+    expect(screen.queryByText("수정한 문제를 저장했어요.")).not.toBeInTheDocument();
+  });
+
+  it.each([
+    ["subject", (draft: AiDraftView) => ({ ...draft, subject: "korean" as const })],
+    ["step", (draft: AiDraftView) => ({ ...draft, step: "challenge" as const })],
+    ["status", (draft: AiDraftView) => ({ ...draft, status: "published" as const })]
+  ])("rejects an item edit response with a mismatched %s", async (_dimension, change) => {
+    const user = userEvent.setup();
+    const draft = createAcceptedMathDraft();
+    const response = change(createAcceptedMathDraft());
+    response.items[0]!.payload = {
+      ...response.items[0]!.payload,
+      title: "현재 초안이 아닌 응답"
+    };
+    render(<GuardianDashboard api={createGuardianApi({
+      createAiDraft: vi.fn().mockResolvedValue(draft),
+      updateAiDraftItem: vi.fn().mockResolvedValue(response)
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+    const card = await screen.findByRole("article", { name: "받아올림 더하기 초안" });
+    await user.click(within(card).getByRole("button", { name: "수정 저장" }));
+
+    expect(await within(card).findByText("수정 결과가 현재 초안과 달라서 반영하지 않았어요."))
+      .toBeVisible();
+    expect(screen.queryByRole("article", { name: "현재 초안이 아닌 응답 초안" }))
+      .not.toBeInTheDocument();
+  });
+
+  it("rejects a publish response for a different active draft identity", async () => {
+    const user = userEvent.setup();
+    const draft = createAcceptedMathDraft();
+    const mismatched = { ...createAcceptedMathDraft("other-draft"), status: "published" as const };
+    render(<GuardianDashboard api={createGuardianApi({
+      createAiDraft: vi.fn().mockResolvedValue(draft),
+      publishAiDraft: vi.fn().mockResolvedValue(mismatched)
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+    await screen.findByRole("article", { name: "받아올림 더하기 초안" });
+    await user.click(screen.getByRole("button", { name: "초안 발행" }));
+
+    expect(await screen.findByText("발행 결과가 현재 초안과 달라서 반영하지 않았어요."))
+      .toBeVisible();
+    expect(screen.queryByText("발행을 완료했어요.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "초안 발행" })).toBeEnabled();
+  });
+
+  it.each([
+    ["subject", (draft: AiDraftView) => ({
+      ...draft, subject: "korean" as const, status: "published" as const
+    })],
+    ["step", (draft: AiDraftView) => ({
+      ...draft, step: "challenge" as const, status: "published" as const
+    })],
+    ["status", (draft: AiDraftView) => ({ ...draft, status: "draft" as const })]
+  ])("rejects a publish response with a mismatched %s", async (_dimension, change) => {
+    const user = userEvent.setup();
+    const draft = createAcceptedMathDraft();
+    render(<GuardianDashboard api={createGuardianApi({
+      createAiDraft: vi.fn().mockResolvedValue(draft),
+      publishAiDraft: vi.fn().mockResolvedValue(change(createAcceptedMathDraft()))
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+    await screen.findByRole("article", { name: "받아올림 더하기 초안" });
+    await user.click(screen.getByRole("button", { name: "초안 발행" }));
+
+    expect(await screen.findByText("발행 결과가 현재 초안과 달라서 반영하지 않았어요."))
+      .toBeVisible();
+    expect(screen.queryByText("발행을 완료했어요.")).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "초안 발행" })).toBeEnabled();
+  });
+
+  it("disables all accepted item edits while publication is pending", async () => {
+    const user = userEvent.setup();
+    const draft = createAcceptedMathDraft();
+    const publication = deferred<AiDraftView>();
+    const updateAiDraftItem = vi.fn();
+    render(<GuardianDashboard api={createGuardianApi({
+      createAiDraft: vi.fn().mockResolvedValue(draft),
+      updateAiDraftItem,
+      publishAiDraft: vi.fn().mockReturnValue(publication.promise)
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("treeitem", { name: "수학 문제 배치" }));
+    await user.click(screen.getByRole("button", { name: "초안 만들기" }));
+    const card = await screen.findByRole("article", { name: "받아올림 더하기 초안" });
+    await user.click(screen.getByRole("button", { name: "초안 발행" }));
+
+    expect(within(card).getByLabelText("문제 제목")).toBeDisabled();
+    expect(within(card).getByLabelText("문제")).toBeDisabled();
+    expect(within(card).getByLabelText("정답")).toBeDisabled();
+    expect(within(card).getByRole("button", { name: "수정 저장" })).toBeDisabled();
+    await user.click(within(card).getByRole("button", { name: "수정 저장" }));
+    expect(updateAiDraftItem).not.toHaveBeenCalled();
+
+    publication.resolve({ ...draft, status: "published" });
+    expect(await screen.findByText("발행을 완료했어요.")).toBeVisible();
+  });
+
+  it("restores the selected AI panel and exposes a keyboard-operable tree hierarchy", async () => {
+    const user = userEvent.setup();
+    render(<GuardianDashboard api={createGuardianApi()} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    const tree = screen.getByRole("tree", { name: "AI 학습실 메뉴" });
+    expect(within(tree).getByRole("treeitem", { name: "AI 설정" }))
+      .toHaveAttribute("aria-expanded", "true");
+    const generationBranch = within(tree).getByRole("treeitem", { name: "문제 생성" });
+    generationBranch.focus();
+    await user.keyboard("{ArrowRight}");
+    expect(generationBranch).toHaveAttribute("aria-expanded", "true");
+    await user.keyboard("{ArrowDown}");
+    expect(screen.getByRole("treeitem", { name: "수학 문제 배치" })).toHaveFocus();
+    await user.keyboard("{Enter}");
+    expect(screen.getByRole("heading", { name: "수학 문제 배치" })).toBeVisible();
+
+    await user.click(screen.getByRole("button", { name: "진도" }));
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    expect(screen.getByRole("heading", { name: "수학 문제 배치" })).toBeVisible();
+    expect(screen.getByRole("treeitem", { name: "수학 문제 배치" }))
+      .toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("treeitem", { name: "문제 생성" }))
+      .toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("synchronizes controlled tree roving state without stealing an API-key input", async () => {
+    const user = userEvent.setup();
+    const api = createGuardianApi();
+    const initialTree: AiStudioTreeState = {
+      selectedLeaf: "provider-model",
+      openGroups: ["settings"]
+    };
+    const updatedTree: AiStudioTreeState = {
+      selectedLeaf: "api-keys",
+      openGroups: ["settings"]
+    };
+    const view = (treeState: AiStudioTreeState) => (
+      <AiLearningStudio
+        api={api}
+        panel="settings"
+        onPanelChange={vi.fn()}
+        treeState={treeState}
+        onTreeStateChange={vi.fn()}
+      />
+    );
+    const { rerender } = render(view(initialTree));
+    const apiKey = await screen.findByLabelText("Gemini API 키");
+    await user.type(apiKey, "guardian-secret");
+    expect(apiKey).toHaveFocus();
+
+    rerender(view(updatedTree));
+
+    expect(apiKey).toHaveFocus();
+    expect(apiKey).toHaveValue("guardian-secret");
+    expect(screen.getByRole("treeitem", { name: "API 키 관리" }))
+      .toHaveAttribute("tabindex", "0");
+    expect(screen.getByRole("treeitem", { name: "제공자·모델 선택" }))
+      .toHaveAttribute("tabindex", "-1");
+  });
+
+  it("moves controlled tree focus to the new roving item when the tree owns focus", async () => {
+    const api = createGuardianApi();
+    const initialTree: AiStudioTreeState = {
+      selectedLeaf: "provider-model",
+      openGroups: ["settings"]
+    };
+    const updatedTree: AiStudioTreeState = {
+      selectedLeaf: "api-keys",
+      openGroups: ["settings"]
+    };
+    const view = (treeState: AiStudioTreeState) => (
+      <AiLearningStudio
+        api={api}
+        panel="settings"
+        onPanelChange={vi.fn()}
+        treeState={treeState}
+        onTreeStateChange={vi.fn()}
+      />
+    );
+    const { rerender } = render(view(initialTree));
+    const initialItem = screen.getByRole("treeitem", { name: "제공자·모델 선택" });
+    initialItem.focus();
+    expect(initialItem).toHaveFocus();
+
+    rerender(view(updatedTree));
+
+    await waitFor(() => expect(screen.getByRole("treeitem", { name: "API 키 관리" }))
+      .toHaveFocus());
+    expect(screen.getByRole("treeitem", { name: "API 키 관리" }))
+      .toHaveAttribute("tabindex", "0");
+    expect(initialItem).toHaveAttribute("tabindex", "-1");
+  });
+
+  it("moves controlled tree focus to the visible owner when its selected leaf is closed", async () => {
+    const api = createGuardianApi();
+    const initialTree: AiStudioTreeState = {
+      selectedLeaf: "api-keys",
+      openGroups: ["settings"]
+    };
+    const hiddenSelectionTree: AiStudioTreeState = {
+      selectedLeaf: "generate-math",
+      openGroups: ["settings"]
+    };
+    const view = (treeState: AiStudioTreeState) => (
+      <AiLearningStudio
+        api={api}
+        panel="settings"
+        onPanelChange={vi.fn()}
+        treeState={treeState}
+        onTreeStateChange={vi.fn()}
+      />
+    );
+    const { rerender } = render(view(initialTree));
+    screen.getByRole("treeitem", { name: "API 키 관리" }).focus();
+
+    rerender(view(hiddenSelectionTree));
+
+    const owner = screen.getByRole("treeitem", { name: "문제 생성" });
+    await waitFor(() => expect(owner).toHaveFocus());
+    expect(owner).toHaveAttribute("tabindex", "0");
+    expect(screen.getAllByRole("treeitem").filter((item) => item.tabIndex === 0))
+      .toEqual([owner]);
+  });
+
+  it("keeps tree focus on the generation owner when its focused leaf is collapsed", async () => {
+    const api = createGuardianApi();
+    const view = (openGroups: AiStudioTreeState["openGroups"]) => (
+      <AiLearningStudio
+        api={api}
+        panel="generate-math"
+        onPanelChange={vi.fn()}
+        treeState={{ selectedLeaf: "generate-math", openGroups }}
+        onTreeStateChange={vi.fn()}
+      />
+    );
+    const { rerender } = render(view(["generation"]));
+    const tree = screen.getByRole("tree", { name: "AI 학습실 메뉴" });
+    const focusedLeaf = within(tree).getByRole("treeitem", { name: "수학 문제 배치" });
+    focusedLeaf.focus();
+    expect(focusedLeaf).toHaveFocus();
+
+    rerender(view([]));
+
+    const owner = within(tree).getByRole("treeitem", { name: "문제 생성" });
+    await waitFor(() => expect(owner).toHaveFocus());
+    expect(owner).toHaveAttribute("tabindex", "0");
+    expect(document.body).not.toHaveFocus();
+  });
+
+  it("keeps input focus while a hidden controlled selection gets a visible roving owner", async () => {
+    const user = userEvent.setup();
+    const api = createGuardianApi();
+    const initialTree: AiStudioTreeState = {
+      selectedLeaf: "api-keys",
+      openGroups: ["settings"]
+    };
+    const hiddenSelectionTree: AiStudioTreeState = {
+      selectedLeaf: "today-report",
+      openGroups: ["settings"]
+    };
+    const view = (treeState: AiStudioTreeState) => (
+      <AiLearningStudio
+        api={api}
+        panel="settings"
+        onPanelChange={vi.fn()}
+        treeState={treeState}
+        onTreeStateChange={vi.fn()}
+      />
+    );
+    const { rerender } = render(view(initialTree));
+    const apiKey = await screen.findByLabelText("Gemini API 키");
+    await user.type(apiKey, "guardian-secret");
+
+    rerender(view(hiddenSelectionTree));
+
+    const owner = screen.getByRole("treeitem", { name: "보고서" });
+    expect(apiKey).toHaveFocus();
+    expect(apiKey).toHaveValue("guardian-secret");
+    expect(owner).toHaveAttribute("tabindex", "0");
+    expect(screen.getAllByRole("treeitem").filter((item) => item.tabIndex === 0))
+      .toEqual([owner]);
+  });
+
+  it("retains the selected settings leaf and expanded groups after AI studio re-entry", async () => {
+    const user = userEvent.setup();
+    render(<GuardianDashboard api={createGuardianApi()} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(screen.getByRole("treeitem", { name: "API 키 관리" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "문제 생성" }));
+    await user.click(screen.getByRole("button", { name: "진도" }));
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+
+    expect(screen.getByRole("treeitem", { name: "API 키 관리" }))
+      .toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("treeitem", { name: "AI 설정" }))
+      .toHaveAttribute("aria-expanded", "true");
+    expect(screen.getByRole("treeitem", { name: "문제 생성" }))
+      .toHaveAttribute("aria-expanded", "true");
+  });
+
+  it("loads today and weekly reports with their KST date ranges and shows the source", async () => {
+    const user = userEvent.setup();
+    const now = new Date();
+    const formatDate = (date: Date) => new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit"
+    }).format(date);
+    const today = formatDate(now);
+    const weeklyStart = new Date(now);
+    weeklyStart.setDate(weeklyStart.getDate() - 6);
+    const getGuardianAiReport = vi.fn()
+      .mockResolvedValueOnce({
+        summary: "오늘은 로컬 요약이에요.", completionRate: 100, challengePerfect: true,
+        commonMistakes: [], source: "local" as const
+      })
+      .mockResolvedValueOnce({
+        summary: "이번 주는 AI 요약이에요.", completionRate: 80, challengePerfect: false,
+        commonMistakes: ["받침"], source: "llm" as const
+      });
+    render(<GuardianDashboard api={createGuardianApi({ getGuardianAiReport })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "보고서" }));
+    await user.click(screen.getByRole("treeitem", { name: "오늘의 학습 요약" }));
+    await waitFor(() => expect(getGuardianAiReport).toHaveBeenCalledWith(today, today));
+    expect(await screen.findByText("오늘은 로컬 요약이에요.")).toBeVisible();
+    expect(screen.getByText("로컬 요약")).toBeVisible();
+
+    await user.click(screen.getByRole("treeitem", { name: "주간 변화" }));
+    await waitFor(() => expect(getGuardianAiReport).toHaveBeenLastCalledWith(formatDate(weeklyStart), today));
+    expect(await screen.findByText("이번 주는 AI 요약이에요.")).toBeVisible();
+    expect(screen.getByText("AI 요약")).toBeVisible();
+  });
+
+  it("shows a report error after the selected report range fails", async () => {
+    const user = userEvent.setup();
+    const now = new Date();
+    const formatDate = (date: Date) => new Intl.DateTimeFormat("en-CA", {
+      timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit"
+    }).format(date);
+    const weeklyStart = new Date(now);
+    weeklyStart.setDate(weeklyStart.getDate() - 6);
+    const getGuardianAiReport = vi.fn().mockRejectedValue(new Error("offline"));
+    render(<GuardianDashboard api={createGuardianApi({ getGuardianAiReport })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await user.click(within(screen.getByRole("tree", { name: "AI 학습실 메뉴" }))
+      .getByRole("button", { name: "보고서" }));
+    await user.click(screen.getByRole("treeitem", { name: "주간 변화" }));
+    await waitFor(() => expect(getGuardianAiReport).toHaveBeenCalledWith(formatDate(weeklyStart), formatDate(now)));
+    expect(await screen.findByRole("alert")).toHaveTextContent("학습 보고서를 불러오지 못했어요.");
   });
 
   it("shows guardian progress and star status without protected or internal data", async () => {
@@ -149,13 +1725,13 @@ describe("GuardianDashboard", () => {
     expect(screen.getByText("읽기 통과율 83%")).toBeVisible();
     expect(screen.getByText("수학 통과율 75%")).toBeVisible();
     expect(screen.getByText("꽃잎 · 2회")).toBeVisible();
-    for (const tab of ["진도", "별 기록", "차감 승인", "학습 계획", "백업"]) {
-      expect(screen.getByRole("tab", { name: tab })).toBeVisible();
+    for (const tab of ["진도", "별 기록", "차감 승인", "학습 계획", "AI 학습실", "백업"]) {
+      expect(screen.getByRole("button", { name: tab })).toBeVisible();
     }
     expect(document.body.textContent).not.toMatch(
       /event-private|item-private|password|PIN|cookie|audio|transcript|삭제/i
     );
-    expect(screen.queryByRole("tab", { name: "기기 관리" })).not.toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "기기 관리" })).toBeVisible();
   });
 
   it("merges server and current-browser redacted rejections without rendering private payload fields", async () => {
@@ -392,7 +1968,7 @@ describe("GuardianDashboard", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "차감 승인" }));
+    await user.click(screen.getByRole("button", { name: "차감 승인" }));
     const card = await screen.findByRole("article", { name: "2026-07-15 차감 요청" });
     expect(within(card).getByText("요청 1개")).toBeVisible();
     expect(within(card).getByText("승인 —")).toBeVisible();
@@ -439,7 +2015,7 @@ describe("GuardianDashboard", () => {
     });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "차감 승인" }));
+    await user.click(screen.getByRole("button", { name: "차감 승인" }));
     const reason = await screen.findByLabelText("면제 사유");
     expect(reason).toBeRequired();
     await user.click(screen.getByRole("button", { name: "아픈 날로 면제" }));
@@ -485,7 +2061,7 @@ describe("GuardianDashboard", () => {
     });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "차감 승인" }));
+    await user.click(screen.getByRole("button", { name: "차감 승인" }));
     const approved = await screen.findByRole("article", { name: "2026-07-14 차감 요청" });
     const waived = screen.getByRole("article", { name: "2026-07-15 차감 요청" });
 
@@ -528,7 +2104,7 @@ describe("GuardianDashboard", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "차감 승인" }));
+    await user.click(screen.getByRole("button", { name: "차감 승인" }));
     const card = await screen.findByRole("article", { name: "2026-07-15 차감 요청" });
     await user.type(within(card).getByLabelText("승인 메모 (선택)"), "확인했어요");
     const approveButton = within(card).getByRole("button", { name: "차감 승인" });
@@ -582,7 +2158,7 @@ describe("GuardianDashboard", () => {
     const api = createGuardianApi({ getStarAdjustments, waiveStarAdjustment });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "차감 승인" }));
+    await user.click(screen.getByRole("button", { name: "차감 승인" }));
     const card = await screen.findByRole("article", { name: "2026-07-15 차감 요청" });
     await user.type(within(card).getByLabelText("면제 사유"), "아파서 쉬었어요");
     const waiveButton = within(card).getByRole("button", { name: "아픈 날로 면제" });
@@ -638,7 +2214,7 @@ describe("GuardianDashboard", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "차감 승인" }));
+    await user.click(screen.getByRole("button", { name: "차감 승인" }));
     const firstCard = await screen.findByRole("article", { name: "2026-07-14 차감 요청" });
     const secondCard = screen.getByRole("article", { name: "2026-07-15 차감 요청" });
     await user.type(within(secondCard).getByLabelText("면제 사유"), "두 번째 요청");
@@ -679,7 +2255,7 @@ describe("GuardianDashboard", () => {
     const api = createGuardianApi({ getGuardianStars });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "별 기록" }));
+    await user.click(screen.getByRole("button", { name: "별 기록" }));
     await user.type(await screen.findByLabelText("시작일"), "2026-07-01");
     await user.type(screen.getByLabelText("종료일"), "2026-07-16");
     await user.selectOptions(screen.getByLabelText("방향"), "deducted");
@@ -772,7 +2348,7 @@ describe("GuardianDashboard", () => {
     const api = createGuardianApi({ getGuardianStars });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "별 기록" }));
+    await user.click(screen.getByRole("button", { name: "별 기록" }));
     expect(await screen.findByText("이전 필터 기록")).toBeVisible();
     const oldNext = screen.getByRole("button", { name: "다음 기록 100개" });
     await user.selectOptions(screen.getByLabelText("사유"), "GUARDIAN_BONUS");
@@ -827,7 +2403,7 @@ describe("GuardianDashboard", () => {
     const api = createGuardianApi({ applyManualStars });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "별 기록" }));
+    await user.click(screen.getByRole("button", { name: "별 기록" }));
     await user.type(await screen.findByLabelText("별 수"), "2");
     await user.type(screen.getByLabelText("조정 사유"), "약속을 잘 지켰어요");
     await user.click(screen.getByRole("button", { name: "별 조정 저장" }));
@@ -861,7 +2437,7 @@ describe("GuardianDashboard", () => {
     const api = createGuardianApi({ applyManualStars });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "별 기록" }));
+    await user.click(screen.getByRole("button", { name: "별 기록" }));
     await user.type(await screen.findByLabelText("별 수"), "-1");
     await user.type(screen.getByLabelText("조정 사유"), "보호자 조정");
     await user.click(screen.getByRole("button", { name: "별 조정 저장" }));
@@ -902,7 +2478,7 @@ describe("GuardianDashboard", () => {
     const api = createGuardianApi({ applyManualStars });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "별 기록" }));
+    await user.click(screen.getByRole("button", { name: "별 기록" }));
     await user.type(await screen.findByLabelText("별 수"), "2");
     await user.type(screen.getByLabelText("조정 사유"), "약속 보너스");
     await user.click(screen.getByRole("button", { name: "별 조정 저장" }));
@@ -961,7 +2537,7 @@ describe("GuardianDashboard", () => {
     const api = createGuardianApi({ getGuardianStars, applyManualStars });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "별 기록" }));
+    await user.click(screen.getByRole("button", { name: "별 기록" }));
     expect(await screen.findByText("필터 유지 5분 무반응")).toBeVisible();
     await user.selectOptions(screen.getByLabelText("사유"), "IDLE_TIMEOUT");
     await user.click(screen.getByRole("button", { name: "필터 적용" }));
@@ -1047,7 +2623,7 @@ describe("GuardianDashboard", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "별 기록" }));
+    await user.click(screen.getByRole("button", { name: "별 기록" }));
     expect(await screen.findByText("약속 보너스")).toBeVisible();
     const reason = screen.getByLabelText("되돌리기 사유");
     expect(reason).toBeRequired();
@@ -1096,7 +2672,7 @@ describe("GuardianDashboard", () => {
     });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "별 기록" }));
+    await user.click(screen.getByRole("button", { name: "별 기록" }));
     expect(await screen.findByText("필터된 원래 기록")).toBeVisible();
     expect(screen.queryByLabelText("되돌리기 사유")).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "기록 되돌리기" })).not.toBeInTheDocument();
@@ -1138,7 +2714,7 @@ describe("GuardianDashboard", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "별 기록" }));
+    await user.click(screen.getByRole("button", { name: "별 기록" }));
     const reason = await screen.findByLabelText("되돌리기 사유");
     await user.type(reason, "동시에 취소했어요");
     const reverseButton = screen.getByRole("button", { name: "기록 되돌리기" });
@@ -1192,7 +2768,7 @@ describe("GuardianDashboard", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "별 기록" }));
+    await user.click(screen.getByRole("button", { name: "별 기록" }));
     await user.type(await screen.findByLabelText("되돌리기 사유"), "응답을 잃었어요");
     await user.click(screen.getByRole("button", { name: "기록 되돌리기" }));
     await user.selectOptions(screen.getByLabelText("사유"), "GUARDIAN_BONUS");
@@ -1246,7 +2822,7 @@ describe("GuardianDashboard", () => {
     const confirm = vi.spyOn(window, "confirm").mockReturnValue(true);
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "별 기록" }));
+    await user.click(screen.getByRole("button", { name: "별 기록" }));
     await user.type(await screen.findByLabelText("되돌리기 사유"), "성공 취소 기록");
     await user.click(screen.getByRole("button", { name: "기록 되돌리기" }));
     await user.selectOptions(screen.getByLabelText("사유"), "GUARDIAN_BONUS");
@@ -1278,13 +2854,17 @@ describe("GuardianDashboard", () => {
     confirm.mockRestore();
   });
 
-  it("updates future 2/2 targets and can turn the date into a rest day", async () => {
+  it("saves Korean and math difficulty 1–5 with perfect bonuses 0–5", async () => {
     const user = userEvent.setup();
     const plan = {
       studyDate: "2026-07-17",
       koreanTarget: 2,
       mathTarget: 2,
       isRestDay: false,
+      subjectSettings: {
+        korean: { difficulty: 3, challengeBonusStars: 1 },
+        math: { difficulty: 3, challengeBonusStars: 1 }
+      },
       requiredItemIds: ["ko-private", "math-private"]
     };
     const getGuardianDailyPlan = vi.fn().mockResolvedValue(plan);
@@ -1299,7 +2879,7 @@ describe("GuardianDashboard", () => {
     });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "학습 계획" }));
+    await user.click(screen.getByRole("button", { name: "학습 계획" }));
     const date = await screen.findByLabelText("계획 날짜");
     await user.clear(date);
     await user.type(date, "2026-07-17");
@@ -1307,12 +2887,24 @@ describe("GuardianDashboard", () => {
     await waitFor(() => expect(getGuardianDailyPlan).toHaveBeenLastCalledWith("2026-07-17"));
     expect(screen.getByLabelText("국어 목표")).toHaveValue(2);
     expect(screen.getByLabelText("수학 목표")).toHaveValue(2);
+    await user.selectOptions(screen.getByLabelText("국어 난이도"), "5");
+    await user.selectOptions(screen.getByLabelText("국어 만점 보너스"), "0");
+    await user.selectOptions(screen.getByLabelText("수학 난이도"), "1");
+    await user.selectOptions(screen.getByLabelText("수학 만점 보너스"), "5");
     await user.click(screen.getByLabelText("쉬는 날"));
     await user.click(screen.getByRole("button", { name: "학습 계획 저장" }));
 
     await waitFor(() => expect(updateGuardianDailyPlan).toHaveBeenCalledWith(
       "2026-07-17",
-      { koreanTarget: 2, mathTarget: 2, isRestDay: true }
+      {
+        koreanTarget: 2,
+        mathTarget: 2,
+        isRestDay: true,
+        subjectSettings: {
+          korean: { difficulty: 5, challengeBonusStars: 0 },
+          math: { difficulty: 1, challengeBonusStars: 5 }
+        }
+      }
     ));
     expect(await screen.findByText("쉬는 날 계획을 저장했어요.")).toBeVisible();
   });
@@ -1330,7 +2922,7 @@ describe("GuardianDashboard", () => {
     const api = createGuardianApi({ getGuardianDailyPlan, updateGuardianDailyPlan });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "학습 계획" }));
+    await user.click(screen.getByRole("button", { name: "학습 계획" }));
     const date = await screen.findByLabelText("계획 날짜");
     await user.clear(date);
     await user.type(date, "2026-07-17");
@@ -1366,7 +2958,7 @@ describe("GuardianDashboard", () => {
     const api = createGuardianApi({ getGuardianDailyPlan });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "학습 계획" }));
+    await user.click(screen.getByRole("button", { name: "학습 계획" }));
     const date = await screen.findByLabelText("계획 날짜");
     await user.clear(date);
     await user.type(date, "2026-07-17");
@@ -1407,7 +2999,7 @@ describe("GuardianDashboard", () => {
     });
     render(<GuardianDashboard api={api} />);
 
-    await user.click(screen.getByRole("tab", { name: "학습 계획" }));
+    await user.click(screen.getByRole("button", { name: "학습 계획" }));
     await user.click(await screen.findByRole("button", { name: "계획 불러오기" }));
     await screen.findByLabelText("국어 목표");
     await user.click(screen.getByRole("button", { name: "학습 계획 저장" }));
@@ -1433,7 +3025,7 @@ describe("GuardianDashboard", () => {
 
     await screen.findByText("별 잔액 12개");
     expect(getBackupStatus).not.toHaveBeenCalled();
-    await user.click(screen.getByRole("tab", { name: "백업" }));
+    await user.click(screen.getByRole("button", { name: "백업" }));
 
     expect(await screen.findByText("최근 백업이 정상적으로 완료되었어요.")).toBeVisible();
     expect(screen.getByText("sua-learning-2026-07-16.sqlite")).toBeVisible();
@@ -1453,6 +3045,9 @@ describe("GuardianDashboard", () => {
     );
     expect(components).toMatch(
       /\.account-menu button,\s*\.device-management button\s*\{[^}]*min-height:\s*48px/s
+    );
+    expect(components).toMatch(
+      /\.guardian-tabs button\s*\{[^}]*min-width:\s*0[^}]*white-space:\s*normal/s
     );
     expect(layout).toContain(".guardian-shell");
     expect(layout).toContain(".guardian-tabs");

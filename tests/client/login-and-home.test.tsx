@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import "fake-indexeddb/auto";
+import { StrictMode } from "react";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
@@ -11,8 +12,10 @@ import { ApiError } from "../../src/client/api/client";
 import { createProductionApi } from "../../src/client/api/production";
 import type { ActivityEvent, TodayPlan } from "../../src/shared/learning";
 import { TodayStars } from "../../src/client/delight/today-stars";
+import { StudentHome, stepStatus } from "../../src/client/home/student-home";
 import {
   OFFLINE_DB_NAME,
+  applyBatchReceipt,
   cacheIssuedPlan,
   clearOfflineAuthority,
   getDeviceState,
@@ -23,12 +26,16 @@ import {
   loadCachedTodayPlan,
   markStudentAuthenticated,
   queueAttempt,
+  reserveNextBatch,
   removeQueuedAttempt,
   setRecoveryBlocked,
   storeOfflineLease,
   storeConfirmedStars
 } from "../../src/client/offline/db";
-import { syncPending } from "../../src/client/offline/sync";
+import {
+  publishSyncCompleted,
+  syncPending
+} from "../../src/client/offline/sync";
 import { createFakeApi } from "../helpers/client";
 
 function deferred<T>() {
@@ -46,6 +53,149 @@ beforeEach(async () => {
 });
 
 describe("가족 로그인과 학생 홈", () => {
+  it("keeps math and dictation drafts mounted across student navigation while explicit exit resets them", async () => {
+    const user = userEvent.setup();
+    const seeded = createFakeApi();
+    const original = await seeded.getToday();
+    const mathItem: TodayPlan["items"][number] = {
+      id: "math-draft",
+      version: 1,
+      step: "foundation",
+      payload: {
+        id: "math-draft",
+        kind: "math-story",
+        subject: "math",
+        unit: "받아올림과 받아내림",
+        title: "답을 간직해요",
+        level: "1단계",
+        readLabel: "읽기",
+        text: "2와 3을 더해요.",
+        hint: "차근차근 더해 봐요.",
+        tokens: ["2", "3"],
+        question: "답은 얼마일까요?",
+        answer: 5,
+        unitLabel: "",
+        checkHint: "2와 3을 더해 봐요.",
+        calculation: {
+          operands: [2, 3],
+          operators: ["+"],
+          layout: "horizontal"
+        }
+      }
+    };
+    const dictationItem: TodayPlan["items"][number] = {
+      id: "dictation-draft",
+      version: 1,
+      step: "foundation",
+      payload: {
+        id: "dictation-draft",
+        kind: "korean-dictation",
+        subject: "korean",
+        unit: "받아쓰기",
+        title: "봄비를 간직해요",
+        level: "1단계",
+        readLabel: "다시 듣기",
+        text: "들은 내용을 써 보세요.",
+        hint: "천천히 다시 들어 봐요.",
+        tokens: ["봄비"],
+        promptText: "봄비",
+        answerText: "봄비",
+        mode: "word"
+      }
+    };
+    const plan: TodayPlan = {
+      ...original,
+      items: [mathItem, dictationItem],
+      requiredItemIds: [mathItem.id, dictationItem.id],
+      completedItemIds: []
+    };
+    const api = createFakeApi({ getToday: vi.fn().mockResolvedValue(plan) });
+    await markStudentAuthenticated();
+
+    render(<StudentHome api={api} />);
+
+    await user.click(await screen.findByRole("button", {
+      name: /답을 간직해요 시작하기/
+    }));
+    await screen.findByRole("heading", { name: "답을 간직해요" });
+    await user.click(screen.getByRole("button", { name: "5" }));
+    expect(screen.getByLabelText("입력한 답")).toHaveTextContent("5");
+
+    await user.click(screen.getByRole("button", { name: "메뉴 열기" }));
+    await user.click(within(screen.getByRole("dialog", { name: "학생 메뉴" }))
+      .getByRole("button", { name: "오늘 학습" }));
+    expect(api.getToday).toHaveBeenCalledTimes(1);
+    expect(screen.getByRole("button", { name: "보호자 모드" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "보호자 모드" })).toHaveFocus();
+    await user.click(screen.getByRole("button", { name: /답을 간직해요 시작하기/ }));
+    expect(screen.getByLabelText("입력한 답")).toHaveTextContent("5");
+
+    await user.click(screen.getByRole("button", { name: "대시보드로 돌아가기" }));
+    await user.click(screen.getByRole("button", { name: /답을 간직해요 시작하기/ }));
+    expect(screen.getByLabelText("입력한 답")).not.toHaveTextContent("5");
+    await user.click(screen.getByRole("button", { name: "대시보드로 돌아가기" }));
+
+    await user.click(screen.getByRole("button", { name: /봄비를 간직해요 시작하기/ }));
+    const dictation = await screen.findByLabelText("받아쓰기 답");
+    await user.type(dictation, "봄 비");
+    await user.click(screen.getByRole("button", { name: "뒤로" }));
+    await user.click(screen.getByRole("button", { name: /봄비를 간직해요 시작하기/ }));
+    expect(screen.getByLabelText("받아쓰기 답")).toHaveValue("봄 비");
+    await expect(listQueuedAttempts()).resolves.toHaveLength(0);
+  });
+
+  it("groups six daily steps and unlocks only from canonical completed item receipts", async () => {
+    const seeded = createFakeApi();
+    const original = await seeded.getToday();
+    const makeItem = (
+      id: string,
+      subject: "korean" | "math",
+      step: "foundation" | "current" | "challenge"
+    ): TodayPlan["items"][number] => ({
+      id,
+      version: 4,
+      step,
+      payload: {
+        id,
+        kind: "korean-reading",
+        subject,
+        unit: subject === "korean" ? "낱말" : "계산",
+        title: `${subject === "korean" ? "국어" : "수학"} ${step}`,
+        level: "1단계",
+        readLabel: "읽기",
+        text: "학습 내용",
+        hint: "천천히 해 봐요.",
+        tokens: ["학습"]
+      }
+    });
+    const items = (["korean", "math"] as const).flatMap((subject) =>
+      (["foundation", "current", "challenge"] as const).map((step) =>
+        makeItem(`${subject}-${step}`, subject, step)
+      )
+    );
+    const plan: TodayPlan = {
+      ...original,
+      items,
+      requiredItemIds: items.map((item) => item.id),
+      completedItemIds: []
+    };
+    const api = createFakeApi({ getToday: vi.fn().mockResolvedValue(plan) });
+    await markStudentAuthenticated();
+    render(<App api={api} />);
+
+    const korean = await screen.findByRole("group", { name: "국어 스텝업" });
+    const math = screen.getByRole("group", { name: "수학 스텝업" });
+    expect(within(korean).getByRole("button", { name: /기초 다지기.*시작하기/ })).toBeEnabled();
+    expect(within(korean).getByRole("button", { name: /현재 수준.*시작하기/ })).toBeDisabled();
+    expect(within(korean).getByRole("button", { name: /도전.*시작하기/ })).toBeDisabled();
+    expect(within(math).getByRole("button", { name: /기초 다지기.*시작하기/ })).toBeEnabled();
+    expect(within(math).getByRole("button", { name: /현재 수준.*시작하기/ })).toBeDisabled();
+
+    expect(stepStatus(items, ["korean-foundation"], items[1]!)).toBe("available");
+    expect(stepStatus(items, ["korean-foundation"], items[2]!)).toBe("locked");
+    expect(stepStatus(items, ["korean-foundation", "korean-current"], items[2]!)).toBe("available");
+    expect(stepStatus(items, ["korean-foundation", "korean-current", "korean-challenge"], items[2]!)).toBe("complete");
+  });
   it("keeps the shared component fake honest about guardian-only device registration", async () => {
     const api = createFakeApi();
 
@@ -141,6 +291,9 @@ describe("가족 로그인과 학생 홈", () => {
     expect(await screen.findByText("오프라인 학습 중")).toBeVisible();
     expect(screen.getByRole("heading", { name: "오늘의 학습" })).toBeVisible();
     expect(screen.getByText("모은 별 7개")).toBeVisible();
+    for (const label of ["뒤로", "오늘 학습", "도움말", "잠깐 쉬기"]) {
+      expect(screen.getByRole("button", { name: label })).toBeVisible();
+    }
     expect(api.studentLogin).not.toHaveBeenCalled();
   });
 
@@ -534,7 +687,7 @@ describe("가족 로그인과 학생 홈", () => {
     render(<App api={api} />);
 
     expect(await screen.findByRole("heading", { name: "보호자 공간" })).toBeVisible();
-    expect(screen.getByRole("tab", { name: "진도" })).toHaveAttribute("aria-selected", "true");
+    expect(screen.getByRole("button", { name: "진도" })).toHaveAttribute("aria-current", "page");
     expect(await screen.findByText("별 잔액 12개")).toBeVisible();
     expect(api.getGuardianProgress).toHaveBeenCalledOnce();
     expect(api.getGuardianStars).toHaveBeenCalledOnce();
@@ -1053,6 +1206,8 @@ describe("가족 로그인과 학생 홈", () => {
     expect(await screen.findByText("별 1개를 모았어요")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "다음 문제" }));
 
+    expect(await screen.findByRole("heading", { name: "작은 씨앗" })).toBeVisible();
+    await user.click(screen.getByRole("button", { name: "대시보드로 돌아가기" }));
     expect(await screen.findByRole("heading", { name: "오늘의 학습" })).toBeVisible();
     expect(await screen.findByText("모은 별 8개")).toBeVisible();
     const completedCard = screen.getByRole("heading", { name: "바람과 꽃" }).closest("article");
@@ -1061,6 +1216,284 @@ describe("가족 로그인과 학생 홈", () => {
     expect(within(completedCard!).getByText("★ 받은 별 1개")).toBeVisible();
     expect(api.getToday).toHaveBeenCalledTimes(2);
     expect(api.getStudentStars).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the completed lesson and retries only the authoritative refresh after getToday fails", async () => {
+    const user = userEvent.setup();
+    const fixtures = createFakeApi();
+    const initialPlan = await fixtures.getToday() as TodayPlan;
+    const refreshedStars = {
+      balance: 8,
+      earnedToday: 3,
+      deductedToday: 1,
+      lastReason: "필수 학습을 마쳤어요."
+    };
+    const nextPlan: TodayPlan = {
+      ...initialPlan,
+      completedItemIds: ["ko-01"],
+      stars: refreshedStars,
+      items: initialPlan.items.map((item) => item.id === "ko-02"
+        ? { ...item, payload: { ...item.payload, title: "새싹 문장" } }
+        : item)
+    };
+    const api = createFakeApi();
+    api.getToday.mockReset()
+      .mockResolvedValueOnce(initialPlan)
+      .mockResolvedValueOnce(initialPlan)
+      .mockRejectedValueOnce(new Error("temporary plan failure"))
+      .mockResolvedValue(nextPlan);
+    api.getStudentStars.mockReset()
+      .mockResolvedValueOnce(initialPlan.stars)
+      .mockResolvedValueOnce(initialPlan.stars)
+      .mockResolvedValue(refreshedStars);
+
+    await markStudentAuthenticated();
+    render(<StrictMode><App api={api} /></StrictMode>);
+    await user.click(await screen.findByRole("button", { name: "바람과 꽃 시작하기" }));
+    await user.click(screen.getByText("직접 입력으로 확인하기"));
+    await user.type(screen.getByLabelText("읽은 내용 직접 입력"), "바람과 꽃");
+    await user.click(screen.getByRole("button", { name: "읽기 판정하기" }));
+    await user.click(await screen.findByRole("button", { name: "다음 문제" }));
+
+    expect(await screen.findByRole("status", { name: "다음 문제 준비 상태" }))
+      .toHaveTextContent("다음 문제를 준비하지 못했어요");
+    expect(screen.queryByText("오늘의 학습을 불러오지 못했어요. 잠시 후 다시 만나요."))
+      .not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "바람과 꽃 학습" })).toBeVisible();
+    expect(screen.getByLabelText("읽은 내용 직접 입력")).toHaveValue("바람과 꽃");
+    expect(screen.getByRole("button", { name: "다음 문제" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "다시 불러오기" }));
+
+    expect(await screen.findByRole("heading", { name: "새싹 문장" })).toBeVisible();
+    expect(api.saveAttempt).toHaveBeenCalledOnce();
+    expect(api.getToday).toHaveBeenCalledTimes(4);
+    expect(api.getStudentStars).toHaveBeenCalledTimes(4);
+    expect(api.createLearningSession).toHaveBeenCalledTimes(4);
+  });
+
+  it("keeps refresh retry available through repeated star refresh failures", async () => {
+    const user = userEvent.setup();
+    const fixtures = createFakeApi();
+    const initialPlan = await fixtures.getToday() as TodayPlan;
+    const refreshedStars = {
+      balance: 8,
+      earnedToday: 3,
+      deductedToday: 1,
+      lastReason: "필수 학습을 마쳤어요."
+    };
+    const nextPlan: TodayPlan = {
+      ...initialPlan,
+      completedItemIds: ["ko-01"],
+      stars: refreshedStars,
+      items: initialPlan.items.map((item) => item.id === "ko-02"
+        ? { ...item, payload: { ...item.payload, title: "다시 만난 새 문제" } }
+        : item)
+    };
+    const api = createFakeApi();
+    api.getToday.mockReset()
+      .mockResolvedValueOnce(initialPlan)
+      .mockResolvedValue(nextPlan);
+    api.getStudentStars.mockReset()
+      .mockResolvedValueOnce(initialPlan.stars)
+      .mockRejectedValueOnce(new Error("temporary star failure"))
+      .mockRejectedValueOnce(new Error("still unavailable"))
+      .mockResolvedValue(refreshedStars);
+
+    await markStudentAuthenticated();
+    render(<App api={api} />);
+    await user.click(await screen.findByRole("button", { name: "바람과 꽃 시작하기" }));
+    await user.click(screen.getByText("직접 입력으로 확인하기"));
+    await user.type(screen.getByLabelText("읽은 내용 직접 입력"), "바람과 꽃");
+    await user.click(screen.getByRole("button", { name: "읽기 판정하기" }));
+    await user.click(await screen.findByRole("button", { name: "다음 문제" }));
+
+    expect(await screen.findByRole("button", { name: "다시 불러오기" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "다시 불러오기" }));
+    expect(await screen.findByRole("button", { name: "다시 불러오기" })).toBeEnabled();
+    expect(screen.getByRole("region", { name: "바람과 꽃 학습" })).toBeVisible();
+    expect(api.saveAttempt).toHaveBeenCalledOnce();
+
+    await user.click(screen.getByRole("button", { name: "다시 불러오기" }));
+
+    expect(await screen.findByRole("heading", { name: "다시 만난 새 문제" })).toBeVisible();
+    expect(api.saveAttempt).toHaveBeenCalledOnce();
+    expect(api.getToday).toHaveBeenCalledTimes(4);
+    expect(api.getStudentStars).toHaveBeenCalledTimes(4);
+  });
+
+  it("keeps a consumed lesson locked until refresh selects a differently keyed required item", async () => {
+    const user = userEvent.setup();
+    const fixtures = createFakeApi();
+    const initialPlan = await fixtures.getToday() as TodayPlan;
+    const refreshedStars = {
+      balance: 8,
+      earnedToday: 3,
+      deductedToday: 1,
+      lastReason: "필수 학습을 마쳤어요."
+    };
+    const freshPlan: TodayPlan = {
+      ...initialPlan,
+      completedItemIds: ["ko-01"],
+      stars: refreshedStars,
+      items: initialPlan.items.map((item) => item.id === "ko-02"
+        ? { ...item, payload: { ...item.payload, title: "새로 열린 씨앗 문장" } }
+        : item)
+    };
+    const api = createFakeApi();
+    api.getToday.mockReset()
+      .mockResolvedValueOnce(initialPlan)
+      .mockResolvedValueOnce(initialPlan)
+      .mockResolvedValue(freshPlan);
+    api.getStudentStars.mockReset()
+      .mockResolvedValueOnce(initialPlan.stars)
+      .mockResolvedValue(refreshedStars);
+
+    await markStudentAuthenticated();
+    render(<App api={api} />);
+    await user.click(await screen.findByRole("button", { name: "바람과 꽃 시작하기" }));
+    await user.click(screen.getByText("직접 입력으로 확인하기"));
+    await user.type(screen.getByLabelText("읽은 내용 직접 입력"), "바람과 꽃");
+    await user.click(screen.getByRole("button", { name: "읽기 판정하기" }));
+    await user.click(await screen.findByRole("button", { name: "다음 문제" }));
+
+    expect(await screen.findByRole("status", { name: "다음 문제 준비 상태" }))
+      .toHaveTextContent("다음 문제를 아직 준비 중이에요");
+    expect(screen.getByRole("region", { name: "바람과 꽃 학습" })).toBeVisible();
+    expect(screen.getByLabelText("읽은 내용 직접 입력")).toHaveValue("바람과 꽃");
+    expect(screen.getByRole("button", { name: "다음 문제" })).toBeDisabled();
+    expect(api.saveAttempt).toHaveBeenCalledOnce();
+
+    await user.click(screen.getByRole("button", { name: "다시 불러오기" }));
+
+    expect(await screen.findByRole("heading", { name: "새로 열린 씨앗 문장" })).toBeVisible();
+    expect(api.saveAttempt).toHaveBeenCalledOnce();
+  });
+
+  it("settles a post-completion refresh when a sync refresh wins the authority race", async () => {
+    const user = userEvent.setup();
+    const fixtures = createFakeApi();
+    const initialPlan = await fixtures.getToday() as TodayPlan;
+    const refreshedStars = {
+      balance: 8,
+      earnedToday: 3,
+      deductedToday: 1,
+      lastReason: "동기화를 마쳤어요."
+    };
+    const freshPlan: TodayPlan = {
+      ...initialPlan,
+      activityCursor: 2,
+      completedItemIds: ["ko-01"],
+      stars: refreshedStars,
+      items: initialPlan.items.map((item) => item.id === "ko-02"
+        ? { ...item, payload: { ...item.payload, title: "동기화 뒤의 씨앗 문장" } }
+        : item)
+    };
+    const completionPlan = deferred<TodayPlan>();
+    const completionStars = deferred<typeof refreshedStars>();
+    const syncPlan = deferred<TodayPlan>();
+    const syncStars = deferred<typeof refreshedStars>();
+    let todayCall = 0;
+    let starsCall = 0;
+    const api = createFakeApi({
+      getToday: vi.fn().mockImplementation(() => {
+        todayCall += 1;
+        if (todayCall === 1) return Promise.resolve(initialPlan);
+        if (todayCall === 2) return completionPlan.promise;
+        if (todayCall === 3) return syncPlan.promise;
+        return Promise.resolve(freshPlan);
+      }),
+      getStudentStars: vi.fn().mockImplementation(() => {
+        starsCall += 1;
+        if (starsCall === 1) return Promise.resolve(initialPlan.stars);
+        if (starsCall === 2) return completionStars.promise;
+        if (starsCall === 3) return syncStars.promise;
+        return Promise.resolve(refreshedStars);
+      })
+    });
+
+    await markStudentAuthenticated();
+    render(<App api={api} />);
+    await user.click(await screen.findByRole("button", { name: "바람과 꽃 시작하기" }));
+    await user.click(screen.getByText("직접 입력으로 확인하기"));
+    await user.type(screen.getByLabelText("읽은 내용 직접 입력"), "바람과 꽃");
+    await user.click(screen.getByRole("button", { name: "읽기 판정하기" }));
+    await user.click(await screen.findByRole("button", { name: "다음 문제" }));
+    await waitFor(() => expect(api.getToday).toHaveBeenCalledTimes(2));
+
+    await queueAttempt({
+      clientAttemptId: "attempt-sync-race-queued-0001",
+      planId: initialPlan.planId,
+      itemId: "math-01",
+      contentVersion: 1,
+      studyDate: initialPlan.date,
+      occurredAt: "2026-07-16T01:00:00.000Z",
+      readingScore: 100,
+      missedTokens: [],
+      mathAnswer: null,
+      durationMs: 30_000,
+      difficultyFeedback: null
+    });
+    const batch = await reserveNextBatch();
+    expect(batch).toBeDefined();
+    await act(async () => {
+      await applyBatchReceipt({
+        clientBatchId: batch!.clientBatchId,
+        duplicate: false,
+        orderConflict: false,
+        batchEndCursor: 2,
+        activityCursor: 2,
+        receipts: batch!.events.map((event: ActivityEvent) => ({
+          clientId: event.kind === "attempt"
+            ? event.payload.clientAttemptId
+            : event.payload.clientIdleEventId,
+          kind: event.kind,
+          status: "APPLIED" as const,
+          code: null,
+          attempt: event.kind === "attempt" ? {
+            id: "attempt-sync-race-server-1",
+            duplicate: false,
+            readingPass: true,
+            mathPass: null,
+            dictationPass: null,
+            completed: true,
+            activityCursor: 2,
+            starAward: {
+              awarded: true,
+              amount: 1,
+              balance: 8,
+              eventId: "star-sync-race-1"
+            }
+          } : null,
+          idle: null
+        })),
+        processedPlan: freshPlan,
+        currentDailyPlan: freshPlan,
+        stars: refreshedStars
+      });
+    });
+    act(() => publishSyncCompleted());
+    await waitFor(() => expect(api.getToday).toHaveBeenCalledTimes(3));
+
+    await act(async () => {
+      syncPlan.resolve(freshPlan);
+      syncStars.resolve(refreshedStars);
+      await Promise.resolve();
+      completionPlan.resolve(freshPlan);
+      completionStars.resolve(refreshedStars);
+      await Promise.resolve();
+    });
+
+    expect(await screen.findByRole("button", { name: "다시 불러오기" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "불러오는 중" })).not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "바람과 꽃 학습" })).toBeVisible();
+    expect(screen.getByRole("button", { name: "다음 문제" })).toBeDisabled();
+    expect(api.saveAttempt).toHaveBeenCalledOnce();
+
+    await user.click(screen.getByRole("button", { name: "다시 불러오기" }));
+
+    expect(await screen.findByRole("heading", { name: "동기화 뒤의 씨앗 문장" })).toBeVisible();
+    expect(api.saveAttempt).toHaveBeenCalledOnce();
   });
 
   it("returns with an offline attempt queued then refetches authoritative home state after sync", async () => {
@@ -1145,7 +1578,8 @@ describe("가족 로그인과 학생 홈", () => {
     expect(await screen.findByText("학습 기록이 아직 여행 중이에요. 연결되면 확인할게요.")).toBeVisible();
     await expect(listQueuedAttempts()).resolves.toHaveLength(1);
     expect(screen.getByRole("button", { name: "다음 문제" })).toBeEnabled();
-    expect(screen.getByText("동기화 대기")).toBeVisible();
+    expect(within(screen.getByRole("region", { name: "바람과 꽃 학습" }))
+      .getByText("동기화 대기")).toBeVisible();
     await user.click(screen.getByRole("button", { name: "다음 문제" }));
 
     expect(await screen.findByRole("heading", { name: "오늘의 학습" })).toBeVisible();

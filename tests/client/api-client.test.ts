@@ -395,6 +395,353 @@ describe("ApiClient", () => {
     expect(JSON.stringify(fetcher.mock.calls)).not.toContain("/api/auth/devices");
   });
 
+  it("maps every guardian AI studio operation to its protected route", async () => {
+    const settings = {
+      monthlyBudgetWon: 3000,
+      monthSpentWon: 125,
+      providers: [
+        {
+          provider: "gemini", enabled: true, model: "gemini-2.5-flash", hasApiKey: true,
+          inputWonPer1K: 2, outputWonPer1K: 8
+        },
+        {
+          provider: "openai", enabled: true, model: "gpt-5-mini", hasApiKey: true,
+          inputWonPer1K: 3, outputWonPer1K: 12
+        }
+      ]
+    };
+    const draft = {
+      id: "draft/private 1",
+      subject: "math",
+      step: "current",
+      requestedCount: 8,
+      difficulty: 4,
+      weakTopics: ["받아올림"],
+      status: "draft",
+      items: []
+    };
+    const report = {
+      source: "local",
+      summary: "이번 주 학습 요약이에요.",
+      completionRate: 80,
+      commonMistakes: ["받아올림"],
+      challengePerfect: false
+    };
+    const responses = [
+      settings,
+      settings,
+      settings.providers[0],
+      { ...settings, monthlyBudgetWon: 5000 },
+      draft,
+      draft,
+      draft,
+      { ...draft, status: "published" },
+      report
+    ];
+    const fetcher = vi.fn().mockImplementation(() => Promise.resolve(new Response(
+      JSON.stringify(responses.shift()),
+      { status: 200, headers: { "content-type": "application/json" } }
+    )));
+    const api = new ApiClient(fetcher);
+    const batch = {
+      subject: "math" as const,
+      step: "current" as const,
+      count: 8,
+      difficulty: 4,
+      weakTopics: ["받아올림"]
+    };
+    const payload = {
+      id: "item/private 1",
+      kind: "math-story" as const,
+      subject: "math" as const,
+      unit: "받아올림과 받아내림",
+      title: "받아올림 더하기",
+      level: "4단계",
+      readLabel: "식을 읽고 계산하기",
+      text: "28에 7을 더해요.",
+      hint: "일의 자리부터 계산해요.",
+      tokens: ["28", "7"],
+      question: "28 + 7은 얼마일까요?",
+      answer: 35,
+      unitLabel: "",
+      checkHint: "받아올림을 확인해요.",
+      calculation: {
+        operands: [28, 7] as [number, number],
+        operators: ["+"] as ["+"],
+        layout: "vertical" as const
+      }
+    };
+
+    await expect(api.getAiStudioSettingsView()).resolves.toEqual(settings);
+    await expect(api.getAiStudioSettings()).resolves.toEqual(settings.providers);
+    await expect(api.updateAiStudioProvider("gemini", {
+      enabled: true,
+      model: "gemini-2.5-flash",
+      apiKey: "submitted-once",
+      inputWonPer1K: 2,
+      outputWonPer1K: 8
+    })).resolves.toEqual(settings.providers[0]);
+    await expect(api.updateAiStudioBudget({ monthlyBudgetWon: 5000 }))
+      .resolves.toEqual({ ...settings, monthlyBudgetWon: 5000 });
+    await expect(api.createAiDraft(batch)).resolves.toEqual(draft);
+    await expect(api.getAiDraft("draft/private 1")).resolves.toEqual(draft);
+    await expect(api.updateAiDraftItem(
+      "draft/private 1",
+      "item/private 1",
+      payload
+    )).resolves.toEqual(draft);
+    await expect(api.publishAiDraft("draft/private 1"))
+      .resolves.toEqual({ ...draft, status: "published" });
+    await expect(api.getGuardianAiReport("2026-07-12", "2026-07-18"))
+      .resolves.toEqual(report);
+
+    expect(fetcher.mock.calls.map(([path, init]) => ({
+      path,
+      method: init?.method,
+      body: init?.body
+    }))).toEqual([
+      { path: "/api/guardian/ai-studio/settings/view", method: "GET", body: undefined },
+      { path: "/api/guardian/ai-studio/settings", method: "GET", body: undefined },
+      {
+        path: "/api/guardian/ai-studio/settings/gemini",
+        method: "PUT",
+        body: JSON.stringify({
+          enabled: true,
+          model: "gemini-2.5-flash",
+          apiKey: "submitted-once",
+          inputWonPer1K: 2,
+          outputWonPer1K: 8
+        })
+      },
+      {
+        path: "/api/guardian/ai-studio/budget",
+        method: "PUT",
+        body: JSON.stringify({ monthlyBudgetWon: 5000 })
+      },
+      {
+        path: "/api/guardian/ai-studio/drafts",
+        method: "POST",
+        body: JSON.stringify(batch)
+      },
+      {
+        path: "/api/guardian/ai-studio/drafts/draft%2Fprivate%201",
+        method: "GET",
+        body: undefined
+      },
+      {
+        path: "/api/guardian/ai-studio/drafts/draft%2Fprivate%201/items/item%2Fprivate%201",
+        method: "PATCH",
+        body: JSON.stringify({ payload })
+      },
+      {
+        path: "/api/guardian/ai-studio/drafts/draft%2Fprivate%201/publish",
+        method: "POST",
+        body: undefined
+      },
+      {
+        path: "/api/guardian/ai-studio/report?from=2026-07-12&to=2026-07-18",
+        method: "GET",
+        body: undefined
+      }
+    ]);
+  });
+
+  it("falls back to accurate legacy settings when an older server lacks the full view", async () => {
+    const providers = [{
+      provider: "gemini" as const,
+      enabled: true,
+      model: "gemini-2.5-flash-lite",
+      hasApiKey: true,
+      inputWonPer1K: 2,
+      outputWonPer1K: 8
+    }];
+    const coachSettings = {
+      enabled: true,
+      provider: "gemini" as const,
+      model: "gemini-2.5-flash-lite",
+      monthlyBudgetWon: 4321,
+      monthSpentWon: 876,
+      hasApiKey: true
+    };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: "HTTP_404" }), {
+        status: 404,
+        headers: { "content-type": "application/json" }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(providers), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(coachSettings), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }));
+    const api = new ApiClient(fetcher);
+
+    await expect(api.getAiStudioSettingsView()).resolves.toEqual({
+      providers,
+      monthlyBudgetWon: 4321,
+      monthSpentWon: 876
+    });
+    expect(fetcher.mock.calls.map(([path]) => path)).toEqual([
+      "/api/guardian/ai-studio/settings/view",
+      "/api/guardian/ai-studio/settings",
+      "/api/guardian/ai-coach-settings"
+    ]);
+  });
+
+  it("accepts the exact 01ad101 provider array without inventing unavailable rates", async () => {
+    const legacyProviders = [{
+      provider: "gemini" as const,
+      enabled: true,
+      model: "gemini-2.5-flash-lite",
+      hasApiKey: true
+    }, {
+      provider: "openai" as const,
+      enabled: false,
+      model: "gpt-5-nano",
+      hasApiKey: false
+    }];
+    const coachSettings = {
+      enabled: true,
+      provider: "gemini" as const,
+      model: "gemini-2.5-flash-lite",
+      monthlyBudgetWon: 4321,
+      monthSpentWon: 876,
+      hasApiKey: true
+    };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: "HTTP_404" }), {
+        status: 404,
+        headers: { "content-type": "application/json" }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(legacyProviders), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(coachSettings), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }));
+    const api = new ApiClient(fetcher);
+
+    await expect(api.getAiStudioSettingsView()).resolves.toEqual({
+      providers: legacyProviders,
+      monthlyBudgetWon: 4321,
+      monthSpentWon: 876
+    });
+    expect(fetcher.mock.calls.map(([path, init]) => ({ path, method: init?.method }))).toEqual([
+      { path: "/api/guardian/ai-studio/settings/view", method: "GET" },
+      { path: "/api/guardian/ai-studio/settings", method: "GET" },
+      { path: "/api/guardian/ai-coach-settings", method: "GET" }
+    ]);
+  });
+
+  it("accepts the exact predecessor full-object settings response after a view 404", async () => {
+    const predecessorSettings = {
+      monthlyBudgetWon: 1000,
+      monthSpentWon: 0,
+      providers: [
+        {
+          provider: "gemini" as const,
+          enabled: false,
+          model: "gemini-2.5-flash-lite",
+          hasApiKey: false,
+          inputWonPer1K: 1,
+          outputWonPer1K: 4
+        },
+        {
+          provider: "openai" as const,
+          enabled: false,
+          model: "gpt-5-nano",
+          hasApiKey: false,
+          inputWonPer1K: 1,
+          outputWonPer1K: 4
+        }
+      ]
+    };
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: "HTTP_404" }), {
+        status: 404,
+        headers: { "content-type": "application/json" }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify(predecessorSettings), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }));
+    const api = new ApiClient(fetcher);
+
+    await expect(api.getAiStudioSettingsView()).resolves.toEqual(predecessorSettings);
+    expect(fetcher.mock.calls.map(([path]) => path)).toEqual([
+      "/api/guardian/ai-studio/settings/view",
+      "/api/guardian/ai-studio/settings"
+    ]);
+  });
+
+  it("rejects an unknown predecessor settings shape without reading coach settings", async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: "HTTP_404" }), {
+        status: 404,
+        headers: { "content-type": "application/json" }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ providers: "invalid" }), {
+        status: 200,
+        headers: { "content-type": "application/json" }
+      }));
+    const api = new ApiClient(fetcher);
+
+    await expect(api.getAiStudioSettingsView()).rejects.toMatchObject({
+      name: "ApiError",
+      code: "AI_STUDIO_SETTINGS_UNAVAILABLE"
+    });
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("surfaces a controlled 404 when both AI studio settings routes are unavailable", async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      code: "HTTP_404"
+    }), {
+      status: 404,
+      headers: { "content-type": "application/json" }
+    }));
+    const api = new ApiClient(fetcher);
+
+    await expect(api.getAiStudioSettingsView())
+      .rejects.toEqual(new ApiError(404, "HTTP_404"));
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("propagates a non-404 predecessor settings failure without reading coach settings", async () => {
+    const fetcher = vi.fn()
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: "HTTP_404" }), {
+        status: 404,
+        headers: { "content-type": "application/json" }
+      }))
+      .mockResolvedValueOnce(new Response(JSON.stringify({ code: "AUTH_REQUIRED" }), {
+        status: 401,
+        headers: { "content-type": "application/json" }
+      }));
+    const api = new ApiClient(fetcher);
+
+    await expect(api.getAiStudioSettingsView())
+      .rejects.toEqual(new ApiError(401, "AUTH_REQUIRED"));
+    expect(fetcher).toHaveBeenCalledTimes(2);
+  });
+
+  it("does not hide a non-404 full settings failure behind legacy negotiation", async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      code: "AUTH_REQUIRED"
+    }), {
+      status: 401,
+      headers: { "content-type": "application/json" }
+    }));
+    const api = new ApiClient(fetcher);
+
+    await expect(api.getAiStudioSettingsView())
+      .rejects.toEqual(new ApiError(401, "AUTH_REQUIRED"));
+    expect(fetcher).toHaveBeenCalledTimes(1);
+  });
+
   it("reports authority failures through the injected no-op policy boundary", async () => {
     const onAuthorityFailure = vi.fn();
     const api = new ApiClient(

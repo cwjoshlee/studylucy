@@ -1,8 +1,9 @@
-import type { LearningItemPayload } from "../../shared/learning";
+import { isCalculationItem, type LearningItemPayload } from "../../shared/learning";
 import { CompanionAvatar } from "./companion-avatar";
 import { COMPANION_CAST } from "./cast";
 import {
   selectCompanionCue,
+  type BunnyMoment,
   type CompanionMoment
 } from "./cues";
 
@@ -16,18 +17,27 @@ export function LearningCompanion({
   moment,
   studyDate,
   item,
-  saveState
+  saveState,
+  bunnyMoment,
+  paused = false
 }: {
   moment: CompanionMoment;
   studyDate: string;
   item: LearningItemPayload;
   saveState?: "saving" | "queued" | "failed";
+  bunnyMoment?: BunnyMoment;
+  paused?: boolean;
 }) {
+  if (paused) return null;
   const cue = selectCompanionCue({
     moment,
     key: `${studyDate}:${item.id}:${moment}`,
     subject: item.subject,
-    delight: item.delight
+    delight: item.delight,
+    preferredCompanion: item.kind === "korean-dictation" || isCalculationItem(item)
+      ? "bongbong"
+      : undefined,
+    bunnyMoment
   });
   const text = moment === "save-wait" && saveState !== undefined
     ? SAVE_STATUS_TEXT[saveState]

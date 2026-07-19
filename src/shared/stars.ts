@@ -9,7 +9,8 @@ export const StarReasonSchema = z.enum([
   "GUARDIAN_ADJUSTMENT",
   "REWARD_REDEMPTION",
   "REVERSAL",
-  "NO_BALANCE_AUDIT"
+  "NO_BALANCE_AUDIT",
+  "CHALLENGE_PERFECT"
 ]);
 
 export type StarReason = z.infer<typeof StarReasonSchema>;
@@ -86,19 +87,37 @@ export const NoteInputSchema = z.object({
   note: z.string().trim().min(1).max(200)
 });
 
+export const SubjectStepSettingsSchema = z.object({
+  difficulty: z.number().int().min(1).max(5),
+  challengeBonusStars: z.number().int().min(0).max(5)
+}).strict();
+
+export type SubjectStepSettings = z.infer<typeof SubjectStepSettingsSchema>;
+
 export const DailyPlanInputSchema = z.object({
-  koreanTarget: z.number().int().min(0).max(10),
-  mathTarget: z.number().int().min(0).max(10),
-  isRestDay: z.boolean()
-});
+  koreanTarget: z.number().int().min(0).max(10).default(2),
+  mathTarget: z.number().int().min(0).max(10).default(2),
+  isRestDay: z.boolean(),
+  subjectSettings: z.object({
+    korean: SubjectStepSettingsSchema,
+    math: SubjectStepSettingsSchema
+  }).strict().optional()
+}).strict();
 
 export type ManualStarInput = z.infer<typeof ManualStarInputSchema>;
 export type ApprovalInput = z.infer<typeof ApprovalInputSchema>;
 export type DailyPlanInput = z.infer<typeof DailyPlanInputSchema>;
 
-export type GuardianDailyPlan = DailyPlanInput & {
+export type GuardianDailyPlan = {
   studyDate: string;
+  isRestDay: boolean;
+  subjectSettings: Record<"korean" | "math", SubjectStepSettings>;
+  /** Ordered foundation/current/challenge IDs per subject; empty on a rest day. */
   requiredItemIds: string[];
+  /** @deprecated Response-only compatibility metadata; updates require subjectSettings. */
+  koreanTarget: number;
+  /** @deprecated Response-only compatibility metadata; updates require subjectSettings. */
+  mathTarget: number;
 };
 
 export type PendingStarAdjustment = {

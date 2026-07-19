@@ -1,5 +1,6 @@
 import {
   type FormEvent,
+  type KeyboardEvent,
   useCallback,
   useEffect,
   useRef,
@@ -22,6 +23,7 @@ import { LearningCompanion } from "../companions/learning-companion";
 import { ChanaPingCoach } from "../companions/chanaping";
 import type { CompanionMoment } from "../companions/cues";
 import { StarCelebration } from "../delight/star-celebration";
+import { StudentNavigation } from "../home/student-navigation";
 import {
   preserveFailedAttempt,
   preserveFailedIdleEvent
@@ -33,6 +35,7 @@ import {
   type InactivityEvent
 } from "./inactivity-controller";
 import { CalculationKeypad } from "./calculation-keypad";
+import { DictationPanel } from "./dictation-panel";
 import { judgeReading } from "./reading-judge";
 import { ProblemBreakdown } from "./problem-breakdown-view";
 import {
@@ -53,14 +56,25 @@ export type LearningSessionProps = {
   api: LearningApi;
   planId: string;
   studyDate: string;
+  active?: boolean;
   reducedMotion?: boolean;
-  onNext?: () => void;
+  onNext?: () => void | Promise<void>;
+  onRetryRefresh?: () => void | Promise<void>;
+  postCompletionRefreshFailed?: boolean;
+  postCompletionRefreshWaitingForNext?: boolean;
+  postCompletionRefreshPending?: boolean;
   onExit?: () => void;
+  onNavigateToday?: () => void;
+  getNavigationDestinationFocusTarget?: (id: "back" | "today") => HTMLElement | null;
   onActivityCursor?: (activityCursor: number) => void;
   onProvisional?: () => void;
   offlineEligibility?: "validated";
   idFactory?: (prefix: "attempt" | "idle-event") => string;
 };
+
+export function learningSessionKey(planId: string, item: PlanItem): string {
+  return `${planId}:${item.id}:${item.version}`;
+}
 
 type LearningAuthority =
   | { phase: "issuing" }
@@ -74,6 +88,11 @@ type IdleUi =
   | { phase: "waiting" }
   | { phase: "paused"; message: string }
   | null;
+
+type CompletionReceipt = {
+  id: string;
+  generation: number;
+};
 
 const IDLE_RESULT_TEXT: Record<IdleEventResult["outcome"], string> = {
   applied: "5분 동안 학습 활동이 없어서 별 1개가 줄었어요. 준비되면 다시 시작할 수 있어요.",
@@ -91,12 +110,25 @@ function isExplicitClientError(error: unknown): boolean {
     error.status < 500;
 }
 
+function receiptExercisePassed(
+  item: LearningItemPayload,
+  receipt: AttemptReceipt | null
+): boolean {
+  if (receipt === null || receipt.duplicate || !receipt.completed) return false;
+  if (item.kind === "korean-dictation") return receipt.dictationPass === true;
+  if (item.kind === "math-story") {
+    return receipt.readingPass && receipt.mathPass === true;
+  }
+  return receipt.readingPass;
+}
+
 export function LearningSession(props: LearningSessionProps) {
   return (
     <LearningSessionView
       {...props}
-      key={`${props.planId}:${props.item.id}:${props.item.version}`}
+      key={learningSessionKey(props.planId, props.item)}
       item={props.item.payload}
+      itemStep={props.item.step}
       contentVersion={props.item.version}
       studyDate={props.studyDate}
     />
@@ -105,19 +137,28 @@ export function LearningSession(props: LearningSessionProps) {
 
 function LearningSessionView({
   item,
+  itemStep,
   api,
   planId,
   studyDate,
+  active = true,
   contentVersion,
   reducedMotion,
   onNext,
+  onRetryRefresh,
+  postCompletionRefreshFailed = false,
+  postCompletionRefreshWaitingForNext = false,
+  postCompletionRefreshPending = false,
   onExit,
+  onNavigateToday,
+  getNavigationDestinationFocusTarget,
   onActivityCursor,
   onProvisional,
   offlineEligibility,
   idFactory = createClientId
 }: Omit<LearningSessionProps, "item"> & {
   item: LearningItemPayload;
+  itemStep: PlanItem["step"];
   studyDate: string;
   contentVersion: number;
 }) {
@@ -147,20 +188,42 @@ function LearningSessionView({
   const [speechUnavailable, setSpeechUnavailable] = useState(false);
   const [speechNotice, setSpeechNotice] = useState<string | null>(null);
   const [chanaPingHidden, setChanaPingHidden] = useState(false);
+  const [breakPaused, setBreakPaused] = useState(false);
+  const [navigationHelpOpen, setNavigationHelpOpen] = useState(false);
+  const [consumedNextReceiptId, setConsumedNextReceiptId] = useState<string | null>(null);
+  const [completionReceipt, setCompletionReceipt] = useState<CompletionReceipt | null>(null);
+  const [transitionPending, setTransitionPending] = useState(false);
   const controllerRef = useRef<InactivityController | null>(null);
   const speechRef = useRef<SpeechController | null>(null);
   const completionCueTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const automaticNextTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const automaticNextReceiptIdRef = useRef<string | null>(null);
+  const consumedNextReceiptIdsRef = useRef(new Set<string>());
+  const onNextRef = useRef(onNext);
+  const automaticNextAllowedRef = useRef(active && !breakPaused);
+  const breakDialogRef = useRef<HTMLElement>(null);
+  const breakInvokerRef = useRef<HTMLElement | null>(null);
+  const restoreBreakFocusRef = useRef(false);
   const attemptGenerationRef = useRef(0);
   const attemptReceiptRef = useRef<AttemptReceipt | null>(null);
+  const transitionPendingRef = useRef(false);
+  const learningActivityPaused = !active || breakPaused;
   const learningControlsPaused =
+    learningActivityPaused ||
     (
       authority.phase !== "online-issued" &&
       authority.phase !== "offline-unissued"
     ) ||
     waiting ||
-    idleUi?.phase === "paused";
+    transitionPending ||
+    idleUi?.phase === "paused" ||
+    breakPaused;
+  const learningControlsPausedRef = useRef(learningControlsPaused);
+  const learningActivityAllowedRef = useRef(!learningActivityPaused);
+  learningControlsPausedRef.current = learningControlsPaused;
+  learningActivityAllowedRef.current = !learningActivityPaused;
+  automaticNextAllowedRef.current = active && !breakPaused && !transitionPending;
+  onNextRef.current = onNext;
 
   useEffect(() => {
     let active = true;
@@ -295,9 +358,19 @@ function LearningSessionView({
     };
   }, [authority.phase, handleInactivityEvent]);
 
+  useEffect(() => {
+    if (
+      authority.phase !== "online-issued" &&
+      authority.phase !== "offline-unissued"
+    ) return;
+    if (active) controllerRef.current?.resume("navigation-away");
+    else controllerRef.current?.pause("navigation-away");
+  }, [active, authority.phase]);
+
   const buildAttempt = useCallback((
     result: ReadingResult,
-    answer: number | null
+    answer: number | null,
+    dictationText?: string
   ): AttemptInput => ({
     clientAttemptId: idFactory("attempt"),
     planId,
@@ -308,6 +381,7 @@ function LearningSessionView({
     readingScore: result.score,
     missedTokens: result.missedTokens,
     mathAnswer: answer,
+    ...(dictationText === undefined ? {} : { dictationText }),
     durationMs: Math.min(3_600_000, Math.max(0, Date.now() - viewStartedAt)),
     difficultyFeedback
   }), [contentVersion, difficultyFeedback, idFactory, item.id, planId, studyDate, viewStartedAt]);
@@ -320,39 +394,93 @@ function LearningSessionView({
     automaticNextReceiptIdRef.current = null;
   }, []);
 
+  const advanceReceipt = useCallback((receiptId: string): boolean => {
+    if (
+      transitionPendingRef.current ||
+      consumedNextReceiptIdsRef.current.has(receiptId)
+    ) return false;
+    consumedNextReceiptIdsRef.current.add(receiptId);
+    transitionPendingRef.current = true;
+    learningControlsPausedRef.current = true;
+    clearAutomaticNext();
+    setConsumedNextReceiptId(receiptId);
+    setTransitionPending(true);
+    try {
+      const transition = onNextRef.current?.();
+      if (transition !== undefined) {
+        void Promise.resolve(transition).catch(() => undefined);
+      }
+    } catch {
+      // The receipt stays consumed. A new keyed item is the only safe reset.
+    }
+    return true;
+  }, [clearAutomaticNext]);
+
   const scheduleAutomaticNext = useCallback((receiptId: string, generation: number) => {
     clearAutomaticNext();
+    if (
+      !automaticNextAllowedRef.current ||
+      transitionPendingRef.current ||
+      consumedNextReceiptIdsRef.current.has(receiptId)
+    ) return;
     automaticNextReceiptIdRef.current = receiptId;
     automaticNextTimerRef.current = setTimeout(() => {
       automaticNextTimerRef.current = null;
       if (
         attemptGenerationRef.current === generation &&
-        automaticNextReceiptIdRef.current === receiptId
+        automaticNextReceiptIdRef.current === receiptId &&
+        automaticNextAllowedRef.current &&
+        !transitionPendingRef.current &&
+        !consumedNextReceiptIdsRef.current.has(receiptId)
       ) {
-        automaticNextReceiptIdRef.current = null;
-        onNext?.();
+        advanceReceipt(receiptId);
       }
     }, 1_500);
-  }, [clearAutomaticNext, onNext]);
+  }, [advanceReceipt, clearAutomaticNext]);
 
   useEffect(() => clearAutomaticNext, [clearAutomaticNext]);
 
-  const beginAttempt = useCallback(() => {
+  useEffect(() => {
+    if (!active || breakPaused) clearAutomaticNext();
+  }, [active, breakPaused, clearAutomaticNext]);
+
+  useEffect(() => {
+    if (
+      !active ||
+      breakPaused ||
+      completionReceipt === null ||
+      transitionPendingRef.current ||
+      consumedNextReceiptIdsRef.current.has(completionReceipt.id) ||
+      automaticNextReceiptIdRef.current === completionReceipt.id
+    ) return;
+    scheduleAutomaticNext(completionReceipt.id, completionReceipt.generation);
+  }, [
+    active,
+    breakPaused,
+    completionReceipt,
+    scheduleAutomaticNext
+  ]);
+
+  const beginAttempt = useCallback((): boolean => {
+    if (transitionPendingRef.current) return false;
     attemptGenerationRef.current += 1;
     attemptReceiptRef.current = null;
     setAttemptReceipt(null);
+    setCompletionReceipt(null);
+    setConsumedNextReceiptId(null);
     if (completionCueTimerRef.current !== null) {
       clearTimeout(completionCueTimerRef.current);
       completionCueTimerRef.current = null;
     }
     clearAutomaticNext();
     setShowNextCue(false);
+    return true;
   }, [clearAutomaticNext]);
 
   const saveReadingAttempt = useCallback(async (result: ReadingResult) => {
+    if (!beginAttempt()) return;
     controllerRef.current?.pause("server-wait");
     setSaveUiState("saving");
-    beginAttempt();
     setWaiting(true);
     const input = buildAttempt(result, null);
     try {
@@ -362,7 +490,10 @@ function LearningSessionView({
       setSaveUiState("idle");
       if (receipt.completed && !receipt.duplicate) {
         setShowNextCue(false);
-        scheduleAutomaticNext(receipt.id, attemptGenerationRef.current);
+        setCompletionReceipt({
+          id: receipt.id,
+          generation: attemptGenerationRef.current
+        });
       }
       onActivityCursor?.(receipt.activityCursor);
       setNextUnlocked(receipt.completed);
@@ -381,7 +512,10 @@ function LearningSessionView({
       setProvisional(queued);
       if (queued) {
         onProvisional?.();
-        scheduleAutomaticNext(`queued:${input.clientAttemptId}`, attemptGenerationRef.current);
+        setCompletionReceipt({
+          id: `queued:${input.clientAttemptId}`,
+          generation: attemptGenerationRef.current
+        });
       }
       setMathFeedback(queued
         ? "학습 기록이 아직 여행 중이에요. 연결되면 확인할게요."
@@ -396,12 +530,11 @@ function LearningSessionView({
     buildAttempt,
     onActivityCursor,
     onExit,
-    onProvisional,
-    scheduleAutomaticNext
+    onProvisional
   ]);
 
   useEffect(() => {
-    if (!attemptReceipt?.completed || attemptReceipt.duplicate) return;
+    if (!active || breakPaused || !attemptReceipt?.completed || attemptReceipt.duplicate) return;
     const generation = attemptGenerationRef.current;
     const receiptId = attemptReceipt.id;
     const timer = setTimeout(() => {
@@ -411,7 +544,8 @@ function LearningSessionView({
         attemptGenerationRef.current === generation &&
         currentReceipt?.id === receiptId &&
         currentReceipt.completed &&
-        !currentReceipt.duplicate
+        !currentReceipt.duplicate &&
+        learningActivityAllowedRef.current
       ) {
         setShowNextCue(true);
       }
@@ -423,10 +557,10 @@ function LearningSessionView({
         completionCueTimerRef.current = null;
       }
     };
-  }, [attemptReceipt?.completed, attemptReceipt?.duplicate, attemptReceipt?.id]);
+  }, [active, attemptReceipt?.completed, attemptReceipt?.duplicate, attemptReceipt?.id, breakPaused]);
 
   const judgeTranscript = useCallback((transcript: string) => {
-    if (learningControlsPaused) return;
+    if (learningControlsPausedRef.current) return;
     const result = judgeReading(item, transcript);
     setReadingResult(result);
     recordActivity("speech-result");
@@ -435,24 +569,29 @@ function LearningSessionView({
     } else if (!result.passed) {
       setNextUnlocked(false);
     }
-  }, [item, learningControlsPaused, recordActivity, saveReadingAttempt]);
+  }, [item, recordActivity, saveReadingAttempt]);
 
   useEffect(() => {
-    if (speechPhase !== "listening" || speechStartedAt === null) return;
+    if (
+      learningActivityPaused ||
+      speechPhase !== "listening" ||
+      speechStartedAt === null
+    ) return;
     setSpeechElapsedSeconds(Math.max(0, Math.floor((Date.now() - speechStartedAt) / 1_000)));
     const timer = setInterval(() => {
       setSpeechElapsedSeconds(Math.max(0, Math.floor((Date.now() - speechStartedAt) / 1_000)));
     }, 1_000);
     return () => clearInterval(timer);
-  }, [speechPhase, speechStartedAt]);
+  }, [learningActivityPaused, speechPhase, speechStartedAt]);
 
   useEffect(() => {
     if (item.kind !== "korean-reading") return;
     const speech = createSpeechController({
       onTranscript: (transcript) => {
-        if (transcript) judgeTranscript(transcript);
+        if (learningActivityAllowedRef.current && transcript) judgeTranscript(transcript);
       },
       onPhaseChange: (phase) => {
+        if (!learningActivityAllowedRef.current) return;
         setSpeechPhase(phase);
         if (phase === "listening") {
           setSpeechStartedAt(Date.now());
@@ -461,13 +600,19 @@ function LearningSessionView({
           setSpeechStartedAt(null);
         }
       },
-      onActivity: () => recordActivity("speech-result"),
+      onActivity: () => {
+        if (learningActivityAllowedRef.current) recordActivity("speech-result");
+      },
       onNoResult: () => {
-        setSpeechNotice("말한 내용이 들리지 않아요. 다시 읽어 볼까요?");
+        if (learningActivityAllowedRef.current) {
+          setSpeechNotice("말한 내용이 들리지 않아요. 다시 읽어 볼까요?");
+        }
       },
       onUnavailable: () => {
-        setSpeechUnavailable(true);
-        setSpeechNotice("마이크를 사용할 수 없어요. 직접 입력으로 읽기를 확인해 주세요.");
+        if (learningActivityAllowedRef.current) {
+          setSpeechUnavailable(true);
+          setSpeechNotice("마이크를 사용할 수 없어요. 직접 입력으로 읽기를 확인해 주세요.");
+        }
       }
     });
     speechRef.current = speech;
@@ -476,6 +621,14 @@ function LearningSessionView({
       speechRef.current = null;
     };
   }, [item.kind, judgeTranscript, recordActivity]);
+
+  useEffect(() => {
+    if (!learningActivityPaused) return;
+    speechRef.current?.cancel();
+    setSpeechPhase("ready");
+    setSpeechStartedAt(null);
+    setSpeechElapsedSeconds(0);
+  }, [learningActivityPaused]);
 
   async function checkMathAnswer(event: FormEvent): Promise<void> {
     event.preventDefault();
@@ -513,10 +666,10 @@ function LearningSessionView({
     answer: number,
     expectedAnswer: number
   ): Promise<void> {
+    if (!beginAttempt()) return;
     recordActivity("answer");
     controllerRef.current?.pause("server-wait");
     setSaveUiState("saving");
-    beginAttempt();
     setWaiting(true);
     const input = buildAttempt(result, answer);
     try {
@@ -527,9 +680,22 @@ function LearningSessionView({
       if (receipt.completed && !receipt.duplicate) setShowNextCue(false);
       onActivityCursor?.(receipt.activityCursor);
       const passed = receipt.readingPass && receipt.mathPass === true;
-      setNextUnlocked(receipt.completed && passed);
-      if (!passed) setMathRetryCount((count) => count + 1);
-      setMathFeedback(passed ? "정답이에요." : "답을 다시 생각해 봐요.");
+      const challengeAttemptCompleted = itemStep === "challenge" && receipt.completed;
+      setNextUnlocked(receipt.completed && (passed || challengeAttemptCompleted));
+      if (!passed && !challengeAttemptCompleted) {
+        setMathRetryCount((count) => count + 1);
+      }
+      setMathFeedback(passed
+        ? "정답이에요."
+        : challengeAttemptCompleted
+          ? "도전 시도 완료"
+          : "답을 다시 생각해 봐요.");
+      if (receipt.completed && !receipt.duplicate) {
+        setCompletionReceipt({
+          id: receipt.id,
+          generation: attemptGenerationRef.current
+        });
+      }
     } catch (error) {
       if (isExplicitClientError(error)) {
         setAuthority({ phase: "unavailable" });
@@ -542,10 +708,72 @@ function LearningSessionView({
       if (!locallyComplete) setMathRetryCount((count) => count + 1);
       setNextUnlocked(locallyComplete);
       setProvisional(locallyComplete);
-      if (locallyComplete) onProvisional?.();
+      if (locallyComplete) {
+        onProvisional?.();
+        setCompletionReceipt({
+          id: `queued:${input.clientAttemptId}`,
+          generation: attemptGenerationRef.current
+        });
+      }
       setMathFeedback(queued
         ? "학습 기록이 아직 여행 중이에요. 연결되면 확인할게요."
         : "답을 확인하지 못했어요. 다시 시도해 주세요.");
+    } finally {
+      setWaiting(false);
+      controllerRef.current?.resume("server-wait");
+    }
+  }
+
+  async function saveDictationAnswer(text: string): Promise<void> {
+    if (
+      item.kind !== "korean-dictation" ||
+      learningControlsPaused ||
+      transitionPendingRef.current ||
+      !beginAttempt()
+    ) return;
+    recordActivity("answer");
+    controllerRef.current?.pause("server-wait");
+    setSaveUiState("saving");
+    setWaiting(true);
+    const input = buildAttempt(
+      { score: 100, passed: true, missedTokens: [] },
+      null,
+      text
+    );
+    try {
+      const receipt = await api.saveAttempt(input);
+      attemptReceiptRef.current = receipt;
+      setAttemptReceipt(receipt);
+      setSaveUiState("idle");
+      onActivityCursor?.(receipt.activityCursor);
+      const passed = receipt.dictationPass === true;
+      const challengeAttemptCompleted = itemStep === "challenge" && receipt.completed;
+      setNextUnlocked(receipt.completed && (passed || challengeAttemptCompleted));
+      setMathFeedback(passed
+        ? "정답이에요."
+        : challengeAttemptCompleted
+          ? "도전 시도 완료"
+          : "다시 써 볼까요?");
+      if (receipt.completed && !receipt.duplicate) {
+        setShowNextCue(false);
+        setCompletionReceipt({
+          id: receipt.id,
+          generation: attemptGenerationRef.current
+        });
+      }
+    } catch (error) {
+      if (isExplicitClientError(error)) {
+        setAuthority({ phase: "unavailable" });
+        onExit?.();
+        return;
+      }
+      const queued = await preserveFailedAttempt(error, input).catch(() => false);
+      setSaveUiState(queued ? "queued" : "failed");
+      setNextUnlocked(false);
+      setProvisional(false);
+      setMathFeedback(queued
+        ? "학습 기록이 아직 여행 중이에요. 연결되면 확인할게요."
+        : "받아쓰기는 연결된 상태에서 다시 확인해 주세요.");
     } finally {
       setWaiting(false);
       controllerRef.current?.resume("server-wait");
@@ -557,6 +785,78 @@ function LearningSessionView({
     if (activity === "생각 중이에요") setDifficultyFeedback("thinking");
     setIdleUi(null);
     controllerRef.current?.resume("deduction");
+  }
+
+  function pauseForBreak(): void {
+    if (breakPaused) return;
+    breakInvokerRef.current = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : null;
+    controllerRef.current?.pause("guardian-break");
+    setBreakPaused(true);
+  }
+
+  function resumeAfterBreak(): void {
+    restoreBreakFocusRef.current = true;
+    setBreakPaused(false);
+    controllerRef.current?.resume("guardian-break");
+  }
+
+  useEffect(() => {
+    if (breakPaused) {
+      breakDialogRef.current?.querySelector<HTMLButtonElement>(
+        "button:not([disabled])"
+      )?.focus();
+      return;
+    }
+    if (!restoreBreakFocusRef.current) return;
+    restoreBreakFocusRef.current = false;
+    const invoker = breakInvokerRef.current;
+    if (isVisibleFocusableTarget(invoker)) {
+      invoker.focus();
+      return;
+    }
+    const fallbackTargets = [
+      document.querySelector<HTMLElement>(
+        '.learning-responsive-shell button[aria-label="메뉴 열기"]'
+      ),
+      document.querySelector<HTMLElement>(
+        '.learning-responsive-shell .responsive-nav__rail [aria-current="page"]'
+      ),
+      document.querySelector<HTMLElement>(
+        ".learning-responsive-shell .responsive-nav__rail button:not([disabled])"
+      ),
+      document.querySelector<HTMLElement>(
+        ".learning-responsive-shell .learning-session button:not([disabled])"
+      ),
+      document.querySelector<HTMLElement>(
+        ".learning-responsive-shell .learning-session input:not([disabled]), .learning-responsive-shell .learning-session textarea:not([disabled])"
+      )
+    ];
+    fallbackTargets.find(isVisibleFocusableTarget)?.focus();
+  }, [breakPaused]);
+
+  function containBreakFocus(event: KeyboardEvent<HTMLElement>): void {
+    const focusable = Array.from(
+      breakDialogRef.current?.querySelectorAll<HTMLElement>(
+        "button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex='-1'])"
+      ) ?? []
+    );
+    if (event.key === "Escape") {
+      event.preventDefault();
+      focusable[0]?.focus();
+      return;
+    }
+    if (event.key !== "Tab" || focusable.length === 0) return;
+    const first = focusable[0]!;
+    const last = focusable[focusable.length - 1]!;
+    if (focusable.length === 1 || (event.shiftKey && document.activeElement === first)) {
+      event.preventDefault();
+      last.focus();
+    } else if (!event.shiftKey && document.activeElement === last) {
+      event.preventDefault();
+      first.focus();
+    }
   }
 
   function toggleSpeech(): void {
@@ -597,7 +897,7 @@ function LearningSessionView({
     idleUi?.phase === "confirm" ? "idle-confirm" :
     idleUi?.phase === "hint" ? "thinking" :
     waiting || saveUiState !== "idle" ? "save-wait" :
-    attemptReceipt?.completed && !attemptReceipt.duplicate && !showNextCue ? "correct" :
+    receiptExercisePassed(item, attemptReceipt) && !showNextCue ? "correct" :
     nextUnlocked && showNextCue ? "next" :
     readingResult !== null && !readingResult.passed ? "retry" :
     mathRetryCount > 0 && !nextUnlocked ? "retry" :
@@ -610,7 +910,7 @@ function LearningSessionView({
     idleUi?.phase === "hint" ? "thinking" :
     speechPhase === "listening" ? "speech-start" :
     speechPhase === "finishing" ? "speech-finish" :
-    attemptReceipt?.completed && !attemptReceipt.duplicate ? "correct" :
+    receiptExercisePassed(item, attemptReceipt) ? "correct" :
     nextUnlocked && showNextCue ? "next" :
     readingResult !== null && !readingResult.passed ? "retry" :
     mathRetryCount > 0 && !nextUnlocked ? "retry" :
@@ -622,24 +922,54 @@ function LearningSessionView({
       ? "first" as const
       : "none" as const;
   const coachRetryCount = mathRetryCount + (readingResult !== null && !readingResult.passed ? 1 : 0);
+  const nextReceiptId = completionReceipt?.id ?? consumedNextReceiptId;
+  const nextReceiptConsumed = nextReceiptId === null ||
+    consumedNextReceiptId === nextReceiptId ||
+    consumedNextReceiptIdsRef.current.has(nextReceiptId);
 
   return (
-    <section
-      className="learning-session"
-      aria-label={`${item.title} 학습`}
-      onPointerDown={() => recordActivity("touch")}
-      onKeyDown={() => recordActivity("keyboard")}
-    >
+    <div className="responsive-shell learning-responsive-shell">
+      <div
+        aria-hidden={breakPaused || undefined}
+        className="learning-responsive-shell__navigation"
+        inert={breakPaused || undefined}
+      >
+      <StudentNavigation
+        activeId={breakPaused ? "break" : navigationHelpOpen ? "help" : "today"}
+        getDrawerSelectionFocusTarget={getNavigationDestinationFocusTarget}
+        onExit={() => (onNavigateToday ?? onExit)?.()}
+        onHelp={() => setNavigationHelpOpen((open) => !open)}
+        onPauseForBreak={pauseForBreak}
+        onToday={() => (onNavigateToday ?? onExit)?.()}
+      />
+      </div>
+      <div
+        aria-hidden={breakPaused || undefined}
+        className="responsive-shell__content"
+        inert={breakPaused || undefined}
+      >
+        <section
+          className="learning-session"
+          aria-label={`${item.title} 학습`}
+          onPointerDown={() => recordActivity("touch")}
+          onKeyDown={() => recordActivity("keyboard")}
+        >
       {onExit ? (
         <button type="button" className="button-secondary" onClick={onExit}>
           대시보드로 돌아가기
         </button>
       ) : null}
       <LearningCompanion
+        paused={learningActivityPaused}
         moment={companionMoment}
         studyDate={studyDate}
         item={item}
         saveState={saveUiState === "idle" ? undefined : saveUiState}
+        bunnyMoment={attemptReceipt?.challengeBonus?.awarded
+          ? "perfect-challenge"
+          : attemptReceipt?.starAward.awarded
+            ? "reward"
+            : undefined}
       />
       <ChanaPingCoach
         event={chanaPingEvent}
@@ -647,6 +977,7 @@ function LearningSessionView({
         retryCount={mathRetryCount + (readingResult !== null && !readingResult.passed ? 1 : 0)}
         cueKey={`${planId}:${item.id}:${contentVersion}`}
         hintStage={coachHintStage}
+        paused={learningActivityPaused}
         requestMessage={api.coachMessage === undefined ? undefined : (
           input: CoachMessageRequest,
           signal?: AbortSignal
@@ -667,12 +998,21 @@ function LearningSessionView({
             value={mathAnswer}
             disabled={learningControlsPaused}
             onChange={(value) => {
+              if (transitionPendingRef.current) return;
               setMathAnswer(value);
               recordActivity("answer");
             }}
             onSubmit={() => void checkCalculationAnswer()}
           />
         </div>
+      ) : item.kind === "korean-dictation" ? (
+        <DictationPanel
+          item={item}
+          disabled={learningControlsPaused}
+          paused={learningActivityPaused}
+          onReplay={() => recordActivity("touch")}
+          onSubmit={(text) => void saveDictationAnswer(text)}
+        />
       ) : (
         <>
           <ProblemBreakdown
@@ -765,6 +1105,7 @@ function LearningSessionView({
               inputMode="numeric"
               value={mathAnswer}
               onChange={(event) => {
+                if (transitionPendingRef.current) return;
                 setMathAnswer(event.target.value);
                 recordActivity("answer");
               }}
@@ -778,6 +1119,14 @@ function LearningSessionView({
         </>
       )}
       {mathFeedback && saveUiState === "idle" ? <p role="status">{mathFeedback}</p> : null}
+      {item.kind === "korean-dictation" && saveUiState === "failed" && mathFeedback ? (
+        <p role="alert">{mathFeedback}</p>
+      ) : null}
+      {attemptReceipt?.challengeBonus?.awarded ? (
+        <p className="challenge-bonus" role="status">
+          도전 만점 보너스 별 {attemptReceipt.challengeBonus.amount}개
+        </p>
+      ) : null}
       {provisional ? <p className="provisional-label" role="status">동기화 대기</p> : null}
 
       {idleUi?.phase === "hint" ? (
@@ -803,25 +1152,70 @@ function LearningSessionView({
           <button type="button" onClick={() => resumeAfterIdle("continue")}>학습 계속하기</button>
         </aside>
       ) : null}
+      {navigationHelpOpen ? (
+        <aside role="status">
+          <p>문제를 천천히 읽고 힌트나 학습 친구의 도움을 받아 보세요.</p>
+        </aside>
+      ) : null}
       <StarCelebration
+        paused={learningActivityPaused}
         starAward={attemptReceipt?.starAward ?? null}
         reducedMotion={reducedMotion}
         onPlay={() => controllerRef.current?.pause("celebration")}
         onComplete={() => controllerRef.current?.resume("celebration")}
       />
 
+      {postCompletionRefreshFailed || postCompletionRefreshWaitingForNext ? (
+        <aside
+          aria-label="다음 문제 준비 상태"
+          aria-live="polite"
+          className="post-completion-refresh"
+          role="status"
+        >
+          <p>{postCompletionRefreshWaitingForNext
+            ? "다음 문제를 아직 준비 중이에요. 잠시 후 다시 불러와 주세요."
+            : "다음 문제를 준비하지 못했어요. 연결을 확인하고 다시 불러와 주세요."}</p>
+          <button
+            type="button"
+            disabled={postCompletionRefreshPending}
+            onClick={() => void onRetryRefresh?.()}
+          >
+            {postCompletionRefreshPending ? "불러오는 중" : "다시 불러오기"}
+          </button>
+        </aside>
+      ) : null}
+
       <button
         type="button"
-        disabled={!nextUnlocked || learningControlsPaused}
+        disabled={!nextUnlocked || learningControlsPaused || nextReceiptConsumed}
         onClick={() => {
+          if (
+            nextReceiptId === null ||
+            transitionPendingRef.current ||
+            consumedNextReceiptIdsRef.current.has(nextReceiptId)
+          ) return;
           recordActivity("continue");
-          clearAutomaticNext();
-          onNext?.();
+          advanceReceipt(nextReceiptId);
         }}
       >
         다음 문제
       </button>
-    </section>
+        </section>
+      </div>
+      {breakPaused ? (
+        <aside
+          aria-label="잠깐 쉬기"
+          aria-modal="true"
+          className="learning-break-dialog"
+          onKeyDown={containBreakFocus}
+          ref={breakDialogRef}
+          role="dialog"
+        >
+          <p>쉬는 동안에는 무반응 시간을 세거나 별을 차감하지 않아요.</p>
+          <button type="button" onClick={resumeAfterBreak}>학습 계속</button>
+        </aside>
+      ) : null}
+    </div>
   );
 }
 
@@ -830,4 +1224,27 @@ function createClientId(prefix: string): string {
     ? globalThis.crypto.randomUUID()
     : `${Date.now().toString(36)}-${Math.random().toString(36).slice(2)}`;
   return `${prefix}-${random}`;
+}
+
+export function isVisibleFocusableTarget(
+  target: HTMLElement | null | undefined
+): target is HTMLElement {
+  if (target === null || target === undefined || !target.isConnected) return false;
+  if (target.matches(":disabled") || target.tabIndex < 0) return false;
+  for (let current: HTMLElement | null = target; current !== null; current = current.parentElement) {
+    if (
+      current.hidden ||
+      current.hasAttribute("inert") ||
+      current.getAttribute("aria-hidden") === "true"
+    ) return false;
+    const style = window.getComputedStyle(current);
+    if (
+      style.display === "none" ||
+      style.opacity === "0" ||
+      style.visibility === "hidden" ||
+      style.visibility === "collapse" ||
+      style.contentVisibility === "hidden"
+    ) return false;
+  }
+  return true;
 }

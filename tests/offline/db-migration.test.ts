@@ -14,6 +14,7 @@ import {
   listActivities,
   listGuardianOfflineRejections,
   listLegacyActivities,
+  listPendingBatches,
   listRejectedActivities,
   loadCachedTodayPlan,
   loadOfflineStudentSession,
@@ -46,6 +47,7 @@ const plan: TodayPlan = {
   items: [{
     id: "ko-01",
     version: 2,
+    step: "current",
     payload: {
       id: "ko-01",
       kind: "korean-reading",
@@ -117,7 +119,100 @@ async function seedVersionOne(
   database.close();
 }
 
-describe("IndexedDB v2 authority journal migration", () => {
+async function seedVersionTwoWithDictation(): Promise<void> {
+  const database = await openDB(OFFLINE_DB_NAME, 2, {
+    upgrade(db) {
+      db.createObjectStore("todayPlans", { keyPath: "date" });
+      db.createObjectStore("attemptQueue", { keyPath: "clientAttemptId" });
+      db.createObjectStore("idleEventQueue", { keyPath: "clientIdleEventId" });
+      db.createObjectStore("meta", { keyPath: "key" });
+      const activities = db.createObjectStore("activityQueue", { keyPath: "clientId" });
+      activities.createIndex(
+        "by-plan-order",
+        ["planId", "offlineEpoch", "occurredAt", "deviceSequence", "clientId"]
+      );
+      activities.createIndex("by-plan-cursor", ["planId", "baseCursor"]);
+      db.createObjectStore("legacyActivities", { keyPath: "clientId" });
+      db.createObjectStore("rejectedActivities", { keyPath: "clientId" });
+      const batches = db.createObjectStore("pendingBatches", {
+        keyPath: "clientBatchId"
+      });
+      batches.createIndex("by-group", "groupKey", { unique: true });
+    }
+  });
+  const rawDictationText = "업그레이드 전 받아쓰기 원문 비밀 문장";
+  const dictationClientId = "legacy-dictation-attempt-0001";
+  const normalClientId = "legacy-reading-attempt-0001";
+  const transaction = database.transaction(
+    ["activityQueue", "pendingBatches", "meta"],
+    "readwrite"
+  );
+  await Promise.all([
+    transaction.objectStore("activityQueue").put({
+      clientId: dictationClientId,
+      occurredAt: attempt.occurredAt,
+      deviceSequence: 0,
+      planId: plan.planId,
+      sourcePlanId: null,
+      offlineEpoch: plan.offlineEpoch,
+      baseCursor: plan.activityCursor,
+      requiresRecovery: false,
+      recoveryBlockedCode: null,
+      event: {
+        kind: "attempt",
+        legacy: false,
+        payload: {
+          ...attempt,
+          clientAttemptId: dictationClientId,
+          dictationText: rawDictationText
+        }
+      }
+    }),
+    transaction.objectStore("activityQueue").put({
+      clientId: normalClientId,
+      occurredAt: "2026-07-16T01:06:00.000Z",
+      deviceSequence: 1,
+      planId: plan.planId,
+      sourcePlanId: null,
+      offlineEpoch: plan.offlineEpoch,
+      baseCursor: plan.activityCursor + 1,
+      requiresRecovery: false,
+      recoveryBlockedCode: null,
+      event: {
+        kind: "attempt",
+        legacy: false,
+        payload: {
+          ...attempt,
+          clientAttemptId: normalClientId,
+          occurredAt: "2026-07-16T01:06:00.000Z"
+        }
+      }
+    }),
+    transaction.objectStore("pendingBatches").put({
+      clientBatchId: "legacy-dictation-batch-0001",
+      groupKey: "dictation-group",
+      planId: plan.planId,
+      offlineEpoch: plan.offlineEpoch,
+      startCursor: plan.activityCursor,
+      orderedClientIds: [dictationClientId],
+      requestFingerprint: "legacy-dictation-fingerprint"
+    }),
+    transaction.objectStore("pendingBatches").put({
+      clientBatchId: "legacy-reading-batch-0001",
+      groupKey: "reading-group",
+      planId: plan.planId,
+      offlineEpoch: plan.offlineEpoch,
+      startCursor: plan.activityCursor + 1,
+      orderedClientIds: [normalClientId],
+      requestFingerprint: "legacy-reading-fingerprint"
+    }),
+    transaction.objectStore("meta").put({ key: "device-state", value: "ready" })
+  ]);
+  await transaction.done;
+  database.close();
+}
+
+describe("IndexedDB authority journal migration", () => {
   beforeEach(async () => {
     vi.useRealTimers();
     await deleteDB(OFFLINE_DB_NAME);
@@ -128,7 +223,7 @@ describe("IndexedDB v2 authority journal migration", () => {
 
     const migrated = await listLegacyActivities();
 
-    expect(OFFLINE_DB_VERSION).toBe(2);
+    expect(OFFLINE_DB_VERSION).toBe(3);
     expect(migrated).toEqual([
       {
         clientId: attempt.clientAttemptId,
@@ -247,6 +342,55 @@ describe("IndexedDB v2 authority journal migration", () => {
       provisionalAttempts: 0,
       rejected: 0
     });
+  });
+
+  it("keeps typed dictation text out of IndexedDB and leaves ordinary attempts queueable", async () => {
+    const rawDictationText = "원문 받아쓰기 비밀 문장";
+    await markStudentAuthenticated();
+    await cacheIssuedPlan(plan, stars);
+
+    await expect(queueAttempt({
+      ...attempt,
+      clientAttemptId: "dictation-offline-attempt-0001",
+      dictationText: rawDictationText
+    })).rejects.toMatchObject({ code: "DICTATION_ONLINE_REQUIRED" });
+
+    await queueAttempt(attempt);
+    expect(await listActivities()).toEqual([
+      expect.objectContaining({
+        clientId: attempt.clientAttemptId,
+        event: expect.objectContaining({
+          kind: "attempt",
+          payload: expect.not.objectContaining({ dictationText: expect.anything() })
+        })
+      })
+    ]);
+
+    const raw = await openDB(OFFLINE_DB_NAME, OFFLINE_DB_VERSION);
+    const serializedRecords = await Promise.all(Array.from(raw.objectStoreNames)
+      .map(async (storeName) => JSON.stringify(await raw.getAll(storeName))));
+    raw.close();
+    expect(serializedRecords.join("\n")).not.toContain(rawDictationText);
+  });
+
+  it("removes v2 dictation queue rows and their pending batch while preserving ordinary activity batches", async () => {
+    await seedVersionTwoWithDictation();
+
+    expect(OFFLINE_DB_VERSION).toBe(3);
+    const activities = await listActivities();
+    expect(activities).toEqual([
+      expect.objectContaining({ clientId: "legacy-reading-attempt-0001" })
+    ]);
+    expect(await listPendingBatches()).toEqual([
+      expect.objectContaining({ clientBatchId: "legacy-reading-batch-0001" })
+    ]);
+
+    const raw = await openDB(OFFLINE_DB_NAME, OFFLINE_DB_VERSION);
+    const serializedRecords = await Promise.all(Array.from(raw.objectStoreNames)
+      .map(async (storeName) => JSON.stringify(await raw.getAll(storeName))));
+    raw.close();
+    expect(serializedRecords.join("\n"))
+      .not.toContain("업그레이드 전 받아쓰기 원문 비밀 문장");
   });
 
   it("clears only cached authority and blocks every journal read or write until student PIN authentication", async () => {

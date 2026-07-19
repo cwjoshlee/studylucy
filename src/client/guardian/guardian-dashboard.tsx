@@ -5,8 +5,6 @@ import {
   type TrustedDeviceView
 } from "../../shared/auth";
 import type {
-  AiCoachProvider,
-  AiCoachSettingsView,
   GuardianOfflineRejection,
   GuardianProgress
 } from "../../shared/learning";
@@ -14,7 +12,8 @@ import type {
   GuardianStarLedger,
   GuardianDailyPlan,
   PendingStarAdjustment,
-  StarReason
+  StarReason,
+  SubjectStepSettings
 } from "../../shared/stars";
 import type {
   ApiClient,
@@ -23,6 +22,16 @@ import type {
 } from "../api/client";
 import { ApiError } from "../api/client";
 import { listGuardianOfflineRejections } from "../offline/db";
+import {
+  ResponsiveNavigation,
+  type NavigationEntry
+} from "../navigation/responsive-navigation";
+import {
+  AiLearningStudio,
+  type AiLearningStudioApi,
+  initialAiStudioTreeState,
+  type AiStudioPanel
+} from "./ai-learning-studio";
 
 type GuardianDashboardApi = Pick<ApiClient,
   | "getGuardianProgress"
@@ -40,10 +49,20 @@ type GuardianDashboardApi = Pick<ApiClient,
   | "listTrustedDevices"
   | "revokeTrustedDevice"
   | "updateTrustedDeviceType"
-> & Partial<Pick<ApiClient,
-  | "getAiCoachSettings"
-  | "updateAiCoachSettings"
->>;
+> & Partial<AiLearningStudioApi>;
+
+function supportsAiLearningStudio(
+  api: GuardianDashboardApi
+): api is GuardianDashboardApi & AiLearningStudioApi {
+  return typeof api.getAiStudioSettingsView === "function" &&
+    typeof api.updateAiStudioBudget === "function" &&
+    typeof api.updateAiStudioProvider === "function" &&
+    typeof api.createAiDraft === "function" &&
+    typeof api.getAiDraft === "function" &&
+    typeof api.updateAiDraftItem === "function" &&
+    typeof api.publishAiDraft === "function" &&
+    typeof api.getGuardianAiReport === "function";
+}
 
 type DashboardData = {
   progress: GuardianProgress;
@@ -51,8 +70,74 @@ type DashboardData = {
   rejections: GuardianOfflineRejection[];
 };
 
-const TABS = ["진도", "별 기록", "차감 승인", "학습 계획", "AI 코치", "백업"] as const;
+const TABS = ["진도", "별 기록", "차감 승인", "학습 계획", "AI 학습실", "백업"] as const;
 type GuardianTab = typeof TABS[number];
+
+const GUARDIAN_ENTRIES: readonly NavigationEntry[] = [
+  { id: "progress", label: "진도" },
+  { id: "star-ledger", label: "별 기록" },
+  { id: "adjustment-approval", label: "차감 승인" },
+  { id: "daily-plan", label: "학습 계획" },
+  {
+    id: "ai",
+    label: "AI 학습실",
+    children: [
+      {
+        id: "ai/settings",
+        label: "AI 설정",
+        children: [
+          { id: "ai/provider-model", label: "제공자·모델 선택" },
+          { id: "ai/api-keys", label: "API 키 관리" },
+          { id: "ai/budget", label: "월 예산·사용량" }
+        ]
+      },
+      {
+        id: "ai/generation",
+        label: "문제 생성",
+        children: [
+          { id: "ai/generate-math", label: "수학 문제 배치" },
+          { id: "ai/generate-korean", label: "국어·받아쓰기 배치" }
+        ]
+      },
+      {
+        id: "ai/reports",
+        label: "보고서",
+        children: [
+          { id: "ai/today-report", label: "오늘의 학습 요약" },
+          { id: "ai/weekly-report", label: "주간 변화" }
+        ]
+      }
+    ]
+  },
+  { id: "backup", label: "백업" },
+  { id: "devices", label: "기기 관리" }
+];
+
+const TAB_ENTRY_ID: Record<Exclude<GuardianTab, "AI 학습실">, string> = {
+  "진도": "progress",
+  "별 기록": "star-ledger",
+  "차감 승인": "adjustment-approval",
+  "학습 계획": "daily-plan",
+  "백업": "backup"
+};
+
+const ENTRY_TAB: Record<string, Exclude<GuardianTab, "AI 학습실">> = {
+  progress: "진도",
+  "star-ledger": "별 기록",
+  "adjustment-approval": "차감 승인",
+  "daily-plan": "학습 계획",
+  backup: "백업"
+};
+
+const AI_ENTRY_PANEL: Record<string, AiStudioPanel> = {
+  "ai/provider-model": "settings",
+  "ai/api-keys": "settings",
+  "ai/budget": "settings",
+  "ai/generate-math": "generate-math",
+  "ai/generate-korean": "generate-korean",
+  "ai/today-report": "today-report",
+  "ai/weekly-report": "weekly-report"
+};
 
 const ADJUSTMENT_STATUS_LABELS: Record<PendingStarAdjustment["status"], string> = {
   pending: "대기",
@@ -110,8 +195,50 @@ export function GuardianDashboard({
   const [data, setData] = useState<DashboardData | null>(null);
   const [failed, setFailed] = useState(false);
   const [activeTab, setActiveTab] = useState<GuardianTab>("진도");
+  const [aiPanel, setAiPanel] = useState<AiStudioPanel>("settings");
+  const [aiTreeState, setAiTreeState] = useState(() => initialAiStudioTreeState("settings"));
+  const [expandedNavigationIds, setExpandedNavigationIds] = useState<string[]>([]);
   const [accountMenuOpen, setAccountMenuOpen] = useState(false);
   const [deviceManagementOpen, setDeviceManagementOpen] = useState(false);
+
+  const activeNavigationId = deviceManagementOpen
+    ? "devices"
+    : activeTab === "AI 학습실"
+      ? `ai/${aiTreeState.selectedLeaf}`
+      : TAB_ENTRY_ID[activeTab];
+
+  const toggleNavigation = (id: string) => {
+    setExpandedNavigationIds((current) => current.includes(id)
+      ? current.filter((entryId) => entryId !== id)
+      : [...current, id]);
+  };
+
+  const selectNavigation = (id: string) => {
+    if (id === "devices") {
+      setDeviceManagementOpen(true);
+      return;
+    }
+    setDeviceManagementOpen(false);
+    const tab = ENTRY_TAB[id];
+    if (tab !== undefined) {
+      setActiveTab(tab);
+      return;
+    }
+    if (id === "ai" || id.startsWith("ai/")) setActiveTab("AI 학습실");
+    const panel = AI_ENTRY_PANEL[id];
+    if (panel === undefined) return;
+    const selectedLeaf = id.slice("ai/".length);
+    const groupId = id === "ai/generate-math" || id === "ai/generate-korean"
+      ? "generation"
+      : id === "ai/today-report" || id === "ai/weekly-report"
+        ? "reports"
+        : "settings";
+    setAiPanel(panel);
+    setAiTreeState((current) => ({
+      selectedLeaf,
+      openGroups: Array.from(new Set([...current.openGroups, groupId]))
+    }));
+  };
 
   useEffect(() => {
     let active = true;
@@ -164,15 +291,6 @@ export function GuardianDashboard({
             {accountMenuOpen ? (
               <div className="account-menu">
                 <button
-                  onClick={() => {
-                    setDeviceManagementOpen(true);
-                    setAccountMenuOpen(false);
-                  }}
-                  type="button"
-                >
-                  기기 관리
-                </button>
-                <button
                   onClick={() => void onEnterStudentMode?.()}
                   type="button"
                 >
@@ -189,132 +307,57 @@ export function GuardianDashboard({
           </div>
         </div>
       </header>
-      {deviceManagementOpen ? (
-        <DeviceManagement
-          api={api}
-          onClose={() => setDeviceManagementOpen(false)}
+      <div className="responsive-shell">
+        <ResponsiveNavigation
+          activeId={activeNavigationId}
+          entries={GUARDIAN_ENTRIES}
+          expandedIds={expandedNavigationIds}
+          fabLabel="메뉴 열기"
+          label="보호자 메뉴"
+          onSelect={selectNavigation}
+          onToggle={toggleNavigation}
         />
-      ) : null}
-      <nav className="guardian-tabs" aria-label="보호자 메뉴" role="tablist">
-        {TABS.map((tab) => (
-          <button
-            aria-selected={tab === activeTab}
-            key={tab}
-            onClick={() => setActiveTab(tab)}
-            role="tab"
-            type="button"
-          >
-            {tab}
-          </button>
-        ))}
-      </nav>
-      <main className="guardian-panel" role="tabpanel" aria-label={activeTab}>
-        {activeTab === "진도" ? (
-          <ProgressPanel data={data} failed={failed} />
-        ) : null}
-        {activeTab === "별 기록" ? <LedgerPanel api={api} /> : null}
-        {activeTab === "차감 승인" ? <AdjustmentsPanel api={api} /> : null}
-        {activeTab === "학습 계획" ? <DailyPlanPanel api={api} /> : null}
-        {activeTab === "AI 코치" ? <AiCoachPanel api={api} /> : null}
-        {activeTab === "백업" ? <BackupPanel api={api} /> : null}
-      </main>
+        <main
+          className="guardian-panel responsive-shell__content"
+          aria-label={deviceManagementOpen ? "기기 관리" : activeTab}
+        >
+          {deviceManagementOpen ? (
+            <DeviceManagement
+              api={api}
+              onClose={() => setDeviceManagementOpen(false)}
+            />
+          ) : (
+            <>
+              {activeTab === "진도" ? (
+                <ProgressPanel data={data} failed={failed} />
+              ) : null}
+              {activeTab === "별 기록" ? <LedgerPanel api={api} /> : null}
+              {activeTab === "차감 승인" ? <AdjustmentsPanel api={api} /> : null}
+              {activeTab === "학습 계획" ? <DailyPlanPanel api={api} /> : null}
+              {activeTab === "AI 학습실" ? (
+                supportsAiLearningStudio(api) ? (
+                  <AiLearningStudio
+                    api={api}
+                    onPanelChange={setAiPanel}
+                    onTreeStateChange={(next) => {
+                      setAiTreeState(next);
+                      setExpandedNavigationIds((current) => Array.from(new Set([
+                        ...current,
+                        "ai",
+                        ...next.openGroups.map((group) => `ai/${group}`)
+                      ])));
+                    }}
+                    panel={aiPanel}
+                    treeState={aiTreeState}
+                  />
+                ) : <p role="alert">AI 학습실을 사용할 수 없어요.</p>
+              ) : null}
+              {activeTab === "백업" ? <BackupPanel api={api} /> : null}
+            </>
+          )}
+        </main>
+      </div>
     </div>
-  );
-}
-
-function AiCoachPanel({ api }: { api: GuardianDashboardApi }) {
-  const [settings, setSettings] = useState<AiCoachSettingsView | null>(null);
-  const [enabled, setEnabled] = useState(false);
-  const [provider, setProvider] = useState<AiCoachProvider>("gemini");
-  const [budget, setBudget] = useState("1000");
-  const [apiKey, setApiKey] = useState("");
-  const [failed, setFailed] = useState(false);
-  const [saving, setSaving] = useState(false);
-
-  useEffect(() => {
-    const getSettings = api.getAiCoachSettings;
-    if (getSettings === undefined) {
-      setFailed(true);
-      return;
-    }
-    let active = true;
-    void getSettings().then((value) => {
-      if (!active) return;
-      setSettings(value);
-      setEnabled(value.enabled);
-      setProvider(value.provider);
-      setBudget(String(value.monthlyBudgetWon));
-    }, () => active && setFailed(true));
-    return () => { active = false; };
-  }, [api]);
-
-  const save = async (event: React.FormEvent<HTMLFormElement>) => {
-    event.preventDefault();
-    const monthlyBudgetWon = Number(budget);
-    if (!Number.isInteger(monthlyBudgetWon) || monthlyBudgetWon < 0 || monthlyBudgetWon > 10_000) {
-      setFailed(true);
-      return;
-    }
-    const updateSettings = api.updateAiCoachSettings;
-    if (updateSettings === undefined) {
-      setFailed(true);
-      return;
-    }
-    setSaving(true);
-    setFailed(false);
-    try {
-      const updated = await updateSettings({
-        enabled, provider, monthlyBudgetWon,
-        ...(apiKey === "" ? {} : { apiKey })
-      });
-      setSettings(updated);
-      setApiKey("");
-    } catch {
-      setFailed(true);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  const removeKey = async () => {
-    const updateSettings = api.updateAiCoachSettings;
-    if (updateSettings === undefined) {
-      setFailed(true);
-      return;
-    }
-    setSaving(true);
-    setFailed(false);
-    try {
-      const updated = await updateSettings({ deleteApiKey: true, enabled: false });
-      setSettings(updated);
-      setEnabled(false);
-      setApiKey("");
-    } catch {
-      setFailed(true);
-    } finally {
-      setSaving(false);
-    }
-  };
-
-  return (
-    <section aria-labelledby="ai-coach-title">
-      <h2 id="ai-coach-title">AI 코치</h2>
-      {settings === null && !failed ? <p aria-busy="true">AI 코치를 불러오고 있어요.</p> : null}
-      {failed ? <p role="alert">AI 코치 설정을 저장하지 못했어요.</p> : null}
-      {settings !== null ? <p>이번 달 예상 사용액 {settings.monthSpentWon}원 / {settings.monthlyBudgetWon}원</p> : null}
-      <form onSubmit={(event) => void save(event)}>
-        <label><input checked={enabled} onChange={(event) => setEnabled(event.target.checked)} type="checkbox" /> AI 코치 사용</label>
-        <label>제공자
-          <select aria-label="제공자" onChange={(event) => setProvider(event.target.value as AiCoachProvider)} value={provider}>
-            <option value="gemini">Gemini</option><option value="openai">OpenAI</option>
-          </select>
-        </label>
-        <label>월 예산<input aria-label="월 예산" inputMode="numeric" max="10000" min="0" onChange={(event) => setBudget(event.target.value)} type="number" value={budget} /></label>
-        <label>API 키<input aria-label="API 키" autoComplete="new-password" onChange={(event) => setApiKey(event.target.value)} type="password" value={apiKey} /></label>
-        <button disabled={saving} type="submit">AI 코치 저장</button>
-      </form>
-      {settings?.hasApiKey ? <button disabled={saving} onClick={() => void removeKey()} type="button">API 키 삭제</button> : null}
-    </section>
   );
 }
 
@@ -615,6 +658,12 @@ function DailyPlanPanel({ api }: { api: GuardianDashboardApi }) {
   const [koreanTarget, setKoreanTarget] = useState(2);
   const [mathTarget, setMathTarget] = useState(2);
   const [isRestDay, setIsRestDay] = useState(false);
+  const [subjectSettings, setSubjectSettings] = useState<
+    Record<"korean" | "math", SubjectStepSettings>
+  >({
+    korean: { difficulty: 3, challengeBonusStars: 1 },
+    math: { difficulty: 3, challengeBonusStars: 1 }
+  });
   const [message, setMessage] = useState("");
   const [locked, setLocked] = useState(false);
   const planVersion = useRef(0);
@@ -632,6 +681,10 @@ function DailyPlanPanel({ api }: { api: GuardianDashboardApi }) {
       setKoreanTarget(loaded.koreanTarget);
       setMathTarget(loaded.mathTarget);
       setIsRestDay(loaded.isRestDay);
+      setSubjectSettings(loaded.subjectSettings ?? {
+        korean: { difficulty: 3, challengeBonusStars: 1 },
+        math: { difficulty: 3, challengeBonusStars: 1 }
+      });
     } catch {
       if (planVersion.current !== requestVersion) return;
       setPlan(null);
@@ -648,10 +701,12 @@ function DailyPlanPanel({ api }: { api: GuardianDashboardApi }) {
       const updated = await api.updateGuardianDailyPlan(requestedDate, {
         koreanTarget,
         mathTarget,
-        isRestDay
+        isRestDay,
+        subjectSettings
       });
       if (planVersion.current !== requestVersion) return;
       setPlan(updated);
+      setSubjectSettings(updated.subjectSettings);
       setMessage(updated.isRestDay
         ? "쉬는 날 계획을 저장했어요."
         : "학습 계획을 저장했어요.");
@@ -712,6 +767,78 @@ function DailyPlanPanel({ api }: { api: GuardianDashboardApi }) {
               type="number"
               value={mathTarget}
             />
+          </label>
+          <label>
+            국어 난이도
+            <select
+              disabled={locked}
+              onChange={(event) => {
+                const difficulty = Number(event.currentTarget.value);
+                setSubjectSettings((current) => ({
+                  ...current,
+                  korean: { ...current.korean, difficulty }
+                }));
+              }}
+              value={subjectSettings.korean.difficulty}
+            >
+              {[1, 2, 3, 4, 5].map((value) => (
+                <option key={value} value={value}>{value}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            국어 만점 보너스
+            <select
+              disabled={locked}
+              onChange={(event) => {
+                const challengeBonusStars = Number(event.currentTarget.value);
+                setSubjectSettings((current) => ({
+                  ...current,
+                  korean: { ...current.korean, challengeBonusStars }
+                }));
+              }}
+              value={subjectSettings.korean.challengeBonusStars}
+            >
+              {[0, 1, 2, 3, 4, 5].map((value) => (
+                <option key={value} value={value}>{value}개</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            수학 난이도
+            <select
+              disabled={locked}
+              onChange={(event) => {
+                const difficulty = Number(event.currentTarget.value);
+                setSubjectSettings((current) => ({
+                  ...current,
+                  math: { ...current.math, difficulty }
+                }));
+              }}
+              value={subjectSettings.math.difficulty}
+            >
+              {[1, 2, 3, 4, 5].map((value) => (
+                <option key={value} value={value}>{value}</option>
+              ))}
+            </select>
+          </label>
+          <label>
+            수학 만점 보너스
+            <select
+              disabled={locked}
+              onChange={(event) => {
+                const challengeBonusStars = Number(event.currentTarget.value);
+                setSubjectSettings((current) => ({
+                  ...current,
+                  math: { ...current.math, challengeBonusStars }
+                }));
+              }}
+              value={subjectSettings.math.challengeBonusStars}
+            >
+              {[0, 1, 2, 3, 4, 5].map((value) => (
+                <option key={value} value={value}>{value}개</option>
+              ))}
+            </select>
           </label>
           <label className="guardian-checkbox">
             <input
