@@ -1237,23 +1237,7 @@ describe("AI learning studio", () => {
       "/api/guardian/ai-studio/settings"
     );
     expect(legacyResponse.statusCode).toBe(200);
-    expect(legacyResponse.json()).toEqual([
-      {
-        provider: "gemini", enabled: false, model: "gemini-2.5-flash-lite",
-        hasApiKey: false, inputWonPer1K: 1, outputWonPer1K: 4
-      },
-      {
-        provider: "openai", enabled: false, model: "gpt-5-nano",
-        hasApiKey: false, inputWonPer1K: 1, outputWonPer1K: 4
-      }
-    ]);
-
-    const response = await guardian.request(
-      "GET",
-      "/api/guardian/ai-studio/settings/view"
-    );
-    expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual({
+    const predecessorSettings = {
       monthlyBudgetWon: 1000,
       monthSpentWon: 0,
       providers: [
@@ -1266,7 +1250,15 @@ describe("AI learning studio", () => {
           hasApiKey: false, inputWonPer1K: 1, outputWonPer1K: 4
         }
       ]
-    });
+    };
+    expect(legacyResponse.json()).toEqual(predecessorSettings);
+
+    const response = await guardian.request(
+      "GET",
+      "/api/guardian/ai-studio/settings/view"
+    );
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toEqual(predecessorSettings);
     expect(legacyResponse.body).not.toContain("api_key");
     expect(response.body).not.toContain("api_key");
     await harness.close();

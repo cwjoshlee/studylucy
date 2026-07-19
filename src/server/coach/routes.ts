@@ -158,7 +158,7 @@ export function registerAiCoachRoutes(app: FastifyInstance, deps: AppDeps): void
     "/api/guardian/ai-studio/settings",
     { preHandler: requireRole("guardian") },
     async (_request, reply) => {
-      await reply.send(studio.getProviderSettings());
+      await reply.send(studio.getSettings());
     }
   );
 

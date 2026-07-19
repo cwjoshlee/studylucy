@@ -184,6 +184,20 @@ describe("GuardianDashboard", () => {
     expect(await screen.findByRole("heading", { name: "AI 학습실" })).toBeVisible();
   });
 
+  it("shows a controlled AI studio availability state when settings routes are unavailable", async () => {
+    const user = userEvent.setup();
+    const api = createGuardianApi({
+      getAiStudioSettingsView: vi.fn().mockRejectedValue(new ApiError(404, "HTTP_404"))
+    });
+
+    render(<GuardianDashboard api={api} />);
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+
+    expect(await screen.findByRole("alert"))
+      .toHaveTextContent("AI 학습실 설정을 불러오지 못했어요.");
+    expect(screen.queryByText(/TypeError/)).not.toBeInTheDocument();
+  });
+
   it("exposes the guardian sections, AI hierarchy, and separate device management in responsive navigation", async () => {
     const user = userEvent.setup();
     render(<GuardianDashboard api={createGuardianApi()} />);
