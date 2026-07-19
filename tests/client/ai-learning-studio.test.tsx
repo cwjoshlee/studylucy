@@ -10,6 +10,7 @@ import {
   type AiStudioPanel,
   type AiStudioTreeState
 } from "../../src/client/guardian/ai-learning-studio";
+import { ApiClient } from "../../src/client/api/client";
 
 afterEach(cleanup);
 
@@ -31,6 +32,28 @@ function createApi(): AiLearningStudioApi {
 }
 
 describe("AiLearningStudio", () => {
+  it("shows an availability message when both settings routes are absent", async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      code: "HTTP_404"
+    }), {
+      status: 404,
+      headers: { "content-type": "application/json" }
+    }));
+
+    render(
+      <AiLearningStudio
+        api={new ApiClient(fetcher)}
+        onPanelChange={vi.fn()}
+        panel="settings"
+      />
+    );
+
+    expect(await screen.findByRole("alert"))
+      .toHaveTextContent("AI 학습실 설정을 불러오지 못했어요.");
+    expect(fetcher).toHaveBeenCalledTimes(2);
+    expect(screen.queryByText(/TypeError/)).not.toBeInTheDocument();
+  });
+
   it("renders for direct consumers using only its approved public props", () => {
     render(
       <AiLearningStudio

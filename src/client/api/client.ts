@@ -99,6 +99,43 @@ export type AiStudioProviderInput = {
   outputWonPer1K?: number;
 };
 
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
+function isNonnegativeSafeInteger(value: unknown): value is number {
+  return typeof value === "number" && Number.isSafeInteger(value) && value >= 0;
+}
+
+function isAiProviderSettingsView(value: unknown): value is AiProviderSettingsView {
+  if (!isRecord(value)) return false;
+  return (value.provider === "gemini" || value.provider === "openai") &&
+    typeof value.enabled === "boolean" &&
+    typeof value.model === "string" && value.model.trim().length > 0 &&
+    typeof value.hasApiKey === "boolean" &&
+    isNonnegativeSafeInteger(value.inputWonPer1K) &&
+    isNonnegativeSafeInteger(value.outputWonPer1K);
+}
+
+function readAiProviderSettings(value: unknown): AiProviderSettingsView[] | null {
+  return Array.isArray(value) && value.every(isAiProviderSettingsView)
+    ? value
+    : null;
+}
+
+function readAiStudioSettings(value: unknown): AiStudioSettingsView | null {
+  if (!isRecord(value)) return null;
+  const providers = readAiProviderSettings(value.providers);
+  if (providers === null ||
+      !isNonnegativeSafeInteger(value.monthlyBudgetWon) ||
+      !isNonnegativeSafeInteger(value.monthSpentWon)) return null;
+  return {
+    providers,
+    monthlyBudgetWon: value.monthlyBudgetWon,
+    monthSpentWon: value.monthSpentWon
+  };
+}
+
 export class ApiClient {
   constructor(
     private fetcher: Fetcher = fetch,
@@ -343,8 +380,16 @@ export class ApiClient {
     return this.request("PUT", "/api/guardian/ai-coach-settings", input);
   }
 
-  getAiStudioSettings(): Promise<AiProviderSettingsView[]> {
-    return this.request("GET", "/api/guardian/ai-studio/settings");
+  async getAiStudioSettings(): Promise<AiProviderSettingsView[]> {
+    const value = await this.request<unknown>(
+      "GET",
+      "/api/guardian/ai-studio/settings"
+    );
+    const fullSettings = readAiStudioSettings(value);
+    if (fullSettings !== null) return fullSettings.providers;
+    const providers = readAiProviderSettings(value);
+    if (providers !== null) return providers;
+    throw new ApiError(502, "AI_STUDIO_SETTINGS_UNAVAILABLE");
   }
 
   async getAiStudioSettingsView(): Promise<AiStudioSettingsView> {
@@ -352,10 +397,17 @@ export class ApiClient {
       return await this.request("GET", "/api/guardian/ai-studio/settings/view");
     } catch (error) {
       if (!(error instanceof ApiError) || error.status !== 404) throw error;
-      const [providers, coach] = await Promise.all([
-        this.getAiStudioSettings(),
-        this.getAiCoachSettings()
-      ]);
+      const predecessor = await this.request<unknown>(
+        "GET",
+        "/api/guardian/ai-studio/settings"
+      );
+      const fullSettings = readAiStudioSettings(predecessor);
+      if (fullSettings !== null) return fullSettings;
+      const providers = readAiProviderSettings(predecessor);
+      if (providers === null) {
+        throw new ApiError(502, "AI_STUDIO_SETTINGS_UNAVAILABLE");
+      }
+      const coach = await this.getAiCoachSettings();
       return {
         providers,
         monthlyBudgetWon: coach.monthlyBudgetWon,
