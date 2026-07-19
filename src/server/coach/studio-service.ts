@@ -63,7 +63,15 @@ type ProviderRow = {
 };
 
 type CompleteUsage = { inputTokens: number; outputTokens: number };
-type UsageReservation = { id: number; reservedWon: number };
+type UsageReservation = {
+  id: number;
+  reservedWon: number;
+  provider: AiCoachProvider;
+  model: string;
+  inputWonPer1K: number;
+  outputWonPer1K: number;
+  apiKey: string;
+};
 
 type DraftRow = {
   id: string;
@@ -238,8 +246,8 @@ function completeUsage(provider: AiCoachProvider, value: unknown): CompleteUsage
   const outputTokens = provider === "openai"
     ? body.usage?.output_tokens
     : body.usageMetadata?.candidatesTokenCount;
-  return Number.isFinite(inputTokens) && Number.isInteger(inputTokens) && Number(inputTokens) >= 0 &&
-    Number.isFinite(outputTokens) && Number.isInteger(outputTokens) && Number(outputTokens) >= 0
+  return Number.isSafeInteger(inputTokens) && Number(inputTokens) >= 0 &&
+    Number.isSafeInteger(outputTokens) && Number(outputTokens) >= 0
     ? { inputTokens: Number(inputTokens), outputTokens: Number(outputTokens) }
     : null;
 }
@@ -253,10 +261,16 @@ function estimatedWon(
   outputTokens: number,
   inputWonPer1K: number,
   outputWonPer1K: number
-): number {
-  return Math.max(1, Math.ceil(
-    (inputTokens * inputWonPer1K + outputTokens * outputWonPer1K) / 1_000
-  ));
+): number | null {
+  if (![inputTokens, outputTokens, inputWonPer1K, outputWonPer1K]
+    .every((value) => Number.isSafeInteger(value) && value >= 0)) return null;
+  const inputCost = inputTokens * inputWonPer1K;
+  const outputCost = outputTokens * outputWonPer1K;
+  if (!Number.isSafeInteger(inputCost) || !Number.isSafeInteger(outputCost)) return null;
+  const totalCost = inputCost + outputCost;
+  if (!Number.isSafeInteger(totalCost)) return null;
+  const won = Math.max(1, Math.ceil(totalCost / 1_000));
+  return Number.isSafeInteger(won) ? won : null;
 }
 
 function parseProviderJson(value: unknown): unknown {
@@ -441,7 +455,12 @@ export class AiStudioService {
           candidate,
           preReviewReasons,
           review: preReviewReasons.length === 0
-            ? await this.review(otherProvider(provider), provider, candidate, request.data)
+            ? await this.review(
+                otherProvider(provider),
+                provider,
+                validation.payload!,
+                request.data
+              )
             : null
         };
       })
@@ -730,38 +749,26 @@ export class AiStudioService {
     settings: ProviderRow,
     prompt: Record<string, unknown>
   ): Promise<unknown> {
-    if (this.deps.encryptionKey === null || !hasStoredKey(settings)) {
-      throw new AiStudioError("AI_STUDIO_API_KEY_REQUIRED");
-    }
-    let apiKey: string;
-    try {
-      apiKey = decryptApiKey({
-        ciphertext: settings.ciphertext!,
-        iv: settings.iv!,
-        tag: settings.tag!
-      }, this.deps.encryptionKey);
-    } catch {
-      throw new AiStudioError("AI_STUDIO_API_KEY_REQUIRED");
-    }
     const action = prompt.action;
     if (action !== "generate" && action !== "review" && action !== "report") {
       throw new AiStudioError("AI_STUDIO_INVALID_REQUEST");
     }
     const outputTokenCap = STUDIO_OUTPUT_TOKEN_CAPS[action];
     const reservation = this.reserveBudget(
-      settings,
+      settings.provider,
       estimatedInputTokens(STUDIO_PERSONA, prompt),
       outputTokenCap
     );
     if (reservation === null) {
       throw new AiStudioError("AI_STUDIO_BUDGET_EXCEEDED");
     }
+    let apiKey = reservation.apiKey;
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), this.timeoutMs);
     try {
-      const response = settings.provider === "gemini"
+      const response = reservation.provider === "gemini"
         ? await this.fetcher(
-            `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(settings.model)}:generateContent`,
+            `https://generativelanguage.googleapis.com/v1beta/models/${encodeURIComponent(reservation.model)}:generateContent`,
             {
               method: "POST",
               headers: { "content-type": "application/json", "x-goog-api-key": apiKey },
@@ -780,7 +787,7 @@ export class AiStudioService {
             method: "POST",
             headers: { "content-type": "application/json", authorization: `Bearer ${apiKey}` },
             body: JSON.stringify({
-              model: settings.model,
+              model: reservation.model,
               input: [
                 { role: "developer", content: STUDIO_PERSONA },
                 { role: "user", content: JSON.stringify(prompt) }
@@ -793,9 +800,9 @@ export class AiStudioService {
           });
       if (!response.ok) throw new AiStudioError("AI_STUDIO_PROVIDER_FAILED");
       const body: unknown = await response.json();
-      const usage = completeUsage(settings.provider, body);
-      if (usage !== null) this.reconcileBudget(reservation, settings, usage);
-      const text = settings.provider === "gemini"
+      const usage = completeUsage(reservation.provider, body);
+      if (usage !== null) this.reconcileBudget(reservation, usage);
+      const text = reservation.provider === "gemini"
         ? (body as { candidates?: Array<{ content?: { parts?: Array<{ text?: unknown }> } }> })
             .candidates?.[0]?.content?.parts?.[0]?.text
         : parseOpenAiOutputText(body);
@@ -809,6 +816,7 @@ export class AiStudioService {
     } finally {
       clearTimeout(timer);
       apiKey = "";
+      reservation.apiKey = "";
     }
   }
 
@@ -821,15 +829,36 @@ export class AiStudioService {
   }
 
   private reserveBudget(
-    settings: ProviderRow,
+    provider: AiCoachProvider,
     inputTokens: number,
     outputTokens: number
   ): UsageReservation | null {
     return this.deps.db.transaction(() => {
-      const budget = this.deps.db.prepare(`
-        SELECT monthly_budget_won AS budget
-        FROM ai_coach_settings WHERE singleton = 1
-      `).get() as { budget: number };
+      const current = this.deps.db.prepare(`
+        SELECT coach.monthly_budget_won AS budget,
+          provider.provider, provider.enabled, provider.model,
+          provider.api_key_ciphertext AS ciphertext,
+          provider.api_key_iv AS iv, provider.api_key_tag AS tag,
+          provider.input_won_per_1k AS inputWonPer1K,
+          provider.output_won_per_1k AS outputWonPer1K
+        FROM ai_coach_settings AS coach
+        JOIN ai_provider_settings AS provider ON provider.provider = ?
+        WHERE coach.singleton = 1
+      `).get(provider) as (ProviderRow & { budget: number }) | undefined;
+      if (current === undefined || current.enabled !== 1 ||
+          this.deps.encryptionKey === null || !hasStoredKey(current)) {
+        throw new AiStudioError("AI_STUDIO_API_KEY_REQUIRED");
+      }
+      let apiKey: string;
+      try {
+        apiKey = decryptApiKey({
+          ciphertext: current.ciphertext!,
+          iv: current.iv!,
+          tag: current.tag!
+        }, this.deps.encryptionKey);
+      } catch {
+        throw new AiStudioError("AI_STUDIO_API_KEY_REQUIRED");
+      }
       const spent = this.deps.db.prepare(`
         SELECT COALESCE(SUM(estimated_won), 0) AS spent
         FROM ai_coach_usage WHERE month = ?
@@ -837,10 +866,13 @@ export class AiStudioService {
       const reservedWon = estimatedWon(
         inputTokens,
         outputTokens,
-        settings.inputWonPer1K,
-        settings.outputWonPer1K
+        current.inputWonPer1K,
+        current.outputWonPer1K
       );
-      if (spent.spent + reservedWon > budget.budget) return null;
+      if (reservedWon === null) return null;
+      const projected = spent.spent + reservedWon;
+      if (!Number.isSafeInteger(spent.spent) || !Number.isSafeInteger(current.budget) ||
+          !Number.isSafeInteger(projected) || projected > current.budget) return null;
       const result = this.deps.db.prepare(`
         INSERT INTO ai_coach_usage (
           month, provider, model, input_tokens, output_tokens,
@@ -849,30 +881,38 @@ export class AiStudioService {
         ) VALUES (?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)
       `).run(
         monthAt(this.now()),
-        settings.provider,
-        settings.model,
+        current.provider,
+        current.model,
         reservedWon,
         this.now().toISOString(),
         inputTokens,
         outputTokens,
-        settings.inputWonPer1K,
-        settings.outputWonPer1K
+        current.inputWonPer1K,
+        current.outputWonPer1K
       );
-      return { id: Number(result.lastInsertRowid), reservedWon };
+      return {
+        id: Number(result.lastInsertRowid),
+        reservedWon,
+        provider: current.provider,
+        model: current.model,
+        inputWonPer1K: current.inputWonPer1K,
+        outputWonPer1K: current.outputWonPer1K,
+        apiKey
+      };
     }).immediate();
   }
 
   private reconcileBudget(
     reservation: UsageReservation,
-    settings: ProviderRow,
     usage: CompleteUsage
   ): void {
     const observedWon = estimatedWon(
       usage.inputTokens,
       usage.outputTokens,
-      settings.inputWonPer1K,
-      settings.outputWonPer1K
+      reservation.inputWonPer1K,
+      reservation.outputWonPer1K
     );
+    if (observedWon === null) return;
     this.deps.db.prepare(`
       UPDATE ai_coach_usage
       SET input_tokens = ?, output_tokens = ?, estimated_won = ?
@@ -880,7 +920,7 @@ export class AiStudioService {
     `).run(
       usage.inputTokens,
       usage.outputTokens,
-      Math.min(reservation.reservedWon, observedWon),
+      observedWon,
       reservation.id
     );
   }

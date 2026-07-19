@@ -102,18 +102,24 @@ function estimatedWon(
   outputTokens: number,
   inputWonPer1K: number,
   outputWonPer1K: number
-): number {
-  return Math.max(1, Math.ceil(
-    (inputTokens * inputWonPer1K + outputTokens * outputWonPer1K) / 1_000
-  ));
+): number | null {
+  if (![inputTokens, outputTokens, inputWonPer1K, outputWonPer1K]
+    .every((value) => Number.isSafeInteger(value) && value >= 0)) return null;
+  const inputCost = inputTokens * inputWonPer1K;
+  const outputCost = outputTokens * outputWonPer1K;
+  if (!Number.isSafeInteger(inputCost) || !Number.isSafeInteger(outputCost)) return null;
+  const totalCost = inputCost + outputCost;
+  if (!Number.isSafeInteger(totalCost)) return null;
+  const won = Math.max(1, Math.ceil(totalCost / 1_000));
+  return Number.isSafeInteger(won) ? won : null;
 }
 
 function completeUsage(inputTokens: unknown, outputTokens: unknown): {
   inputTokens: number;
   outputTokens: number;
 } | null {
-  return Number.isFinite(inputTokens) && Number.isInteger(inputTokens) && Number(inputTokens) >= 0 &&
-    Number.isFinite(outputTokens) && Number.isInteger(outputTokens) && Number(outputTokens) >= 0
+  return Number.isSafeInteger(inputTokens) && Number(inputTokens) >= 0 &&
+    Number.isSafeInteger(outputTokens) && Number(outputTokens) >= 0
     ? { inputTokens: Number(inputTokens), outputTokens: Number(outputTokens) }
     : null;
 }
@@ -191,24 +197,19 @@ export class AiCoachService {
   }
 
   async message(input: CoachMessageRequest): Promise<CoachMessageResponse> {
-    const settings = this.settingsRow();
-    if (settings.enabled !== 1 || this.deps.encryptionKey === null || !this.hasStoredKey(settings)) {
-      return this.local();
-    }
-    let apiKey: string;
-    try {
-      apiKey = decryptApiKey({ ciphertext: settings.ciphertext!, iv: settings.iv!, tag: settings.tag! }, this.deps.encryptionKey);
-    } catch {
-      return this.local();
-    }
-
-    const reservation = this.reserveUsage(settings, estimatedInputTokens(input));
+    if (this.deps.encryptionKey === null) return this.local();
+    const reservation = this.reserveUsage(estimatedInputTokens(input));
     if (reservation === null) return this.local();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 4_000);
     try {
-      const provider = await this.callProvider(settings, apiKey, input, controller.signal);
-      if (provider.usage !== null) this.reconcileUsage(reservation, settings, provider.usage);
+      const provider = await this.callProvider(
+        reservation.settings,
+        reservation.apiKey,
+        input,
+        controller.signal
+      );
+      if (provider.usage !== null) this.reconcileUsage(reservation, provider.usage);
       const message = parseJsonMessage(provider.text);
       if (message === null) return this.local();
       return { message, source: "llm" };
@@ -216,6 +217,7 @@ export class AiCoachService {
       return this.local();
     } finally {
       clearTimeout(timer);
+      reservation.apiKey = "";
     }
   }
 
@@ -265,19 +267,33 @@ export class AiCoachService {
   }
 
   private reserveUsage(
-    settings: SettingsRow,
     inputTokens: number
-  ): { id: number; reservedWon: number } | null {
+  ): { id: number; reservedWon: number; settings: SettingsRow; apiKey: string } | null {
     return this.deps.db.transaction(() => {
+      const settings = this.settingsRow();
+      if (settings.enabled !== 1 || this.deps.encryptionKey === null ||
+          !this.hasStoredKey(settings)) return null;
+      let apiKey: string;
+      try {
+        apiKey = decryptApiKey({
+          ciphertext: settings.ciphertext!,
+          iv: settings.iv!,
+          tag: settings.tag!
+        }, this.deps.encryptionKey);
+      } catch {
+        return null;
+      }
       const reservedWon = estimatedWon(
         inputTokens,
         PROVIDER_OUTPUT_TOKEN_CAP,
         settings.inputWonPer1K,
         settings.outputWonPer1K
       );
-      if (this.monthSpent() + reservedWon > settings.monthlyBudgetWon) {
-        return null;
-      }
+      if (reservedWon === null) return null;
+      const spent = this.monthSpent();
+      const projected = spent + reservedWon;
+      if (!Number.isSafeInteger(spent) || !Number.isSafeInteger(settings.monthlyBudgetWon) ||
+          !Number.isSafeInteger(projected) || projected > settings.monthlyBudgetWon) return null;
       const result = this.deps.db.prepare(`
         INSERT INTO ai_coach_usage
           (month, provider, model, input_tokens, output_tokens, estimated_won, created_at,
@@ -294,21 +310,21 @@ export class AiCoachService {
         settings.inputWonPer1K,
         settings.outputWonPer1K
       );
-      return { id: Number(result.lastInsertRowid), reservedWon };
+      return { id: Number(result.lastInsertRowid), reservedWon, settings, apiKey };
     }).immediate();
   }
 
   private reconcileUsage(
-    reservation: { id: number; reservedWon: number },
-    settings: SettingsRow,
+    reservation: { id: number; reservedWon: number; settings: SettingsRow },
     usage: { inputTokens: number; outputTokens: number }
   ): void {
     const observedWon = estimatedWon(
       usage.inputTokens,
       usage.outputTokens,
-      settings.inputWonPer1K,
-      settings.outputWonPer1K
+      reservation.settings.inputWonPer1K,
+      reservation.settings.outputWonPer1K
     );
+    if (observedWon === null) return;
     this.deps.db.prepare(`
       UPDATE ai_coach_usage
       SET input_tokens = ?, output_tokens = ?, estimated_won = ?
@@ -316,7 +332,7 @@ export class AiCoachService {
     `).run(
       usage.inputTokens,
       usage.outputTokens,
-      Math.min(reservation.reservedWon, observedWon),
+      observedWon,
       reservation.id
     );
   }
