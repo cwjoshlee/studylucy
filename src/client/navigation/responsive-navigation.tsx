@@ -1,6 +1,7 @@
 import {
   useEffect,
   useId,
+  useLayoutEffect,
   useRef,
   useState,
   type JSX,
@@ -37,10 +38,13 @@ export function ResponsiveNavigation({
   const drawerRef = useRef<HTMLDivElement>(null);
   const fabRef = useRef<HTMLButtonElement>(null);
   const railRef = useRef<HTMLElement>(null);
+  const rootRef = useRef<HTMLDivElement>(null);
+  const drawerOpenRef = useRef(false);
   const closeFocusTarget = useRef<"fab" | "rail" | "destination">("fab");
   const drawerSelectionId = useRef<string | null>(null);
   const drawerWasOpen = useRef(false);
   const expanded = new Set(expandedIds);
+  drawerOpenRef.current = drawerOpen;
 
   function closeDrawer(focusTarget: "fab" | "rail" | "destination" = "fab"): void {
     closeFocusTarget.current = focusTarget;
@@ -81,11 +85,108 @@ export function ResponsiveNavigation({
     const landscapeRail = window.matchMedia(
       "(min-width: 900px) and (orientation: landscape)"
     );
+    let wasLandscape = landscapeRail.matches;
+    let cancelScheduledFocus: (() => void) | null = null;
     const handleLayoutChange = (event: MediaQueryListEvent) => {
-      if (event.matches && drawerOpen) closeDrawer("rail");
+      cancelScheduledFocus?.();
+      cancelScheduledFocus = null;
+      if (event.matches && drawerOpenRef.current) {
+        closeFocusTarget.current = "rail";
+        setDrawerOpen(false);
+      } else if (!event.matches && wasLandscape) {
+        const focusedRailEntry = document.activeElement;
+        if (
+          focusedRailEntry instanceof HTMLElement &&
+          railRef.current?.contains(focusedRailEntry)
+        ) {
+          const moveFocus = () => {
+            cancelScheduledFocus = null;
+            if (
+              !landscapeRail.matches &&
+              document.activeElement === focusedRailEntry &&
+              fabRef.current?.isConnected
+            ) {
+              fabRef.current.focus();
+            }
+          };
+          if (typeof window.requestAnimationFrame === "function") {
+            const frame = window.requestAnimationFrame(moveFocus);
+            cancelScheduledFocus = () => window.cancelAnimationFrame(frame);
+          } else {
+            const timeout = window.setTimeout(moveFocus, 0);
+            cancelScheduledFocus = () => window.clearTimeout(timeout);
+          }
+        }
+      }
+      wasLandscape = event.matches;
     };
     landscapeRail.addEventListener("change", handleLayoutChange);
-    return () => landscapeRail.removeEventListener("change", handleLayoutChange);
+    return () => {
+      cancelScheduledFocus?.();
+      landscapeRail.removeEventListener("change", handleLayoutChange);
+    };
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!drawerOpen) return;
+    const root = rootRef.current;
+    const drawer = drawerRef.current;
+    const rail = railRef.current;
+    if (root === null || drawer === null || rail === null) return;
+
+    const protectedElements = new Set<HTMLElement>([rail]);
+    const shell = root.closest<HTMLElement>(".responsive-shell");
+    const appScope = root.closest<HTMLElement>(".guardian-shell") ?? shell;
+    if (appScope !== null) {
+      let modalBranch: HTMLElement = root;
+      while (modalBranch !== appScope) {
+        const parent = modalBranch.parentElement;
+        if (parent === null || !appScope.contains(parent)) break;
+        for (const sibling of Array.from(parent.children)) {
+          if (sibling instanceof HTMLElement && sibling !== modalBranch) {
+            protectedElements.add(sibling);
+          }
+        }
+        modalBranch = parent;
+      }
+    }
+
+    const restoreBoundaries = Array.from(protectedElements, (element) => {
+      const previousInert = element.getAttribute("inert");
+      const previousAriaHidden = element.getAttribute("aria-hidden");
+      const blockInteraction = (event: Event) => {
+        event.preventDefault();
+        event.stopImmediatePropagation();
+      };
+      const redirectFocus = (event: FocusEvent) => {
+        if (element.contains(event.target as Node)) {
+          event.preventDefault();
+          drawer.querySelector<HTMLButtonElement>("[data-drawer-close]")?.focus();
+        }
+      };
+
+      element.setAttribute("inert", "");
+      element.setAttribute("aria-hidden", "true");
+      element.addEventListener("click", blockInteraction, true);
+      element.addEventListener("pointerdown", blockInteraction, true);
+      element.addEventListener("keydown", blockInteraction, true);
+      element.addEventListener("focusin", redirectFocus, true);
+
+      return () => {
+        if (previousInert === null) element.removeAttribute("inert");
+        else element.setAttribute("inert", previousInert);
+        if (previousAriaHidden === null) element.removeAttribute("aria-hidden");
+        else element.setAttribute("aria-hidden", previousAriaHidden);
+        element.removeEventListener("click", blockInteraction, true);
+        element.removeEventListener("pointerdown", blockInteraction, true);
+        element.removeEventListener("keydown", blockInteraction, true);
+        element.removeEventListener("focusin", redirectFocus, true);
+      };
+    });
+
+    return () => {
+      for (const restore of restoreBoundaries) restore();
+    };
   }, [drawerOpen]);
 
   function trapDrawerFocus(event: KeyboardEvent<HTMLDivElement>): void {
@@ -152,7 +253,7 @@ export function ResponsiveNavigation({
   );
 
   return (
-    <div className="responsive-nav">
+    <div className="responsive-nav" ref={rootRef}>
       <nav aria-label={label} className="responsive-nav__rail" ref={railRef}>
         {renderEntries("rail", entries)}
       </nav>
