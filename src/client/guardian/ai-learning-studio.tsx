@@ -10,13 +10,16 @@ import {
   LearningItemPayloadSchema,
   type AiDraftItemView,
   type AiDraftView,
-  type AiProviderSettingsView,
   type AiStudioSettingsView,
   type GuardianAiReport,
   type LearningItemPayload,
   type LearningStep
 } from "../../shared/learning";
-import type { ApiClient } from "../api/client";
+import type {
+  AiStudioProviderSettingsReadView,
+  AiStudioSettingsReadView,
+  ApiClient
+} from "../api/client";
 
 export type AiStudioPanel = "settings" | "generate-math" | "generate-korean" |
   "today-report" | "weekly-report";
@@ -44,7 +47,7 @@ type TreeLeaf = {
 };
 
 type SettingsReloadResult =
-  | { status: "applied"; settings: AiStudioSettingsView }
+  | { status: "applied"; settings: AiStudioSettingsReadView }
   | { status: "failed" }
   | { status: "stale" };
 
@@ -87,7 +90,7 @@ const PROVIDER_LABELS = {
   openai: "OpenAI"
 } as const;
 
-function loadAiStudioSettings(api: AiLearningStudioApi): Promise<AiStudioSettingsView> {
+function loadAiStudioSettings(api: AiLearningStudioApi): Promise<AiStudioSettingsReadView> {
   return api.getAiStudioSettingsView();
 }
 
@@ -154,10 +157,12 @@ export function AiLearningStudio({
   const treeItemRefs = useRef(new Map<string, HTMLElement>());
   const treeHadFocusRef = useRef(false);
   const focusRequested = useRef(false);
-  const [settings, setSettings] = useState<AiStudioSettingsView | null>(null);
+  const [settings, setSettings] = useState<AiStudioSettingsReadView | null>(null);
   const [settingsFailed, setSettingsFailed] = useState(false);
+  const [settingsReloading, setSettingsReloading] = useState(false);
   const settingsReadSequence = useRef(0);
   const activeSettingsRead = useRef<number | null>(null);
+  const settingsMounted = useRef(true);
   const settingsContext = `${panel}:${selectedLeaf}`;
   const previousSettingsContext = useRef(settingsContext);
   const visibleTreeItems = TREE_GROUPS.flatMap((group) => [
@@ -203,26 +208,34 @@ export function AiLearningStudio({
   const reloadSettings: ReloadAiStudioSettings = useCallback(async () => {
     const requestId = ++settingsReadSequence.current;
     activeSettingsRead.current = requestId;
-    setSettingsFailed(false);
+    if (settingsMounted.current) setSettingsReloading(true);
     try {
       const loaded = await loadAiStudioSettings(api);
-      if (settingsReadSequence.current !== requestId) return { status: "stale" };
+      if (settingsReadSequence.current !== requestId || !settingsMounted.current) {
+        return { status: "stale" };
+      }
       setSettings(loaded);
       setSettingsFailed(false);
       return { status: "applied", settings: loaded };
     } catch {
-      if (settingsReadSequence.current !== requestId) return { status: "stale" };
+      if (settingsReadSequence.current !== requestId || !settingsMounted.current) {
+        return { status: "stale" };
+      }
       setSettingsFailed(true);
       return { status: "failed" };
     } finally {
-      if (activeSettingsRead.current === requestId) activeSettingsRead.current = null;
+      if (activeSettingsRead.current === requestId) {
+        activeSettingsRead.current = null;
+        if (settingsMounted.current) setSettingsReloading(false);
+      }
     }
   }, [api]);
 
   useEffect(() => {
+    settingsMounted.current = true;
     void reloadSettings();
     return () => {
-      if (activeSettingsRead.current === null) return;
+      settingsMounted.current = false;
       settingsReadSequence.current += 1;
       activeSettingsRead.current = null;
     };
@@ -245,6 +258,11 @@ export function AiLearningStudio({
       openGroups: Array.from(new Set([...currentTreeState.openGroups, groupForLeaf(leaf.id)!]))
     });
     onPanelChange(leaf.panel);
+  };
+
+  const retrySettings = () => {
+    if (activeSettingsRead.current !== null) return;
+    void reloadSettings();
   };
 
   const toggleGroup = (groupId: TreeGroupId, forceOpen?: boolean) => {
@@ -395,7 +413,16 @@ export function AiLearningStudio({
       </nav>
 
       {settingsFailed ? (
-        <p role="alert">AI 학습실 설정을 불러오지 못했어요.</p>
+        <div>
+          <p role="alert">AI 학습실 설정을 불러오지 못했어요.</p>
+          <button
+            disabled={settingsReloading}
+            onClick={retrySettings}
+            type="button"
+          >
+            AI 학습실 설정 다시 불러오기
+          </button>
+        </div>
       ) : null}
       {panel === "settings" ? (
         <ProviderSettingsPanel
@@ -427,7 +454,7 @@ function ProviderSettingsPanel({
   reloadSettings
 }: {
   api: AiLearningStudioApi;
-  settings: AiStudioSettingsView | null;
+  settings: AiStudioSettingsReadView | null;
   selectedLeaf: string;
   reloadSettings: ReloadAiStudioSettings;
 }) {
@@ -471,7 +498,58 @@ function parseBoundedInteger(value: string, maximum: number): number | null {
   return Number.isSafeInteger(parsed) && parsed <= maximum ? parsed : null;
 }
 
+function hasEditableRateSettings(settings: AiStudioSettingsReadView): settings is AiStudioSettingsView {
+  return (["gemini", "openai"] as const).every((providerId) => {
+    const provider = settings.providers.find((item) => item.provider === providerId);
+    if (provider === undefined) return false;
+    const { inputWonPer1K, outputWonPer1K } = provider;
+    return typeof inputWonPer1K === "number" &&
+      Number.isSafeInteger(inputWonPer1K) && inputWonPer1K >= 0 &&
+      typeof outputWonPer1K === "number" &&
+      Number.isSafeInteger(outputWonPer1K) && outputWonPer1K >= 0;
+  });
+}
+
+function LegacyBudgetSettingsPanel({ settings }: { settings: AiStudioSettingsReadView }) {
+  const remaining = settings.monthlyBudgetWon - settings.monthSpentWon;
+  return (
+    <section className="ai-budget-panel" aria-labelledby="ai-budget-title">
+      <div>
+        <h3 id="ai-budget-title">월 예산·사용량</h3>
+        <p>표시 금액은 이전 서버의 실제 코치 설정에서 읽은 값이에요.</p>
+      </div>
+      <div className="ai-budget-summary" aria-label="이번 달 AI 예상 사용 현황">
+        <p>월 예상 예산 {settings.monthlyBudgetWon.toLocaleString("ko-KR")}원</p>
+        <p>이번 달 사용 {settings.monthSpentWon.toLocaleString("ko-KR")}원</p>
+        <p className={remaining < 0 ? "ai-budget-summary__over" : ""}>
+          {remaining < 0
+            ? `예상 예산 초과 ${Math.abs(remaining).toLocaleString("ko-KR")}원`
+            : `남은 예상 예산 ${remaining.toLocaleString("ko-KR")}원`}
+        </p>
+      </div>
+      <p role="status">
+        이전 서버에서는 예상 요금을 수정할 수 없어요. 현재 서버로 업데이트한 뒤 다시 시도해 주세요.
+      </p>
+    </section>
+  );
+}
+
 function BudgetSettingsPanel({
+  api,
+  settings,
+  reloadSettings
+}: {
+  api: AiLearningStudioApi;
+  settings: AiStudioSettingsReadView;
+  reloadSettings: ReloadAiStudioSettings;
+}) {
+  if (!hasEditableRateSettings(settings)) {
+    return <LegacyBudgetSettingsPanel settings={settings} />;
+  }
+  return <EditableBudgetSettingsPanel api={api} reloadSettings={reloadSettings} settings={settings} />;
+}
+
+function EditableBudgetSettingsPanel({
   api,
   settings,
   reloadSettings
@@ -678,7 +756,7 @@ function ProviderCard({
   reloadSettings
 }: {
   api: AiLearningStudioApi;
-  settings: AiProviderSettingsView;
+  settings: AiStudioProviderSettingsReadView;
   reloadSettings: ReloadAiStudioSettings;
 }) {
   const label = PROVIDER_LABELS[settings.provider];
@@ -858,7 +936,7 @@ function DraftPanel({
   subject
 }: {
   api: Pick<ApiClient, "createAiDraft" | "updateAiDraftItem" | "publishAiDraft">;
-  settings: AiProviderSettingsView[] | null;
+  settings: AiStudioProviderSettingsReadView[] | null;
   subject: "math" | "korean";
 }) {
   const [step, setStep] = useState<LearningStep>("current");

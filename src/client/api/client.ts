@@ -99,6 +99,16 @@ export type AiStudioProviderInput = {
   outputWonPer1K?: number;
 };
 
+export type AiStudioProviderSettingsReadView = Omit<AiProviderSettingsView,
+  "inputWonPer1K" | "outputWonPer1K"> & {
+  inputWonPer1K?: number;
+  outputWonPer1K?: number;
+};
+
+export type AiStudioSettingsReadView = Omit<AiStudioSettingsView, "providers"> & {
+  providers: AiStudioProviderSettingsReadView[];
+};
+
 function isRecord(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === "object" && !Array.isArray(value);
 }
@@ -119,6 +129,20 @@ function isAiProviderSettingsView(value: unknown): value is AiProviderSettingsVi
 
 function readAiProviderSettings(value: unknown): AiProviderSettingsView[] | null {
   return Array.isArray(value) && value.every(isAiProviderSettingsView)
+    ? value
+    : null;
+}
+
+function isLegacyAiProviderSettingsView(value: unknown): value is AiStudioProviderSettingsReadView {
+  if (!isRecord(value)) return false;
+  return (value.provider === "gemini" || value.provider === "openai") &&
+    typeof value.enabled === "boolean" &&
+    typeof value.model === "string" && value.model.trim().length > 0 &&
+    typeof value.hasApiKey === "boolean";
+}
+
+function readLegacyAiProviderSettings(value: unknown): AiStudioProviderSettingsReadView[] | null {
+  return Array.isArray(value) && value.every(isLegacyAiProviderSettingsView)
     ? value
     : null;
 }
@@ -392,9 +416,12 @@ export class ApiClient {
     throw new ApiError(502, "AI_STUDIO_SETTINGS_UNAVAILABLE");
   }
 
-  async getAiStudioSettingsView(): Promise<AiStudioSettingsView> {
+  async getAiStudioSettingsView(): Promise<AiStudioSettingsReadView> {
     try {
-      return await this.request("GET", "/api/guardian/ai-studio/settings/view");
+      const current = await this.request<unknown>("GET", "/api/guardian/ai-studio/settings/view");
+      const settings = readAiStudioSettings(current);
+      if (settings === null) throw new ApiError(502, "AI_STUDIO_SETTINGS_UNAVAILABLE");
+      return settings;
     } catch (error) {
       if (!(error instanceof ApiError) || error.status !== 404) throw error;
       const predecessor = await this.request<unknown>(
@@ -403,7 +430,7 @@ export class ApiClient {
       );
       const fullSettings = readAiStudioSettings(predecessor);
       if (fullSettings !== null) return fullSettings;
-      const providers = readAiProviderSettings(predecessor);
+      const providers = readLegacyAiProviderSettings(predecessor);
       if (providers === null) {
         throw new ApiError(502, "AI_STUDIO_SETTINGS_UNAVAILABLE");
       }
