@@ -718,14 +718,26 @@ describe("idle deductions and missed-plan maintenance", () => {
     const updated = await guardian.request(
       "PUT",
       "/api/guardian/daily-plans/2026-07-16",
-      { koreanTarget: 1, mathTarget: 3, isRestDay: false }
+      {
+        koreanTarget: 1,
+        mathTarget: 3,
+        isRestDay: false,
+        subjectSettings: {
+          korean: { difficulty: 4, challengeBonusStars: 3 },
+          math: { difficulty: 2, challengeBonusStars: 1 }
+        }
+      }
     );
     expect(updated.statusCode).toBe(200);
     expect(updated.json()).toMatchObject({
       studyDate: "2026-07-16",
       koreanTarget: 1,
       mathTarget: 3,
-      isRestDay: false
+      isRestDay: false,
+      subjectSettings: {
+        korean: { difficulty: 4, challengeBonusStars: 3 },
+        math: { difficulty: 2, challengeBonusStars: 1 }
+      }
     });
     expect(updated.json().requiredItemIds).toHaveLength(6);
     expect((await guardian.request(
@@ -752,7 +764,12 @@ describe("idle deductions and missed-plan maintenance", () => {
     const locked = await guardian.request(
       "PUT",
       "/api/guardian/daily-plans/2026-07-16",
-      { koreanTarget: 0, mathTarget: 0, isRestDay: true }
+      {
+        koreanTarget: 0,
+        mathTarget: 0,
+        isRestDay: true,
+        subjectSettings: updated.json().subjectSettings
+      }
     );
     expect(locked.statusCode).toBe(409);
     expect(locked.json()).toEqual({ code: "PLAN_LOCKED" });
@@ -1091,7 +1108,15 @@ describe("idle deductions and missed-plan maintenance", () => {
     const failed = await guardian.request(
       "PUT",
       "/api/guardian/daily-plans/2026-07-16",
-      { koreanTarget: 1, mathTarget: 1, isRestDay: false }
+      {
+        koreanTarget: 1,
+        mathTarget: 1,
+        isRestDay: false,
+        subjectSettings: {
+          korean: { difficulty: 5, challengeBonusStars: 4 },
+          math: { difficulty: 1, challengeBonusStars: 0 }
+        }
+      }
     );
     expect(failed.statusCode).toBe(500);
     harness.db.exec("DROP TRIGGER fail_requirement_insert");
@@ -1110,7 +1135,12 @@ describe("idle deductions and missed-plan maintenance", () => {
     const locked = await guardian.request(
       "PUT",
       "/api/guardian/daily-plans/2026-07-14",
-      { koreanTarget: 0, mathTarget: 0, isRestDay: true }
+      {
+        koreanTarget: 0,
+        mathTarget: 0,
+        isRestDay: true,
+        subjectSettings: before.subjectSettings
+      }
     );
     expect(locked.statusCode).toBe(409);
     expect(locked.json()).toEqual({ code: "PLAN_LOCKED" });

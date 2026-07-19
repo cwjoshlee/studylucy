@@ -27,6 +27,12 @@ function openVersionThreeDatabase() {
   return db;
 }
 
+function migrationVersions(db: ReturnType<typeof openDatabase>): number[] {
+  return (db.prepare(`
+    SELECT version FROM schema_migrations ORDER BY version
+  `).all() as Array<{ version: number }>).map(({ version }) => version);
+}
+
 describe("database bootstrap", () => {
   const db = openDatabase(":memory:");
 
@@ -36,8 +42,7 @@ describe("database bootstrap", () => {
     migrate(db);
     migrate(db);
 
-    expect(db.prepare("select count(*) as count from schema_migrations").get())
-      .toEqual({ count: 8 });
+    expect(migrationVersions(db)).toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9]);
   });
 
   it("seeds the exact thirteen Korean and ten math items", () => {
@@ -224,8 +229,9 @@ describe("database bootstrap", () => {
       migrate(versionTwo);
       migrate(versionTwo);
 
-      expect(versionTwo.prepare("SELECT COUNT(*) AS count FROM schema_migrations").get())
-        .toEqual({ count: 8 });
+      expect(migrationVersions(versionTwo)).toEqual([
+        1, 2, 3, 4, 5, 6, 7, 8, 9
+      ]);
       const deviceColumns = versionTwo.prepare("PRAGMA table_info('trusted_devices')").all()
         .map((column) => (column as { name: string }).name);
       expect(deviceColumns).toEqual(expect.arrayContaining([
@@ -376,9 +382,9 @@ describe("database bootstrap", () => {
       migrate(versionThree);
       migrate(versionThree);
 
-      expect(versionThree.prepare(`
-        SELECT COUNT(*) AS count FROM schema_migrations
-      `).get()).toEqual({ count: 8 });
+      expect(migrationVersions(versionThree)).toEqual([
+        1, 2, 3, 4, 5, 6, 7, 8, 9
+      ]);
       expect(versionThree.prepare(`
         SELECT * FROM offline_activity_receipts
         WHERE client_event_id = 'event-v3-existing'

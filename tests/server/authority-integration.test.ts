@@ -118,10 +118,27 @@ describe("predeployment authority integration", () => {
       requiredA.map((item) => item.id)
     );
 
-    const aItem = requiredA[0]!;
-    const bFirstItem = requiredB[1]!;
-    const preservedSourceItem = requiredA[2]!;
-    const bContinuationItem = requiredB[3]!;
+    const aItem = requiredA.find((item) =>
+      item.payload.subject === "math" && item.step === "foundation"
+    )!;
+    const bFirstItem = requiredB.find((item) =>
+      item.payload.subject === "korean" && item.step === "foundation"
+    )!;
+    const preservedSourceItem = requiredA.find((item) =>
+      item.payload.subject === "math" && item.step === "current"
+    )!;
+    const bContinuationItem = requiredB.find((item) =>
+      item.payload.subject === "korean" && item.step === "current"
+    )!;
+    expect(aItem).toMatchObject({
+      step: "foundation",
+      payload: { subject: "math" }
+    });
+    expect(aItem.payload.kind).not.toBe("korean-dictation");
+    expect(bFirstItem).toMatchObject({
+      step: "foundation",
+      payload: { subject: "korean" }
+    });
     const preservedSourceAttempt = passingAttempt(
       planA,
       preservedSourceItem,
@@ -268,6 +285,9 @@ describe("predeployment authority integration", () => {
     const recoveredItem = recovery.items.find((item) =>
       item.id === preservedSourceItem.id
     )!;
+    const recoveredFoundation = recovery.items.find((item) =>
+      item.id === aItem.id
+    )!;
     const reboundPreservedAttempt = {
       ...preservedSourceAttempt,
       planId: recovery.planId
@@ -292,9 +312,17 @@ describe("predeployment authority integration", () => {
           idleStartedAt: "2026-07-15T03:00:00.000Z",
           occurredAt: "2026-07-15T03:05:00.000Z"
         }
-      }, attemptEvent(reboundPreservedAttempt, 5)]
+      }, attemptEvent(
+        passingAttempt(
+          recovery,
+          recoveredFoundation,
+          "attempt-device-a-recovery-foundation-0001",
+          "2026-07-15T03:05:00.000Z"
+        ),
+        5
+      ), attemptEvent(reboundPreservedAttempt, 6)]
     };
-    expect(recoveryBatch.events[1]!.payload).toEqual({
+    expect(recoveryBatch.events[2]!.payload).toEqual({
       ...preservedSourceAttempt,
       planId: recovery.planId
     });
@@ -305,12 +333,12 @@ describe("predeployment authority integration", () => {
     );
     expect(recovered.statusCode).toBe(200);
     expect(recovered.json()).toMatchObject({
-      activityCursor: 5,
+      activityCursor: 6,
       stars: {
-        balance: 5,
-        earnedToday: 5,
+        balance: 3,
+        earnedToday: 3,
         deductedToday: 0,
-        lastReason: "도전 단계를 모두 맞혔어요"
+        lastReason: "필수 학습을 완료했어요"
       },
       processedPlan: { planId: recovery.planId, planKind: "recovery" },
       currentDailyPlan: { planId: currentA.planId },
@@ -320,9 +348,14 @@ describe("predeployment authority integration", () => {
           idle: { outcome: "order-conflict-waived" }
         },
         {
+          clientId: "attempt-device-a-recovery-foundation-0001",
+          status: "APPLIED",
+          attempt: { completed: true, starAward: { amount: 0, balance: 2 } }
+        },
+        {
           clientId: preservedSourceAttempt.clientAttemptId,
           status: "APPLIED",
-          attempt: { completed: true, starAward: { amount: 1, balance: 5 } }
+          attempt: { completed: true, starAward: { amount: 1, balance: 3 } }
         }
       ]
     });
@@ -374,13 +407,13 @@ describe("predeployment authority integration", () => {
     expect(bStillCurrent).toMatchObject({
       planId: planB.planId,
       offlineEpoch: planB.offlineEpoch,
-      activityCursor: 5,
+      activityCursor: 6,
       completedItemIds: completedBeforeContinuation,
       stars: {
-        balance: 5,
-        earnedToday: 5,
+        balance: 3,
+        earnedToday: 3,
         deductedToday: 0,
-        lastReason: "도전 단계를 모두 맞혔어요"
+        lastReason: "필수 학습을 완료했어요"
       }
     });
     expect(bStillCurrent.activityCursor).toBe(recovered.json().activityCursor);
@@ -404,18 +437,24 @@ describe("predeployment authority integration", () => {
     expect(continuation.statusCode).toBe(201);
     expect(continuation.json()).toMatchObject({
       completed: true,
-      activityCursor: 6,
-      starAward: { awarded: true, amount: 1, balance: 6 }
+      activityCursor: 7,
+      starAward: { awarded: true, amount: 1, balance: 4 }
     });
+    const completedAfterContinuation = planB.items
+      .filter((item) => new Set([
+        ...completedBeforeContinuation,
+        bContinuationItem.id
+      ]).has(item.id))
+      .map((item) => item.id);
     const bAfterContinuation = await today(b);
     expect(bAfterContinuation).toMatchObject({
       planId: planB.planId,
       offlineEpoch: planB.offlineEpoch,
-      activityCursor: 6,
-      completedItemIds: [...completedBeforeContinuation, bContinuationItem.id],
+      activityCursor: 7,
+      completedItemIds: completedAfterContinuation,
       stars: {
-        balance: 6,
-        earnedToday: 6,
+        balance: 4,
+        earnedToday: 4,
         deductedToday: 0,
         lastReason: "필수 학습을 완료했어요"
       }
@@ -587,6 +626,14 @@ describe("predeployment authority integration", () => {
     await studentLogin(client);
 
     const yesterday = await today(client);
+    const offlineEligibleItem = yesterday.items.find((item) =>
+      item.payload.subject === "math" && item.step === "foundation"
+    )!;
+    expect(offlineEligibleItem).toMatchObject({
+      step: "foundation",
+      payload: { subject: "math" }
+    });
+    expect(offlineEligibleItem.payload.kind).not.toBe("korean-dictation");
     const completeBatch = {
       clientBatchId: "batch-kst-boundary-complete-0001",
       planId: yesterday.planId,
@@ -594,7 +641,7 @@ describe("predeployment authority integration", () => {
       startCursor: yesterday.activityCursor,
       events: [attemptEvent(passingAttempt(
         yesterday,
-        yesterday.items[0]!,
+        offlineEligibleItem,
         "attempt-kst-boundary-complete-0001"
       ), 1)]
     };
@@ -655,12 +702,20 @@ describe("predeployment authority integration", () => {
     expect(afterCutoffRetry.json()).toMatchObject({ duplicate: true });
     expect(afterCutoffRetry.json().receipts).toEqual(canonicalReceipts);
 
+    const expiredEligibleItem = yesterday.items.find((item) =>
+      item.payload.subject === "math" && item.step === "current"
+    )!;
+    expect(expiredEligibleItem).toMatchObject({
+      step: "current",
+      payload: { subject: "math" }
+    });
+    expect(expiredEligibleItem.payload.kind).not.toBe("korean-dictation");
     const newExpiredBatch = {
       ...completeBatch,
       clientBatchId: "batch-kst-boundary-expired-0002",
       events: [attemptEvent(passingAttempt(
         yesterday,
-        yesterday.items[1]!,
+        expiredEligibleItem,
         "attempt-kst-boundary-expired-0002"
       ), 2)]
     };
