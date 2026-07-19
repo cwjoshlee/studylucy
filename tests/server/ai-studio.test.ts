@@ -86,6 +86,23 @@ function openAiOutput(value: unknown): object {
   };
 }
 
+function openAiReasoningOutput(value: unknown, withUsage = true): object {
+  return {
+    output: [
+      { type: "reasoning", summary: [] },
+      {
+        type: "message",
+        role: "assistant",
+        content: [
+          { type: "output_text", text: JSON.stringify(value).slice(0, 8) },
+          { type: "output_text", text: JSON.stringify(value).slice(8) }
+        ]
+      }
+    ],
+    ...(withUsage ? { usage: { input_tokens: 12, output_tokens: 18 } } : {})
+  };
+}
+
 function promptFromRequest(url: string, init: RequestInit): Record<string, unknown> {
   const body = JSON.parse(String(init.body)) as {
     contents?: Array<{ parts?: Array<{ text?: string }> }>;
@@ -177,6 +194,71 @@ async function productionStudioHarness() {
 }
 
 describe("AI learning studio", () => {
+  it("accepts reasoning before fragmented message output and uses action token caps", async () => {
+    const caps: number[] = [];
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const prompt = promptFromRequest(url, init!);
+      const requestBody = JSON.parse(String(init!.body)) as {
+        max_output_tokens?: number;
+        generationConfig?: { maxOutputTokens?: number };
+      };
+      caps.push(requestBody.max_output_tokens ?? requestBody.generationConfig?.maxOutputTokens ?? -1);
+      const value = prompt.action === "generate"
+        ? { items: [mathItem(`${url.includes("googleapis.com") ? "g" : "o"}-item`, 31)] }
+        : { accepted: true, reasons: [] };
+      return url.includes("googleapis.com")
+        ? responseFor(url, value)
+        : new Response(JSON.stringify(openAiReasoningOutput(value, false)), { status: 200 });
+    });
+    const { db, service } = studio({ fetcher });
+    service.updateProvider("gemini", { enabled: true, apiKey: secrets.gemini });
+    service.updateProvider("openai", { enabled: true, apiKey: secrets.openai });
+
+    await expect(service.createDraft({
+      subject: "math", step: "current", count: 2, difficulty: 4, weakTopics: []
+    })).resolves.toMatchObject({ status: "draft" });
+
+    expect(caps.filter((cap) => cap === 1024)).toHaveLength(2);
+    expect(caps.filter((cap) => cap === 256)).toHaveLength(2);
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count FROM ai_coach_usage
+      WHERE provider = 'openai' AND input_tokens = 0 AND output_tokens = 0
+        AND estimated_won > 1
+    `).get()).toEqual({ count: 2 });
+    db.close();
+  });
+
+  it("exposes guardian estimates and refuses a worst-case reservation over budget", async () => {
+    const { db, service } = studio({ fetcher: vi.fn() });
+    service.updateProvider("gemini", {
+      enabled: true,
+      apiKey: secrets.gemini,
+      inputWonPer1K: 100,
+      outputWonPer1K: 100
+    });
+    service.updateProvider("openai", {
+      enabled: true,
+      apiKey: secrets.openai,
+      inputWonPer1K: 100,
+      outputWonPer1K: 100
+    });
+    service.updateBudget({ monthlyBudgetWon: 25 });
+
+    await expect(service.createDraft({
+      subject: "math", step: "current", count: 2, difficulty: 4, weakTopics: []
+    })).rejects.toMatchObject({ code: "AI_STUDIO_BUDGET_EXCEEDED" });
+    expect(service.getSettings()).toMatchObject({
+      monthlyBudgetWon: 25,
+      monthSpentWon: 0,
+      providers: [
+        expect.objectContaining({ provider: "gemini", inputWonPer1K: 100, outputWonPer1K: 100 }),
+        expect.objectContaining({ provider: "openai", inputWonPer1K: 100, outputWonPer1K: 100 })
+      ]
+    });
+    db.close();
+  });
+
   it("accepts key updates only over effective HTTPS from the trusted first-hop proxy", async () => {
     const harness = await productionStudioHarness();
     const { guardian } = harness;
@@ -258,8 +340,14 @@ describe("AI learning studio", () => {
     const service = new AiStudioService({ db, encryptionKey, now });
 
     expect(service.getProviderSettings()).toEqual([
-      { provider: "gemini", enabled: false, model: "gemini-2.5-flash-lite", hasApiKey: false },
-      { provider: "openai", enabled: true, model: "legacy-selected-model", hasApiKey: true }
+      {
+        provider: "gemini", enabled: false, model: "gemini-2.5-flash-lite", hasApiKey: false,
+        inputWonPer1K: 1, outputWonPer1K: 4
+      },
+      {
+        provider: "openai", enabled: true, model: "legacy-selected-model", hasApiKey: true,
+        inputWonPer1K: 1, outputWonPer1K: 4
+      }
     ]);
     db.close();
   });
@@ -539,7 +627,7 @@ describe("AI learning studio", () => {
       subject: "math", step: "current", count: 4, difficulty: 4, weakTopics: []
     });
 
-    expect(reviewCount).toBe(3);
+    expect(reviewCount).toBe(1);
     expect(draft.items.every((item) => item.status === "rejected")).toBe(true);
     expect(draft.items.flatMap((item) => item.review.reasons)).toEqual(expect.arrayContaining([
       "UNSAFE_CONTENT", "OUT_OF_RANGE", "WRONG_FORMAT", "REVIEW_WRONG_ANSWER"
@@ -662,6 +750,11 @@ describe("AI learning studio", () => {
       const secondDraft = await secondService.createDraft(request);
       const firstPublished = firstService.publishDraft(firstDraft.id);
       expect(firstPublished.status).toBe("published");
+      expect(() => secondService.updateDraftItem(
+        firstDraft.id,
+        firstDraft.items[0]!.id,
+        { payload: firstDraft.items[0]!.payload }
+      )).toThrowError(AiStudioError);
       const beforeSecond = counts(secondDb);
 
       const draftStateChecks: boolean[] = [];
@@ -749,8 +842,23 @@ describe("AI learning studio", () => {
     db.close();
   });
 
+  it("returns an empty local report before provider decryption or reservation", async () => {
+    const fetcher = vi.fn();
+    const { db, service } = studio({ fetcher });
+    service.updateProvider("gemini", { enabled: true, apiKey: secrets.gemini });
+
+    await expect(service.getReport({ from: "2026-07-14", to: "2026-07-18" }))
+      .resolves.toMatchObject({ source: "local", completionRate: 0 });
+    expect(fetcher).not.toHaveBeenCalled();
+    expect(db.prepare("SELECT COUNT(*) AS count FROM ai_coach_usage").get())
+      .toEqual({ count: 0 });
+    db.close();
+  });
+
   it("computes local completion, mistake, and challenge metrics before optional AI wording", async () => {
-    const { db, service } = studio({ encryption: null });
+    const fetcher = vi.fn(async (input: RequestInfo | URL, _init?: RequestInit) =>
+      responseFor(String(input), { summary: "도전 만점 별을 받은 학습 기간이에요." }));
+    const { db, service } = studio({ fetcher });
     db.prepare(`
       INSERT INTO users (id, role, display_name, created_at)
       VALUES ('report-student', 'student', '수아', ?)
@@ -770,17 +878,34 @@ describe("AI learning studio", () => {
       "report-math", "report-client-math", "math-01", 100, 1,
       "[]", JSON.stringify(0), 0, now().toISOString(), 0
     );
+    db.prepare(`
+      INSERT INTO star_events (
+        id, student_id, requested_delta, delta, balance_after, reason_code,
+        reason_text, study_date, actor_type, source_key, created_at
+      ) VALUES (
+        'report-challenge-perfect', 'report-student', 2, 2, 2,
+        'CHALLENGE_PERFECT', '도전 단계 만점', '2026-07-18', 'system',
+        'report:challenge-perfect', ?
+      )
+    `).run(now().toISOString());
 
     const report = await service.getReport({ from: "2026-07-18", to: "2026-07-18" });
 
     expect(report).toMatchObject({
       source: "local",
       completionRate: 50,
-      challengePerfect: false
+      challengePerfect: true
     });
     expect(report.commonMistakes).toContain("받침");
     expect(report.commonMistakes).toContain("세 수의 혼합 계산");
     expect(report.summary).toContain("2번의 학습 중 1번");
+
+    service.updateProvider("gemini", { enabled: true, apiKey: secrets.gemini });
+    await expect(service.getReport({ from: "2026-07-18", to: "2026-07-18" }))
+      .resolves.toMatchObject({ source: "llm", challengePerfect: true });
+    expect(JSON.parse(String(fetcher.mock.calls[0]?.[1]?.body))).toMatchObject({
+      generationConfig: { maxOutputTokens: 512 }
+    });
     db.close();
   });
 
@@ -803,10 +928,20 @@ describe("AI learning studio", () => {
 
     const response = await guardian.request("GET", "/api/guardian/ai-studio/settings");
     expect(response.statusCode).toBe(200);
-    expect(response.json()).toEqual([
-      { provider: "gemini", enabled: false, model: "gemini-2.5-flash-lite", hasApiKey: false },
-      { provider: "openai", enabled: false, model: "gpt-5-nano", hasApiKey: false }
-    ]);
+    expect(response.json()).toEqual({
+      monthlyBudgetWon: 1000,
+      monthSpentWon: 0,
+      providers: [
+        {
+          provider: "gemini", enabled: false, model: "gemini-2.5-flash-lite",
+          hasApiKey: false, inputWonPer1K: 1, outputWonPer1K: 4
+        },
+        {
+          provider: "openai", enabled: false, model: "gpt-5-nano",
+          hasApiKey: false, inputWonPer1K: 1, outputWonPer1K: 4
+        }
+      ]
+    });
     expect(response.body).not.toContain("api_key");
     await harness.close();
   });

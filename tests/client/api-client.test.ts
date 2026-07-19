@@ -396,10 +396,20 @@ describe("ApiClient", () => {
   });
 
   it("maps every guardian AI studio operation to its protected route", async () => {
-    const settings = [
-      { provider: "gemini", enabled: true, model: "gemini-2.5-flash", hasApiKey: true },
-      { provider: "openai", enabled: true, model: "gpt-5-mini", hasApiKey: true }
-    ];
+    const settings = {
+      monthlyBudgetWon: 3000,
+      monthSpentWon: 125,
+      providers: [
+        {
+          provider: "gemini", enabled: true, model: "gemini-2.5-flash", hasApiKey: true,
+          inputWonPer1K: 2, outputWonPer1K: 8
+        },
+        {
+          provider: "openai", enabled: true, model: "gpt-5-mini", hasApiKey: true,
+          inputWonPer1K: 3, outputWonPer1K: 12
+        }
+      ]
+    };
     const draft = {
       id: "draft/private 1",
       subject: "math",
@@ -419,7 +429,9 @@ describe("ApiClient", () => {
     };
     const responses = [
       settings,
-      settings[0],
+      settings,
+      settings.providers[0],
+      { ...settings, monthlyBudgetWon: 5000 },
       draft,
       draft,
       draft,
@@ -460,12 +472,17 @@ describe("ApiClient", () => {
       }
     };
 
-    await expect(api.getAiStudioSettings()).resolves.toEqual(settings);
+    await expect(api.getAiStudioSettingsView()).resolves.toEqual(settings);
+    await expect(api.getAiStudioSettings()).resolves.toEqual(settings.providers);
     await expect(api.updateAiStudioProvider("gemini", {
       enabled: true,
       model: "gemini-2.5-flash",
-      apiKey: "submitted-once"
-    })).resolves.toEqual(settings[0]);
+      apiKey: "submitted-once",
+      inputWonPer1K: 2,
+      outputWonPer1K: 8
+    })).resolves.toEqual(settings.providers[0]);
+    await expect(api.updateAiStudioBudget({ monthlyBudgetWon: 5000 }))
+      .resolves.toEqual({ ...settings, monthlyBudgetWon: 5000 });
     await expect(api.createAiDraft(batch)).resolves.toEqual(draft);
     await expect(api.getAiDraft("draft/private 1")).resolves.toEqual(draft);
     await expect(api.updateAiDraftItem(
@@ -484,14 +501,22 @@ describe("ApiClient", () => {
       body: init?.body
     }))).toEqual([
       { path: "/api/guardian/ai-studio/settings", method: "GET", body: undefined },
+      { path: "/api/guardian/ai-studio/settings", method: "GET", body: undefined },
       {
         path: "/api/guardian/ai-studio/settings/gemini",
         method: "PUT",
         body: JSON.stringify({
           enabled: true,
           model: "gemini-2.5-flash",
-          apiKey: "submitted-once"
+          apiKey: "submitted-once",
+          inputWonPer1K: 2,
+          outputWonPer1K: 8
         })
+      },
+      {
+        path: "/api/guardian/ai-studio/budget",
+        method: "PUT",
+        body: JSON.stringify({ monthlyBudgetWon: 5000 })
       },
       {
         path: "/api/guardian/ai-studio/drafts",

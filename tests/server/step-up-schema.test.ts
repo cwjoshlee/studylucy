@@ -7,6 +7,7 @@ import { authorityOfflineMigration } from "../../src/server/db/migrations/003-au
 import { offlineReceiptMetadataMigration } from "../../src/server/db/migrations/004-offline-receipt-metadata";
 import { trustedDeviceTypesMigration } from "../../src/server/db/migrations/005-trusted-device-types";
 import { aiCoachMigration } from "../../src/server/db/migrations/006-ai-coach";
+import { aiStudioBudgetRatesMigration } from "../../src/server/db/migrations/009-ai-studio-budget-rates";
 import {
   AttemptInputSchema,
   KoreanDictationItemSchema,
@@ -28,6 +29,39 @@ const legacyPayload = {
 };
 
 describe("step-up learning schema", () => {
+  it("adds conservative provider rates and usage snapshots for upgraded databases", () => {
+    const db = openDatabase(":memory:");
+    try {
+      migrate(db);
+      db.prepare(`
+        INSERT INTO ai_provider_settings (provider, enabled, model, updated_at)
+        VALUES (?, 0, ?, ?)
+      `).run("gemini", "test-gemini", "2026-07-18T00:00:00.000Z");
+      db.prepare(`
+        INSERT INTO ai_provider_settings (provider, enabled, model, updated_at)
+        VALUES (?, 0, ?, ?)
+      `).run("openai", "test-openai", "2026-07-18T00:00:00.000Z");
+      expect(db.prepare(`
+        SELECT provider,
+          input_won_per_1k AS inputWonPer1K,
+          output_won_per_1k AS outputWonPer1K
+        FROM ai_provider_settings ORDER BY provider
+      `).all()).toEqual([
+        { provider: "gemini", inputWonPer1K: 1, outputWonPer1K: 4 },
+        { provider: "openai", inputWonPer1K: 1, outputWonPer1K: 4 }
+      ]);
+      expect(db.prepare("PRAGMA table_info('ai_coach_usage')").all()
+        .map((column) => (column as { name: string }).name))
+        .toEqual(expect.arrayContaining([
+          "reserved_input_tokens", "reserved_output_tokens",
+          "input_won_per_1k", "output_won_per_1k"
+        ]));
+      expect(aiStudioBudgetRatesMigration.version).toBe(9);
+    } finally {
+      db.close();
+    }
+  });
+
   it("defaults legacy today-plan items to the current step", () => {
     const parsed = TodayPlanSchema.parse({
       planId: "plan-01",

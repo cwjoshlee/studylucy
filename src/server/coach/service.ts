@@ -11,14 +11,6 @@ import { ensureAiProviderSettings } from "./studio-service";
 const PERSONA = "초등 학습을 다정하게 돕는 차나핑 코치다. 한국어로 짧고 안전하게 격려한다. 정답이나 개인정보를 요구하지 않는다.";
 const LOCAL_MESSAGE = "차근차근 한 번 더 해 보자!";
 export const PROVIDER_OUTPUT_TOKEN_CAP = 64;
-/**
- * The fixed persona plus the strict event envelope is bounded below 512 input
- * tokens. At the official 2026-07-18 maximum used by these models
- * ($0.10/M input and $0.40/M output) and a conservative 2,000 KRW/USD,
- * 512 input + 64 output tokens cost at most 0.1536 won. One whole won is
- * therefore the smallest conservative reservation for every bounded call.
- */
-export const COACH_CALL_RESERVATION_WON = 1;
 
 type SettingsRow = {
   enabled: number;
@@ -28,6 +20,8 @@ type SettingsRow = {
   ciphertext: string | null;
   iv: string | null;
   tag: string | null;
+  inputWonPer1K: number;
+  outputWonPer1K: number;
 };
 type Fetcher = (input: RequestInfo | URL, init?: RequestInit) => Promise<Response>;
 
@@ -80,24 +74,48 @@ function parseJsonMessage(value: unknown): string | null {
 function parseOpenAiOutputText(value: unknown): string | null {
   if (value === null || typeof value !== "object" || !("output" in value)) return null;
   const output = (value as { output?: unknown }).output;
-  if (!Array.isArray(output) || output.length !== 1) return null;
-  const item = output[0];
-  if (item === null || typeof item !== "object") return null;
-  const message = item as { type?: unknown; content?: unknown };
-  if (message.type !== "message" || !Array.isArray(message.content) || message.content.length !== 1) {
-    return null;
+  if (!Array.isArray(output)) return null;
+  const parts: string[] = [];
+  for (const item of output) {
+    if (item === null || typeof item !== "object" ||
+        (item as { type?: unknown }).type !== "message") continue;
+    const content = (item as { content?: unknown }).content;
+    if (!Array.isArray(content)) continue;
+    for (const entry of content) {
+      if (entry !== null && typeof entry === "object" &&
+          (entry as { type?: unknown }).type === "output_text" &&
+          typeof (entry as { text?: unknown }).text === "string") {
+        parts.push((entry as { text: string }).text);
+      }
+    }
   }
-  const entry = message.content[0];
-  if (entry === null || typeof entry !== "object") return null;
-  const candidate = entry as { type?: unknown; text?: unknown };
-  if (
-    candidate.type !== "output_text" ||
-    typeof candidate.text !== "string" ||
-    candidate.text.trim().length === 0
-  ) {
-    return null;
-  }
-  return candidate.text;
+  const text = parts.join("");
+  return text.trim().length === 0 ? null : text;
+}
+
+function estimatedInputTokens(input: CoachMessageRequest): number {
+  return Math.max(1, Buffer.byteLength(`${PERSONA}\n${JSON.stringify(input)}`, "utf8"));
+}
+
+function estimatedWon(
+  inputTokens: number,
+  outputTokens: number,
+  inputWonPer1K: number,
+  outputWonPer1K: number
+): number {
+  return Math.max(1, Math.ceil(
+    (inputTokens * inputWonPer1K + outputTokens * outputWonPer1K) / 1_000
+  ));
+}
+
+function completeUsage(inputTokens: unknown, outputTokens: unknown): {
+  inputTokens: number;
+  outputTokens: number;
+} | null {
+  return Number.isFinite(inputTokens) && Number.isInteger(inputTokens) && Number(inputTokens) >= 0 &&
+    Number.isFinite(outputTokens) && Number.isInteger(outputTokens) && Number(outputTokens) >= 0
+    ? { inputTokens: Number(inputTokens), outputTokens: Number(outputTokens) }
+    : null;
 }
 
 export class AiCoachService {
@@ -184,13 +202,13 @@ export class AiCoachService {
       return this.local();
     }
 
-    const usageId = this.reserveUsage(settings);
-    if (usageId === null) return this.local();
+    const reservation = this.reserveUsage(settings, estimatedInputTokens(input));
+    if (reservation === null) return this.local();
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), 4_000);
     try {
       const provider = await this.callProvider(settings, apiKey, input, controller.signal);
-      this.recordObservedTokens(usageId, provider.inputTokens, provider.outputTokens);
+      if (provider.usage !== null) this.reconcileUsage(reservation, settings, provider.usage);
       const message = parseJsonMessage(provider.text);
       if (message === null) return this.local();
       return { message, source: "llm" };
@@ -206,7 +224,9 @@ export class AiCoachService {
       SELECT coach.enabled, coach.provider,
         provider.model, coach.monthly_budget_won AS monthlyBudgetWon,
         provider.api_key_ciphertext AS ciphertext,
-        provider.api_key_iv AS iv, provider.api_key_tag AS tag
+        provider.api_key_iv AS iv, provider.api_key_tag AS tag,
+        provider.input_won_per_1k AS inputWonPer1K,
+        provider.output_won_per_1k AS outputWonPer1K
       FROM ai_coach_settings AS coach
       JOIN ai_provider_settings AS provider
         ON provider.provider = coach.provider
@@ -244,32 +264,61 @@ export class AiCoachService {
     return row.spent;
   }
 
-  private reserveUsage(settings: SettingsRow): number | null {
+  private reserveUsage(
+    settings: SettingsRow,
+    inputTokens: number
+  ): { id: number; reservedWon: number } | null {
     return this.deps.db.transaction(() => {
-      if (this.monthSpent() + COACH_CALL_RESERVATION_WON > settings.monthlyBudgetWon) {
+      const reservedWon = estimatedWon(
+        inputTokens,
+        PROVIDER_OUTPUT_TOKEN_CAP,
+        settings.inputWonPer1K,
+        settings.outputWonPer1K
+      );
+      if (this.monthSpent() + reservedWon > settings.monthlyBudgetWon) {
         return null;
       }
       const result = this.deps.db.prepare(`
         INSERT INTO ai_coach_usage
-          (month, provider, model, input_tokens, output_tokens, estimated_won, created_at)
-        VALUES (?, ?, ?, 0, 0, ?, ?)
+          (month, provider, model, input_tokens, output_tokens, estimated_won, created_at,
+           reserved_input_tokens, reserved_output_tokens, input_won_per_1k, output_won_per_1k)
+        VALUES (?, ?, ?, 0, 0, ?, ?, ?, ?, ?, ?)
       `).run(
         monthAt(this.now()),
         settings.provider,
         settings.model,
-        COACH_CALL_RESERVATION_WON,
-        this.now().toISOString()
+        reservedWon,
+        this.now().toISOString(),
+        inputTokens,
+        PROVIDER_OUTPUT_TOKEN_CAP,
+        settings.inputWonPer1K,
+        settings.outputWonPer1K
       );
-      return Number(result.lastInsertRowid);
+      return { id: Number(result.lastInsertRowid), reservedWon };
     }).immediate();
   }
 
-  private recordObservedTokens(usageId: number, inputTokens: number, outputTokens: number): void {
+  private reconcileUsage(
+    reservation: { id: number; reservedWon: number },
+    settings: SettingsRow,
+    usage: { inputTokens: number; outputTokens: number }
+  ): void {
+    const observedWon = estimatedWon(
+      usage.inputTokens,
+      usage.outputTokens,
+      settings.inputWonPer1K,
+      settings.outputWonPer1K
+    );
     this.deps.db.prepare(`
       UPDATE ai_coach_usage
-      SET input_tokens = ?, output_tokens = ?
+      SET input_tokens = ?, output_tokens = ?, estimated_won = ?
       WHERE id = ?
-    `).run(inputTokens, outputTokens, usageId);
+    `).run(
+      usage.inputTokens,
+      usage.outputTokens,
+      Math.min(reservation.reservedWon, observedWon),
+      reservation.id
+    );
   }
 
   private async callProvider(
@@ -277,7 +326,10 @@ export class AiCoachService {
     apiKey: string,
     input: CoachMessageRequest,
     signal: AbortSignal
-  ): Promise<{ text: unknown; inputTokens: number; outputTokens: number }> {
+  ): Promise<{
+    text: unknown;
+    usage: { inputTokens: number; outputTokens: number } | null;
+  }> {
     const coachInput = JSON.stringify(input);
     if (settings.provider === "gemini") {
       const response = await this.fetcher(
@@ -302,8 +354,10 @@ export class AiCoachService {
       };
       return {
         text: body.candidates?.[0]?.content?.parts?.[0]?.text,
-        inputTokens: body.usageMetadata?.promptTokenCount ?? 0,
-        outputTokens: body.usageMetadata?.candidatesTokenCount ?? 0
+        usage: completeUsage(
+          body.usageMetadata?.promptTokenCount,
+          body.usageMetadata?.candidatesTokenCount
+        )
       };
     }
     const response = await this.fetcher("https://api.openai.com/v1/responses", {
@@ -328,8 +382,7 @@ export class AiCoachService {
       : undefined;
     return {
       text: parseOpenAiOutputText(body),
-      inputTokens: usage?.input_tokens ?? 0,
-      outputTokens: usage?.output_tokens ?? 0
+      usage: completeUsage(usage?.input_tokens, usage?.output_tokens)
     };
   }
 
