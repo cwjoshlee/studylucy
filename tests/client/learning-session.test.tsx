@@ -755,6 +755,53 @@ describe("LearningSession", () => {
     expect(replacementOnNext).not.toHaveBeenCalled();
   });
 
+  it("shares one receipt transition across automatic and repeated manual next while the parent refresh is deferred", async () => {
+    vi.useFakeTimers();
+    const api = createLearningApi();
+    api.saveAttempt
+      .mockResolvedValueOnce(receipt({ id: "attempt-shared-next-first" }))
+      .mockResolvedValueOnce(receipt({ id: "attempt-shared-next-second" }));
+    const parentRefresh = deferred<void>();
+    const onNext = vi.fn(() => parentRefresh.promise);
+    render(<LearningSession
+      item={mathPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      onNext={onNext}
+    />);
+    await flushLearningSessionIssue();
+
+    const answer = screen.getByLabelText("답 쓰기");
+    fireEvent.change(answer, { target: { value: "5" } });
+    fireEvent.submit(answer.closest("form")!);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    act(() => vi.advanceTimersByTime(1_500));
+    expect(onNext).toHaveBeenCalledOnce();
+    const next = screen.getByRole("button", { name: "다음 문제" });
+    expect(next).toBeDisabled();
+    fireEvent.click(next);
+    fireEvent.click(next);
+    expect(onNext).toHaveBeenCalledOnce();
+
+    fireEvent.submit(answer.closest("form")!);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    expect(screen.getByRole("button", { name: "다음 문제" })).toBeEnabled();
+    fireEvent.click(screen.getByRole("button", { name: "다음 문제" }));
+    fireEvent.click(screen.getByRole("button", { name: "다음 문제" }));
+    expect(onNext).toHaveBeenCalledTimes(2);
+
+    parentRefresh.resolve();
+    await parentRefresh.promise;
+  });
+
   it("allows a later completed attempt receipt to auto-advance once", async () => {
     vi.useFakeTimers();
     const api = createLearningApi();
@@ -904,6 +951,10 @@ describe("LearningSession", () => {
     });
 
     await waitFor(() => expect(onNext).toHaveBeenCalledOnce(), { timeout: 2_000 });
+    const next = screen.getByRole("button", { name: "다음 문제" });
+    expect(next).toBeDisabled();
+    fireEvent.click(next);
+    expect(onNext).toHaveBeenCalledOnce();
   });
 
   it("cancels a stale automatic next when a repeat reading submission supersedes it", async () => {
@@ -1530,6 +1581,67 @@ describe("LearningSession", () => {
       missedTokens: []
     }));
     await expect(listQueuedAttempts()).resolves.toEqual([]);
+  });
+
+  it("cancels dictation playback when hidden, paused, changed, or unmounted without replaying while paused", async () => {
+    const api = createLearningApi();
+    const cancel = vi.fn();
+    const speak = vi.fn();
+    vi.stubGlobal("SpeechSynthesisUtterance", class {
+      lang = "";
+      constructor(readonly text: string) {}
+    });
+    vi.stubGlobal("speechSynthesis", { cancel, speak });
+    const user = userEvent.setup();
+    const { rerender, unmount } = render(<LearningSession
+      active
+      item={currentDictationPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+    />);
+    await screen.findByLabelText("받아쓰기 답");
+
+    expect(cancel).not.toHaveBeenCalled();
+    await user.click(screen.getByRole("button", { name: "다시 듣기" }));
+    expect(cancel).toHaveBeenCalledTimes(1);
+    expect(speak).toHaveBeenCalledOnce();
+
+    rerender(<LearningSession
+      active={false}
+      item={currentDictationPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+    />);
+    expect(cancel).toHaveBeenCalledTimes(2);
+    fireEvent.click(screen.getByRole("button", { name: "다시 듣기" }));
+    expect(speak).toHaveBeenCalledOnce();
+
+    rerender(<LearningSession
+      active
+      item={{
+        ...currentDictationPlanItem,
+        payload: { ...dictationItem, promptText: "여름비" }
+      }}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+    />);
+    expect(cancel).toHaveBeenCalledTimes(3);
+
+    await user.click(screen.getByRole("button", { name: "다시 듣기" }));
+    expect(cancel).toHaveBeenCalledTimes(4);
+    expect(speak).toHaveBeenCalledTimes(2);
+    await user.click(screen.getByRole("button", { name: "메뉴 열기" }));
+    await user.click(within(screen.getByRole("dialog", { name: "학생 메뉴" }))
+      .getByRole("button", { name: "잠깐 쉬기" }));
+    expect(cancel).toHaveBeenCalledTimes(5);
+    fireEvent.click(screen.getByText("다시 듣기"));
+    expect(speak).toHaveBeenCalledTimes(2);
+
+    unmount();
+    expect(cancel).toHaveBeenCalledTimes(6);
   });
 
   it("shows an accessible connection error when offline dictation cannot be queued", async () => {
