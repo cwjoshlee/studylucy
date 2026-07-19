@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
-import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
+import { StrictMode } from "react";
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import {
@@ -12,6 +13,8 @@ import { StudentNavigation } from "../../src/client/home/student-navigation";
 
 afterEach(() => {
   cleanup();
+  vi.useRealTimers();
+  vi.restoreAllMocks();
   vi.unstubAllGlobals();
 });
 
@@ -113,7 +116,12 @@ describe("ResponsiveNavigation", () => {
     expect(rail).toHaveAttribute("inert");
     expect(rail).toHaveAttribute("aria-hidden", "true");
     expect(drawer).not.toHaveAttribute("inert");
-    expect(fab).not.toHaveAttribute("inert");
+    expect(fab).toHaveAttribute("inert");
+    expect(fab).toHaveAttribute("aria-hidden", "true");
+    expect(fab).toBeDisabled();
+
+    fab.click();
+    expect(screen.getByRole("dialog", { name: "보호자 메뉴" })).toBeVisible();
 
     lesson.click();
     lesson.focus();
@@ -130,10 +138,218 @@ describe("ResponsiveNavigation", () => {
     expect(pageHeader).not.toHaveAttribute("aria-hidden");
     expect(rail).not.toHaveAttribute("inert");
     expect(rail).not.toHaveAttribute("aria-hidden");
+    expect(fab).not.toHaveAttribute("inert");
+    expect(fab).not.toHaveAttribute("aria-hidden");
+    expect(fab).not.toBeDisabled();
+    expect(fab).toHaveFocus();
     lesson.focus();
     lesson.click();
     expect(lesson).toHaveFocus();
     expect(onLesson).toHaveBeenCalledOnce();
+  });
+
+  it("blocks native and React background handlers while restoring them after close", async () => {
+    const user = userEvent.setup();
+    installLandscapeMedia(false);
+    const reactFocus = vi.fn();
+    const reactKeyDown = vi.fn();
+    const reactPointerDown = vi.fn();
+    const reactClick = vi.fn();
+    const nativeFocus = vi.fn();
+    const nativeKeyDown = vi.fn();
+    const nativePointerDown = vi.fn();
+    const nativeClick = vi.fn();
+    render(
+      <div className="guardian-shell">
+        <div className="responsive-shell">
+          <ResponsiveNavigation
+            activeId="progress"
+            entries={entries}
+            expandedIds={[]}
+            fabLabel="메뉴 열기"
+            label="보호자 메뉴"
+            onSelect={vi.fn()}
+            onToggle={vi.fn()}
+          />
+          <main data-testid="background">
+            <div onFocus={reactFocus} onKeyDown={reactKeyDown} onPointerDown={reactPointerDown}>
+              <button onClick={reactClick} type="button">배경 동작</button>
+            </div>
+          </main>
+        </div>
+      </div>
+    );
+
+    const background = screen.getByRole("button", { name: "배경 동작" });
+    background.addEventListener("focus", nativeFocus);
+    background.addEventListener("keydown", nativeKeyDown);
+    background.addEventListener("pointerdown", nativePointerDown);
+    background.addEventListener("click", nativeClick);
+    await user.click(screen.getByRole("button", { name: "메뉴 열기" }));
+
+    background.focus();
+    fireEvent.pointerDown(background);
+    fireEvent.keyDown(background, { key: "Enter" });
+    background.click();
+
+    expect(nativeFocus).not.toHaveBeenCalled();
+    expect(nativeKeyDown).not.toHaveBeenCalled();
+    expect(nativePointerDown).not.toHaveBeenCalled();
+    expect(nativeClick).not.toHaveBeenCalled();
+    expect(reactFocus).not.toHaveBeenCalled();
+    expect(reactKeyDown).not.toHaveBeenCalled();
+    expect(reactPointerDown).not.toHaveBeenCalled();
+    expect(reactClick).not.toHaveBeenCalled();
+    expect(within(screen.getByRole("dialog", { name: "보호자 메뉴" }))
+      .getByRole("button", { name: "메뉴 닫기" })).toHaveFocus();
+
+    await user.click(within(screen.getByRole("dialog", { name: "보호자 메뉴" }))
+      .getByRole("button", { name: "메뉴 닫기" }));
+    background.focus();
+    fireEvent.pointerDown(background);
+    fireEvent.keyDown(background, { key: "Enter" });
+    background.click();
+    expect(nativeFocus).toHaveBeenCalledOnce();
+    expect(nativeKeyDown).toHaveBeenCalledOnce();
+    expect(nativePointerDown).toHaveBeenCalledOnce();
+    expect(nativeClick).toHaveBeenCalledOnce();
+    expect(reactFocus).toHaveBeenCalledOnce();
+    expect(reactKeyDown).toHaveBeenCalledOnce();
+    expect(reactPointerDown).toHaveBeenCalledOnce();
+    expect(reactClick).toHaveBeenCalledOnce();
+  });
+
+  it("restores pre-existing modal boundary attributes across StrictMode close, reopen, and unmount", async () => {
+    const user = userEvent.setup();
+    installLandscapeMedia(false);
+    const rendered = render(
+      <StrictMode>
+        <div className="guardian-shell">
+          <div className="responsive-shell">
+            <ResponsiveNavigation
+              activeId="progress"
+              entries={entries}
+              expandedIds={[]}
+              fabLabel="메뉴 열기"
+              label="보호자 메뉴"
+              onSelect={vi.fn()}
+              onToggle={vi.fn()}
+            />
+            <main aria-hidden="false" data-testid="preserved-boundary">
+              <button type="button">원래 배경</button>
+            </main>
+          </div>
+        </div>
+      </StrictMode>
+    );
+    const boundary = screen.getByTestId("preserved-boundary");
+    boundary.setAttribute("inert", "legacy-inert");
+    const addListener = vi.spyOn(boundary, "addEventListener");
+    const removeListener = vi.spyOn(boundary, "removeEventListener");
+    const fab = screen.getByRole("button", { name: "메뉴 열기" });
+
+    await user.click(fab);
+    expect(boundary).toHaveAttribute("inert", "");
+    expect(boundary).toHaveAttribute("aria-hidden", "true");
+    await user.click(within(screen.getByRole("dialog", { name: "보호자 메뉴" }))
+      .getByRole("button", { name: "메뉴 닫기" }));
+    expect(boundary).toHaveAttribute("inert", "legacy-inert");
+    expect(boundary).toHaveAttribute("aria-hidden", "false");
+
+    await user.click(fab);
+    rendered.unmount();
+    expect(boundary).toHaveAttribute("inert", "legacy-inert");
+    expect(boundary).toHaveAttribute("aria-hidden", "false");
+    for (const type of ["click", "pointerdown", "keydown", "focus", "focusin"]) {
+      expect(addListener.mock.calls.filter(([eventType]) => eventType === type)).toHaveLength(2);
+      expect(removeListener.mock.calls.filter(([eventType]) => eventType === type)).toHaveLength(2);
+    }
+  });
+
+  it("defers rotation focus and cancels stale frame handoffs", () => {
+    const media = installLandscapeMedia(true);
+    let nextFrame = 1;
+    const frames = new Map<number, FrameRequestCallback>();
+    const requestFrame = vi.fn((callback: FrameRequestCallback) => {
+      const frame = nextFrame++;
+      frames.set(frame, callback);
+      return frame;
+    });
+    const cancelFrame = vi.fn((frame: number) => {
+      frames.delete(frame);
+    });
+    vi.stubGlobal("requestAnimationFrame", requestFrame);
+    vi.stubGlobal("cancelAnimationFrame", cancelFrame);
+    const rendered = render(
+      <div className="responsive-shell">
+        <ResponsiveNavigation
+          activeId="progress"
+          entries={entries}
+          expandedIds={[]}
+          fabLabel="메뉴 열기"
+          label="보호자 메뉴"
+          onSelect={vi.fn()}
+          onToggle={vi.fn()}
+        />
+        <main><button type="button">외부 포커스</button></main>
+      </div>
+    );
+    const rail = screen.getByRole("navigation", { name: "보호자 메뉴" });
+    const railProgress = within(rail).getByRole("button", { name: "진도" });
+    const fab = screen.getByRole("button", { name: "메뉴 열기" });
+    const external = screen.getByRole("button", { name: "외부 포커스" });
+
+    railProgress.focus();
+    media.setMatches(false);
+    expect(requestFrame).toHaveBeenCalledOnce();
+    expect(fab).not.toHaveFocus();
+    external.focus();
+    expect(cancelFrame).toHaveBeenCalledOnce();
+    expect(frames.size).toBe(0);
+    expect(external).toHaveFocus();
+
+    media.setMatches(true);
+    railProgress.focus();
+    media.setMatches(false);
+    expect(frames.size).toBe(1);
+    rendered.unmount();
+    expect(cancelFrame).toHaveBeenCalledTimes(2);
+    expect(frames.size).toBe(0);
+  });
+
+  it("clears the timeout focus fallback without leaving a delayed handoff", () => {
+    vi.stubGlobal("requestAnimationFrame", undefined);
+    vi.stubGlobal("cancelAnimationFrame", undefined);
+    const media = installLandscapeMedia(true);
+    const rendered = render(
+      <ResponsiveNavigation
+        activeId="progress"
+        entries={entries}
+        expandedIds={[]}
+        fabLabel="메뉴 열기"
+        label="보호자 메뉴"
+        onSelect={vi.fn()}
+        onToggle={vi.fn()}
+      />
+    );
+    const rail = screen.getByRole("navigation", { name: "보호자 메뉴" });
+    within(rail).getByRole("button", { name: "진도" }).focus();
+    let nextTimer = 1;
+    const timers = new Map<number, TimerHandler>();
+    const setTimer = vi.spyOn(window, "setTimeout").mockImplementation((handler) => {
+      const timer = nextTimer++;
+      timers.set(timer, handler);
+      return timer as unknown as NodeJS.Timeout;
+    });
+    const clearTimer = vi.spyOn(window, "clearTimeout").mockImplementation((timer) => {
+      timers.delete(Number(timer));
+    });
+    media.setMatches(false);
+    expect(setTimer).toHaveBeenCalledOnce();
+    expect(timers.size).toBe(1);
+    rendered.unmount();
+    expect(clearTimer).toHaveBeenCalledOnce();
+    expect(timers.size).toBe(0);
   });
 
   it("moves focus from the landscape rail to the compact trigger after portrait rotation only", async () => {
