@@ -279,9 +279,18 @@ export class LearningRepository {
       FROM issued_plan_items AS ipi
       JOIN issued_daily_plans AS requested ON requested.id = ipi.plan_id
       WHERE ipi.plan_id = ?
+        AND requested.student_id = ?
         AND EXISTS (
           SELECT 1
           FROM attempts AS a
+          JOIN issued_daily_plans AS source_plan
+            ON source_plan.id = a.issued_plan_id
+           AND source_plan.student_id = a.user_id
+           AND source_plan.study_date = a.study_date
+          JOIN issued_plan_items AS source_item
+            ON source_item.plan_id = source_plan.id
+           AND source_item.item_id = a.item_id
+           AND source_item.content_version = a.content_version
           WHERE a.user_id = ?
             AND a.study_date = requested.study_date
             AND a.item_id = ipi.item_id
@@ -289,7 +298,7 @@ export class LearningRepository {
             AND a.completed = 1
         )
       ORDER BY ipi.sort_order, ipi.item_id
-    `).all(requestedPlanId, userId) as Array<{ itemId: string }>)
+    `).all(requestedPlanId, userId, userId) as Array<{ itemId: string }>)
       .map((row) => row.itemId);
   }
 

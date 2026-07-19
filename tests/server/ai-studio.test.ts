@@ -564,6 +564,99 @@ describe("AI learning studio", () => {
     db.close();
   });
 
+  it("charges Studio Gemini candidate plus thought tokens at the saved rate", async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{
+        text: JSON.stringify({ summary: "도전까지 차근차근 잘 마쳤어요." })
+      }] } }],
+      usageMetadata: {
+        promptTokenCount: 10,
+        candidatesTokenCount: 5,
+        thoughtsTokenCount: 55
+      }
+    }), { status: 200 }));
+    const { db, service } = studio({ fetcher });
+    db.prepare(`
+      INSERT INTO users (id, role, display_name, created_at)
+      VALUES ('thought-report-student', 'student', '수아', ?)
+    `).run(now().toISOString());
+    db.prepare(`
+      INSERT INTO attempts (
+        id, client_attempt_id, user_id, item_id, content_version, study_date,
+        reading_score, reading_pass, missed_tokens_json, math_answer_json,
+        math_pass, duration_ms, difficulty_feedback, created_at, completed
+      ) VALUES (
+        'thought-report-attempt', 'thought-report-client',
+        'thought-report-student', 'math-01', 4, '2026-07-18',
+        100, 1, '[]', '10', 1, 1000, NULL, ?, 1
+      )
+    `).run(now().toISOString());
+    service.updateProvider("gemini", {
+      enabled: true,
+      apiKey: secrets.gemini,
+      inputWonPer1K: 0,
+      outputWonPer1K: 1000
+    });
+
+    await expect(service.getReport({ from: "2026-07-18", to: "2026-07-18" }))
+      .resolves.toMatchObject({ source: "llm" });
+    expect(db.prepare(`
+      SELECT input_tokens AS inputTokens, output_tokens AS outputTokens,
+        estimated_won AS estimatedWon
+      FROM ai_coach_usage
+    `).get()).toEqual({ inputTokens: 10, outputTokens: 60, estimatedWon: 60 });
+    db.close();
+  });
+
+  it("retains the Studio reservation for overflowing Gemini billed output", async () => {
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{
+        text: JSON.stringify({ summary: "도전까지 차근차근 잘 마쳤어요." })
+      }] } }],
+      usageMetadata: {
+        promptTokenCount: 10,
+        candidatesTokenCount: Number.MAX_SAFE_INTEGER,
+        thoughtsTokenCount: 1
+      }
+    }), { status: 200 }));
+    const { db, service } = studio({ fetcher });
+    db.prepare(`
+      INSERT INTO users (id, role, display_name, created_at)
+      VALUES ('overflow-report-student', 'student', '수아', ?)
+    `).run(now().toISOString());
+    db.prepare(`
+      INSERT INTO attempts (
+        id, client_attempt_id, user_id, item_id, content_version, study_date,
+        reading_score, reading_pass, missed_tokens_json, math_answer_json,
+        math_pass, duration_ms, difficulty_feedback, created_at, completed
+      ) VALUES (
+        'overflow-report-attempt', 'overflow-report-client',
+        'overflow-report-student', 'math-01', 4, '2026-07-18',
+        100, 1, '[]', '10', 1, 1000, NULL, ?, 1
+      )
+    `).run(now().toISOString());
+    service.updateProvider("gemini", {
+      enabled: true,
+      apiKey: secrets.gemini,
+      inputWonPer1K: 0,
+      outputWonPer1K: 1000
+    });
+
+    await expect(service.getReport({ from: "2026-07-18", to: "2026-07-18" }))
+      .resolves.toMatchObject({ source: "llm" });
+    expect(db.prepare(`
+      SELECT input_tokens AS inputTokens, output_tokens AS outputTokens,
+        estimated_won AS estimatedWon, reserved_output_tokens AS reservedOutputTokens
+      FROM ai_coach_usage
+    `).get()).toEqual({
+      inputTokens: 0,
+      outputTokens: 0,
+      estimatedWon: 512,
+      reservedOutputTokens: 512
+    });
+    db.close();
+  });
+
   it("parses a multipart Gemini guardian report and rejects all-empty parts", async () => {
     let empty = false;
     const fetcher = vi.fn(async (_input: RequestInfo | URL, _init?: RequestInit) =>

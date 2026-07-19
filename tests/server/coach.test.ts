@@ -171,6 +171,80 @@ describe("AI coach privacy and budget boundaries", () => {
     db.close();
   });
 
+  it("charges Gemini candidate plus thought tokens at the saved rate", async () => {
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{
+        text: JSON.stringify({ message: "한 걸음씩 해 보자" })
+      }] } }],
+      usageMetadata: {
+        promptTokenCount: 10,
+        candidatesTokenCount: 5,
+        thoughtsTokenCount: 55
+      }
+    }), { status: 200 }));
+    const service = new AiCoachService({ db, encryptionKey: key, fetcher });
+    service.updateSettings({ enabled: true, apiKey: "provider-secret" });
+    db.prepare(`
+      UPDATE ai_provider_settings
+      SET input_won_per_1k = 0, output_won_per_1k = 1000
+      WHERE provider = 'gemini'
+    `).run();
+
+    await expect(service.message({
+      event: "retry", subject: "math", retryCount: 1, hintStage: "first"
+    })).resolves.toEqual({ message: "한 걸음씩 해 보자", source: "llm" });
+    expect(db.prepare(`
+      SELECT input_tokens AS inputTokens, output_tokens AS outputTokens,
+        estimated_won AS estimatedWon
+      FROM ai_coach_usage
+    `).get()).toEqual({ inputTokens: 10, outputTokens: 60, estimatedWon: 60 });
+    db.close();
+  });
+
+  it.each([
+    ["negative", -1],
+    ["fractional", 1.5],
+    ["non-safe", Number.MAX_SAFE_INTEGER + 1],
+    ["malformed", "1"],
+    ["overflowing sum", Number.MAX_SAFE_INTEGER]
+  ])("retains the Gemini reservation for %s thought usage", async (_label, thoughtsTokenCount) => {
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const candidatesTokenCount = thoughtsTokenCount === Number.MAX_SAFE_INTEGER
+      ? 1
+      : 5;
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify({
+      candidates: [{ content: { parts: [{
+        text: JSON.stringify({ message: "한 걸음씩 해 보자" })
+      }] } }],
+      usageMetadata: { promptTokenCount: 10, candidatesTokenCount, thoughtsTokenCount }
+    }), { status: 200 }));
+    const service = new AiCoachService({ db, encryptionKey: key, fetcher });
+    service.updateSettings({ enabled: true, apiKey: "provider-secret" });
+    db.prepare(`
+      UPDATE ai_provider_settings
+      SET input_won_per_1k = 0, output_won_per_1k = 1000
+      WHERE provider = 'gemini'
+    `).run();
+
+    await service.message({
+      event: "retry", subject: "math", retryCount: 1, hintStage: "first"
+    });
+    expect(db.prepare(`
+      SELECT input_tokens AS inputTokens, output_tokens AS outputTokens,
+        estimated_won AS estimatedWon, reserved_output_tokens AS reservedOutputTokens
+      FROM ai_coach_usage
+    `).get()).toEqual({
+      inputTokens: 0,
+      outputTokens: 0,
+      estimatedWon: 64,
+      reservedOutputTokens: 64
+    });
+    db.close();
+  });
+
   it("fails closed when Gemini returns no string text parts", async () => {
     const db = openDatabase(":memory:");
     migrate(db);
