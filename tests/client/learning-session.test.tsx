@@ -962,6 +962,51 @@ describe("LearningSession", () => {
     expect(onNext).toHaveBeenCalledOnce();
   });
 
+  it("keeps a consumed receipt locked while a parent refresh retry is offered", async () => {
+    const api = createLearningApi();
+    const onNext = vi.fn();
+    const onRetryRefresh = vi.fn();
+    const view = render(<LearningSession
+      item={mathPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      onNext={onNext}
+      onRetryRefresh={onRetryRefresh}
+    />);
+    await flushLearningSessionIssue();
+
+    const answer = screen.getByLabelText("답 쓰기");
+    fireEvent.change(answer, { target: { value: "5" } });
+    fireEvent.submit(answer.closest("form")!);
+    await act(async () => {
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+    fireEvent.click(screen.getByRole("button", { name: "다음 문제" }));
+
+    view.rerender(<LearningSession
+      item={mathPlanItem}
+      api={api}
+      planId="plan-daily-1"
+      studyDate="2026-07-16"
+      onNext={onNext}
+      onRetryRefresh={onRetryRefresh}
+      postCompletionRefreshFailed
+    />);
+
+    expect(screen.getByRole("status", { name: "다음 문제 준비 상태" }))
+      .toHaveTextContent("다음 문제를 준비하지 못했어요");
+    expect(screen.getByRole("button", { name: "다시 불러오기" })).toBeEnabled();
+    expect(screen.getByRole("button", { name: "다음 문제" })).toBeDisabled();
+    expect(answer).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "다시 불러오기" }));
+    expect(onRetryRefresh).toHaveBeenCalledOnce();
+    expect(onNext).toHaveBeenCalledOnce();
+    expect(api.saveAttempt).toHaveBeenCalledOnce();
+  });
+
   it("pauses a completed receipt auto-next while hidden and schedules it once on reopen", async () => {
     vi.useFakeTimers();
     const api = createLearningApi();

@@ -59,6 +59,9 @@ export type LearningSessionProps = {
   active?: boolean;
   reducedMotion?: boolean;
   onNext?: () => void | Promise<void>;
+  onRetryRefresh?: () => void | Promise<void>;
+  postCompletionRefreshFailed?: boolean;
+  postCompletionRefreshPending?: boolean;
   onExit?: () => void;
   onNavigateToday?: () => void;
   getNavigationDestinationFocusTarget?: (id: "back" | "today") => HTMLElement | null;
@@ -137,6 +140,9 @@ function LearningSessionView({
   contentVersion,
   reducedMotion,
   onNext,
+  onRetryRefresh,
+  postCompletionRefreshFailed = false,
+  postCompletionRefreshPending = false,
   onExit,
   onNavigateToday,
   getNavigationDestinationFocusTarget,
@@ -1152,6 +1158,24 @@ function LearningSessionView({
         onPlay={() => controllerRef.current?.pause("celebration")}
         onComplete={() => controllerRef.current?.resume("celebration")}
       />
+
+      {postCompletionRefreshFailed ? (
+        <aside
+          aria-label="다음 문제 준비 상태"
+          aria-live="polite"
+          className="post-completion-refresh"
+          role="status"
+        >
+          <p>다음 문제를 준비하지 못했어요. 연결을 확인하고 다시 불러와 주세요.</p>
+          <button
+            type="button"
+            disabled={postCompletionRefreshPending}
+            onClick={() => void onRetryRefresh?.()}
+          >
+            {postCompletionRefreshPending ? "불러오는 중" : "다시 불러오기"}
+          </button>
+        </aside>
+      ) : null}
 
       <button
         type="button"

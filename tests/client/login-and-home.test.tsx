@@ -1,5 +1,6 @@
 // @vitest-environment jsdom
 import "fake-indexeddb/auto";
+import { StrictMode } from "react";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { act, cleanup, render, screen, waitFor, within } from "@testing-library/react";
@@ -1208,6 +1209,110 @@ describe("가족 로그인과 학생 홈", () => {
     expect(within(completedCard!).getByText("★ 받은 별 1개")).toBeVisible();
     expect(api.getToday).toHaveBeenCalledTimes(2);
     expect(api.getStudentStars).toHaveBeenCalledTimes(2);
+  });
+
+  it("keeps the completed lesson and retries only the authoritative refresh after getToday fails", async () => {
+    const user = userEvent.setup();
+    const fixtures = createFakeApi();
+    const initialPlan = await fixtures.getToday() as TodayPlan;
+    const refreshedStars = {
+      balance: 8,
+      earnedToday: 3,
+      deductedToday: 1,
+      lastReason: "필수 학습을 마쳤어요."
+    };
+    const nextPlan: TodayPlan = {
+      ...initialPlan,
+      completedItemIds: ["ko-01"],
+      stars: refreshedStars,
+      items: initialPlan.items.map((item) => item.id === "ko-02"
+        ? { ...item, payload: { ...item.payload, title: "새싹 문장" } }
+        : item)
+    };
+    const api = createFakeApi();
+    api.getToday.mockReset()
+      .mockResolvedValueOnce(initialPlan)
+      .mockResolvedValueOnce(initialPlan)
+      .mockRejectedValueOnce(new Error("temporary plan failure"))
+      .mockResolvedValue(nextPlan);
+    api.getStudentStars.mockReset()
+      .mockResolvedValueOnce(initialPlan.stars)
+      .mockResolvedValueOnce(initialPlan.stars)
+      .mockResolvedValue(refreshedStars);
+
+    await markStudentAuthenticated();
+    render(<StrictMode><App api={api} /></StrictMode>);
+    await user.click(await screen.findByRole("button", { name: "바람과 꽃 시작하기" }));
+    await user.click(screen.getByText("직접 입력으로 확인하기"));
+    await user.type(screen.getByLabelText("읽은 내용 직접 입력"), "바람과 꽃");
+    await user.click(screen.getByRole("button", { name: "읽기 판정하기" }));
+    await user.click(await screen.findByRole("button", { name: "다음 문제" }));
+
+    expect(await screen.findByRole("status", { name: "다음 문제 준비 상태" }))
+      .toHaveTextContent("다음 문제를 준비하지 못했어요");
+    expect(screen.queryByText("오늘의 학습을 불러오지 못했어요. 잠시 후 다시 만나요."))
+      .not.toBeInTheDocument();
+    expect(screen.getByRole("region", { name: "바람과 꽃 학습" })).toBeVisible();
+    expect(screen.getByLabelText("읽은 내용 직접 입력")).toHaveValue("바람과 꽃");
+    expect(screen.getByRole("button", { name: "다음 문제" })).toBeDisabled();
+
+    await user.click(screen.getByRole("button", { name: "다시 불러오기" }));
+
+    expect(await screen.findByRole("heading", { name: "새싹 문장" })).toBeVisible();
+    expect(api.saveAttempt).toHaveBeenCalledOnce();
+    expect(api.getToday).toHaveBeenCalledTimes(4);
+    expect(api.getStudentStars).toHaveBeenCalledTimes(4);
+    expect(api.createLearningSession).toHaveBeenCalledTimes(4);
+  });
+
+  it("keeps refresh retry available through repeated star refresh failures", async () => {
+    const user = userEvent.setup();
+    const fixtures = createFakeApi();
+    const initialPlan = await fixtures.getToday() as TodayPlan;
+    const refreshedStars = {
+      balance: 8,
+      earnedToday: 3,
+      deductedToday: 1,
+      lastReason: "필수 학습을 마쳤어요."
+    };
+    const nextPlan: TodayPlan = {
+      ...initialPlan,
+      completedItemIds: ["ko-01"],
+      stars: refreshedStars,
+      items: initialPlan.items.map((item) => item.id === "ko-02"
+        ? { ...item, payload: { ...item.payload, title: "다시 만난 새 문제" } }
+        : item)
+    };
+    const api = createFakeApi();
+    api.getToday.mockReset()
+      .mockResolvedValueOnce(initialPlan)
+      .mockResolvedValue(nextPlan);
+    api.getStudentStars.mockReset()
+      .mockResolvedValueOnce(initialPlan.stars)
+      .mockRejectedValueOnce(new Error("temporary star failure"))
+      .mockRejectedValueOnce(new Error("still unavailable"))
+      .mockResolvedValue(refreshedStars);
+
+    await markStudentAuthenticated();
+    render(<App api={api} />);
+    await user.click(await screen.findByRole("button", { name: "바람과 꽃 시작하기" }));
+    await user.click(screen.getByText("직접 입력으로 확인하기"));
+    await user.type(screen.getByLabelText("읽은 내용 직접 입력"), "바람과 꽃");
+    await user.click(screen.getByRole("button", { name: "읽기 판정하기" }));
+    await user.click(await screen.findByRole("button", { name: "다음 문제" }));
+
+    expect(await screen.findByRole("button", { name: "다시 불러오기" })).toBeEnabled();
+    await user.click(screen.getByRole("button", { name: "다시 불러오기" }));
+    expect(await screen.findByRole("button", { name: "다시 불러오기" })).toBeEnabled();
+    expect(screen.getByRole("region", { name: "바람과 꽃 학습" })).toBeVisible();
+    expect(api.saveAttempt).toHaveBeenCalledOnce();
+
+    await user.click(screen.getByRole("button", { name: "다시 불러오기" }));
+
+    expect(await screen.findByRole("heading", { name: "다시 만난 새 문제" })).toBeVisible();
+    expect(api.saveAttempt).toHaveBeenCalledOnce();
+    expect(api.getToday).toHaveBeenCalledTimes(4);
+    expect(api.getStudentStars).toHaveBeenCalledTimes(4);
   });
 
   it("returns with an offline attempt queued then refetches authoritative home state after sync", async () => {
