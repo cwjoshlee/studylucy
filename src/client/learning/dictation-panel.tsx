@@ -1,20 +1,39 @@
-import { useState, type FormEvent, type JSX } from "react";
+import { useEffect, useRef, useState, type FormEvent, type JSX } from "react";
 import type { KoreanDictationItem } from "../../shared/learning";
 
 export function DictationPanel({
   item,
   disabled,
+  paused,
   onSubmit,
   onReplay
 }: {
   item: KoreanDictationItem;
   disabled: boolean;
+  paused: boolean;
   onSubmit(text: string): void;
   onReplay(): void;
 }): JSX.Element {
   const [text, setText] = useState("");
+  const previousPromptTextRef = useRef(item.promptText);
+
+  useEffect(() => () => {
+    globalThis.speechSynthesis?.cancel?.();
+  }, []);
+
+  useEffect(() => {
+    if (paused) globalThis.speechSynthesis?.cancel?.();
+  }, [paused]);
+
+  useEffect(() => {
+    if (previousPromptTextRef.current !== item.promptText) {
+      globalThis.speechSynthesis?.cancel?.();
+      previousPromptTextRef.current = item.promptText;
+    }
+  }, [item.promptText]);
 
   function replay(): void {
+    if (disabled || paused) return;
     onReplay();
     if (
       typeof globalThis.speechSynthesis === "undefined" ||
@@ -22,6 +41,7 @@ export function DictationPanel({
     ) return;
     const utterance = new SpeechSynthesisUtterance(item.promptText);
     utterance.lang = "ko-KR";
+    globalThis.speechSynthesis.cancel?.();
     globalThis.speechSynthesis.speak(utterance);
   }
 
