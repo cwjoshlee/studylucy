@@ -87,9 +87,12 @@ export function ResponsiveNavigation({
     );
     let wasLandscape = landscapeRail.matches;
     let cancelScheduledFocus: (() => void) | null = null;
-    const handleLayoutChange = (event: MediaQueryListEvent) => {
+    const cancelFocusHandoff = () => {
       cancelScheduledFocus?.();
       cancelScheduledFocus = null;
+    };
+    const handleLayoutChange = (event: MediaQueryListEvent) => {
+      cancelFocusHandoff();
       if (event.matches && drawerOpenRef.current) {
         closeFocusTarget.current = "rail";
         setDrawerOpen(false);
@@ -99,7 +102,30 @@ export function ResponsiveNavigation({
           focusedRailEntry instanceof HTMLElement &&
           railRef.current?.contains(focusedRailEntry)
         ) {
+          let settled = false;
+          let cancelDeferredFocus = () => {};
+          const stopWatchingFocus = () => {
+            document.removeEventListener("focus", cancelOnExternalFocus, true);
+            document.removeEventListener("focusin", cancelOnExternalFocus, true);
+          };
+          const cancelHandoff = () => {
+            if (settled) return;
+            settled = true;
+            cancelDeferredFocus();
+            stopWatchingFocus();
+          };
+          const cancelOnExternalFocus = (focusEvent: FocusEvent) => {
+            if (focusEvent.target !== focusedRailEntry) {
+              cancelHandoff();
+              if (cancelScheduledFocus === cancelHandoff) {
+                cancelScheduledFocus = null;
+              }
+            }
+          };
           const moveFocus = () => {
+            if (settled) return;
+            settled = true;
+            stopWatchingFocus();
             cancelScheduledFocus = null;
             if (
               !landscapeRail.matches &&
@@ -111,18 +137,25 @@ export function ResponsiveNavigation({
           };
           if (typeof window.requestAnimationFrame === "function") {
             const frame = window.requestAnimationFrame(moveFocus);
-            cancelScheduledFocus = () => window.cancelAnimationFrame(frame);
+            cancelDeferredFocus = () => {
+              if (typeof window.cancelAnimationFrame === "function") {
+                window.cancelAnimationFrame(frame);
+              }
+            };
           } else {
             const timeout = window.setTimeout(moveFocus, 0);
-            cancelScheduledFocus = () => window.clearTimeout(timeout);
+            cancelDeferredFocus = () => window.clearTimeout(timeout);
           }
+          cancelScheduledFocus = cancelHandoff;
+          document.addEventListener("focus", cancelOnExternalFocus, true);
+          document.addEventListener("focusin", cancelOnExternalFocus, true);
         }
       }
       wasLandscape = event.matches;
     };
     landscapeRail.addEventListener("change", handleLayoutChange);
     return () => {
-      cancelScheduledFocus?.();
+      cancelFocusHandoff();
       landscapeRail.removeEventListener("change", handleLayoutChange);
     };
   }, []);
@@ -134,7 +167,9 @@ export function ResponsiveNavigation({
     const rail = railRef.current;
     if (root === null || drawer === null || rail === null) return;
 
+    const fab = fabRef.current;
     const protectedElements = new Set<HTMLElement>([rail]);
+    if (fab !== null) protectedElements.add(fab);
     const shell = root.closest<HTMLElement>(".responsive-shell");
     const appScope = root.closest<HTMLElement>(".guardian-shell") ?? shell;
     if (appScope !== null) {
@@ -154,22 +189,31 @@ export function ResponsiveNavigation({
     const restoreBoundaries = Array.from(protectedElements, (element) => {
       const previousInert = element.getAttribute("inert");
       const previousAriaHidden = element.getAttribute("aria-hidden");
-      const blockInteraction = (event: Event) => {
+      const previousDisabled = element.getAttribute("disabled");
+      const stopBeforeBackgroundHandlers = (event: Event) => {
         event.preventDefault();
-        event.stopImmediatePropagation();
+        event.stopPropagation();
+        if (typeof event.stopImmediatePropagation === "function") {
+          event.stopImmediatePropagation();
+        }
+      };
+      const blockInteraction = (event: Event) => {
+        stopBeforeBackgroundHandlers(event);
       };
       const redirectFocus = (event: FocusEvent) => {
         if (element.contains(event.target as Node)) {
-          event.preventDefault();
+          stopBeforeBackgroundHandlers(event);
           drawer.querySelector<HTMLButtonElement>("[data-drawer-close]")?.focus();
         }
       };
 
       element.setAttribute("inert", "");
       element.setAttribute("aria-hidden", "true");
+      if (element === fab) element.setAttribute("disabled", "");
       element.addEventListener("click", blockInteraction, true);
       element.addEventListener("pointerdown", blockInteraction, true);
       element.addEventListener("keydown", blockInteraction, true);
+      element.addEventListener("focus", redirectFocus, true);
       element.addEventListener("focusin", redirectFocus, true);
 
       return () => {
@@ -177,9 +221,14 @@ export function ResponsiveNavigation({
         else element.setAttribute("inert", previousInert);
         if (previousAriaHidden === null) element.removeAttribute("aria-hidden");
         else element.setAttribute("aria-hidden", previousAriaHidden);
+        if (element === fab) {
+          if (previousDisabled === null) element.removeAttribute("disabled");
+          else element.setAttribute("disabled", previousDisabled);
+        }
         element.removeEventListener("click", blockInteraction, true);
         element.removeEventListener("pointerdown", blockInteraction, true);
         element.removeEventListener("keydown", blockInteraction, true);
+        element.removeEventListener("focus", redirectFocus, true);
         element.removeEventListener("focusin", redirectFocus, true);
       };
     });
@@ -263,8 +312,9 @@ export function ResponsiveNavigation({
         aria-label={fabLabel}
         className="responsive-nav__fab"
         onClick={() => {
+          if (drawerOpenRef.current) return;
           closeFocusTarget.current = "fab";
-          setDrawerOpen((open) => !open);
+          setDrawerOpen(true);
         }}
         ref={fabRef}
         type="button"
