@@ -532,6 +532,91 @@ describe("GuardianDashboard", () => {
     expect(screen.queryByText(/서버 설정은 변경되지 않았어요/)).not.toBeInTheDocument();
   });
 
+  it("replaces a pending initial settings read after studio navigation", async () => {
+    const user = userEvent.setup();
+    const older = {
+      monthlyBudgetWon: 3000,
+      monthSpentWon: 1250,
+      providers: [
+        {
+          provider: "gemini" as const, enabled: true, model: "gemini-old",
+          hasApiKey: true, inputWonPer1K: 2, outputWonPer1K: 8
+        },
+        {
+          provider: "openai" as const, enabled: true, model: "gpt-old",
+          hasApiKey: true, inputWonPer1K: 3, outputWonPer1K: 12
+        }
+      ]
+    };
+    const initialRead = deferred<typeof older>();
+    const replacementRead = deferred<typeof older>();
+    const fresh = { ...older, monthlyBudgetWon: 5000, monthSpentWon: 2400 };
+    const getAiStudioSettingsView = vi.fn()
+      .mockReturnValueOnce(initialRead.promise)
+      .mockReturnValueOnce(replacementRead.promise);
+    render(<GuardianDashboard api={createGuardianApi({ getAiStudioSettingsView })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(1));
+    await user.click(screen.getByRole("treeitem", { name: "월 예산·사용량" }));
+
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(2));
+    await act(async () => replacementRead.resolve(fresh));
+    expect(await screen.findByText("이번 달 사용 2,400원")).toBeVisible();
+    expect(screen.queryByText("제공자 설정을 불러오고 있어요.")).not.toBeInTheDocument();
+
+    await act(async () => initialRead.resolve(older));
+    expect(screen.getByText("이번 달 사용 2,400원")).toBeVisible();
+    expect(screen.queryByText("이번 달 사용 1,250원")).not.toBeInTheDocument();
+  });
+
+  it("replaces a pending provider reconciliation after switching settings leaves", async () => {
+    const user = userEvent.setup();
+    const initial = {
+      monthlyBudgetWon: 3000,
+      monthSpentWon: 1250,
+      providers: [
+        {
+          provider: "gemini" as const, enabled: true, model: "gemini-current",
+          hasApiKey: true, inputWonPer1K: 2, outputWonPer1K: 8
+        },
+        {
+          provider: "openai" as const, enabled: true, model: "gpt-current",
+          hasApiKey: true, inputWonPer1K: 3, outputWonPer1K: 12
+        }
+      ]
+    };
+    const staleReconciliation = deferred<typeof initial>();
+    const replacementRead = deferred<typeof initial>();
+    const fresh = { ...initial, monthlyBudgetWon: 4800, monthSpentWon: 2200 };
+    const getAiStudioSettingsView = vi.fn()
+      .mockResolvedValueOnce(initial)
+      .mockReturnValueOnce(staleReconciliation.promise)
+      .mockReturnValueOnce(replacementRead.promise);
+    render(<GuardianDashboard api={createGuardianApi({
+      getAiStudioSettingsView,
+      updateAiStudioProvider: vi.fn(async (provider: "gemini" | "openai") =>
+        initial.providers.find((value) => value.provider === provider)!)
+    })} />);
+
+    await user.click(screen.getByRole("button", { name: "AI 학습실" }));
+    await screen.findByLabelText("Gemini 모델");
+    await user.click(screen.getByRole("button", { name: "Gemini 설정 저장" }));
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(2));
+
+    await user.click(screen.getByRole("treeitem", { name: "월 예산·사용량" }));
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(3));
+    await act(async () => replacementRead.resolve(fresh));
+    expect(await screen.findByText("이번 달 사용 2,200원")).toBeVisible();
+
+    await act(async () => staleReconciliation.reject(new Error("stale reload failed")));
+    await waitFor(() => expect(screen.queryByText(/현재 서버 상태를 확인하지 못했어요/))
+      .not.toBeInTheDocument());
+    expect(screen.queryByRole("button", { name: "최신 설정 다시 불러오기" }))
+      .not.toBeInTheDocument();
+    expect(screen.getByText("이번 달 사용 2,200원")).toBeVisible();
+  });
+
   it("keeps the newest settings when an older budget reconciliation resolves last", async () => {
     const user = userEvent.setup();
     const initial = {
@@ -558,10 +643,12 @@ describe("GuardianDashboard", () => {
         : provider)
     };
     const oldRead = deferred<typeof initial>();
+    const navigationRead = deferred<typeof initial>();
     const newRead = deferred<typeof initial>();
     const getAiStudioSettingsView = vi.fn()
       .mockResolvedValueOnce(initial)
       .mockReturnValueOnce(oldRead.promise)
+      .mockReturnValueOnce(navigationRead.promise)
       .mockReturnValueOnce(newRead.promise);
     const updateAiStudioProvider = vi.fn(async (
       provider: "gemini" | "openai",
@@ -582,11 +669,13 @@ describe("GuardianDashboard", () => {
     await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(2));
 
     await user.click(screen.getByRole("treeitem", { name: "제공자·모델 선택" }));
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(3));
+    await act(async () => navigationRead.resolve(initial));
     const geminiModel = await screen.findByLabelText("Gemini 모델");
     await user.clear(geminiModel);
     await user.type(geminiModel, "gemini-new");
     await user.click(screen.getByRole("button", { name: "Gemini 설정 저장" }));
-    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(getAiStudioSettingsView).toHaveBeenCalledTimes(4));
 
     await act(async () => newRead.resolve(newest));
     await waitFor(() => expect(screen.getByLabelText("Gemini 모델")).toHaveValue("gemini-new"));
