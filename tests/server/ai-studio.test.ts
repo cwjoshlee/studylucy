@@ -259,6 +259,86 @@ describe("AI learning studio", () => {
     db.close();
   });
 
+  it("charges complete provider usage above each Studio reservation", async () => {
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const prompt = promptFromRequest(url, init!);
+      const value = prompt.action === "generate"
+        ? { items: [mathItem(`${url.includes("googleapis.com") ? "g" : "o"}-usage`, 32)] }
+        : { accepted: true, reasons: [] };
+      return url.includes("googleapis.com")
+        ? new Response(JSON.stringify({
+            candidates: [{ content: { parts: [{ text: JSON.stringify(value) }] } }],
+            usageMetadata: { promptTokenCount: 50_000, candidatesTokenCount: 50_000 }
+          }), { status: 200 })
+        : new Response(JSON.stringify({
+            ...openAiOutput(value),
+            usage: { input_tokens: 50_000, output_tokens: 50_000 }
+          }), { status: 200 });
+    });
+    const { db, service } = studio({ fetcher });
+    service.updateProvider("gemini", { enabled: true, apiKey: secrets.gemini });
+    service.updateProvider("openai", { enabled: true, apiKey: secrets.openai });
+    service.updateBudget({ monthlyBudgetWon: 10_000 });
+
+    await service.createDraft({
+      subject: "math", step: "current", count: 2, difficulty: 4, weakTopics: []
+    });
+
+    expect(db.prepare(`
+      SELECT COUNT(*) AS count, MIN(estimated_won) AS minWon, MAX(estimated_won) AS maxWon,
+        SUM(estimated_won) AS totalWon
+      FROM ai_coach_usage
+    `).get()).toEqual({ count: 4, minWon: 250, maxWon: 250, totalWon: 1000 });
+    db.close();
+  });
+
+  it("reads the current budget and provider rates inside the reservation transaction", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "ai-studio-budget-race-"));
+    const databasePath = join(directory, "studio.sqlite");
+    const firstDb = openDatabase(databasePath);
+    const secondDb = openDatabase(databasePath);
+    const fetcher = vi.fn();
+    try {
+      migrate(firstDb);
+      seedInitialContent(firstDb);
+      migrate(secondDb);
+      const first = new AiStudioService({ db: firstDb, encryptionKey, fetcher, now });
+      const second = new AiStudioService({ db: secondDb, encryptionKey, now });
+      first.updateProvider("gemini", { enabled: true, apiKey: secrets.gemini });
+      first.updateProvider("openai", { enabled: true, apiKey: secrets.openai });
+      first.updateBudget({ monthlyBudgetWon: 100 });
+
+      const internal = first as unknown as {
+        reserveBudget: (...args: unknown[]) => unknown;
+      };
+      const originalReserve = internal.reserveBudget.bind(first);
+      let changed = false;
+      internal.reserveBudget = (...args) => {
+        if (!changed) {
+          changed = true;
+          second.updateBudget({ monthlyBudgetWon: 100 });
+          secondDb.prepare(`
+            UPDATE ai_provider_settings
+            SET input_won_per_1k = 1000, output_won_per_1k = 1000
+          `).run();
+        }
+        return originalReserve(...args);
+      };
+
+      await expect(first.createDraft({
+        subject: "math", step: "current", count: 2, difficulty: 4, weakTopics: []
+      })).rejects.toMatchObject({ code: "AI_STUDIO_BUDGET_EXCEEDED" });
+      expect(fetcher).not.toHaveBeenCalled();
+      expect(firstDb.prepare("SELECT COUNT(*) AS count FROM ai_coach_usage").get())
+        .toEqual({ count: 0 });
+    } finally {
+      secondDb.close();
+      firstDb.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
+  });
+
   it("accepts key updates only over effective HTTPS from the trusted first-hop proxy", async () => {
     const harness = await productionStudioHarness();
     const { guardian } = harness;
@@ -433,6 +513,37 @@ describe("AI learning studio", () => {
     expect(() => service.updateDraftItem(saved.id, saved.items[0]!.id, {
       payload: saved.items[0]!.payload
     })).toThrowError(AiStudioError);
+    db.close();
+  });
+
+  it("cross-reviews only the locally normalized candidate payload", async () => {
+    const reviewedCandidates: unknown[] = [];
+    const fetcher = vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input);
+      const prompt = promptFromRequest(url, init!);
+      if (prompt.action === "generate") {
+        const provider = url.includes("googleapis.com") ? "gemini" : "openai";
+        return responseFor(url, {
+          items: [{
+            ...mathItem(`${provider}-normalized`, provider === "gemini" ? 33 : 34),
+            unsafeUnrecognizedField: "must-not-reach-review"
+          }]
+        });
+      }
+      reviewedCandidates.push(prompt.candidate);
+      return responseFor(url, { accepted: true, reasons: [] });
+    });
+    const { db, service } = studio({ fetcher });
+    service.updateProvider("gemini", { enabled: true, apiKey: secrets.gemini });
+    service.updateProvider("openai", { enabled: true, apiKey: secrets.openai });
+
+    await service.createDraft({
+      subject: "math", step: "current", count: 2, difficulty: 4, weakTopics: []
+    });
+
+    expect(reviewedCandidates).toHaveLength(2);
+    expect(JSON.stringify(reviewedCandidates)).not.toContain("unsafeUnrecognizedField");
+    expect(JSON.stringify(reviewedCandidates)).not.toContain("must-not-reach-review");
     db.close();
   });
 

@@ -1,3 +1,6 @@
+import { mkdtempSync, rmSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import { describe, expect, it, vi } from "vitest";
 import { decryptApiKey, encryptApiKey } from "../../src/server/coach/crypto";
 import { AiCoachService } from "../../src/server/coach/service";
@@ -285,7 +288,7 @@ describe("AI coach privacy and budget boundaries", () => {
     db.close();
   });
 
-  it("keeps the conservative reservation when observed token usage is higher", async () => {
+  it("charges complete observed usage even when it exceeds the reservation", async () => {
     const db = openDatabase(":memory:");
     migrate(db);
     db.prepare(`
@@ -316,11 +319,40 @@ describe("AI coach privacy and budget boundaries", () => {
     expect(fetcher).toHaveBeenCalledOnce();
     expect(db.prepare(`
       SELECT SUM(estimated_won) AS spent FROM ai_coach_usage WHERE month = '2026-07'
-    `).get()).toEqual({ spent: 1000 });
+    `).get()).toEqual({ spent: 1249 });
     expect(db.prepare(`
       SELECT input_tokens AS inputTokens, output_tokens AS outputTokens, estimated_won AS estimatedWon
       FROM ai_coach_usage WHERE id = 2
-    `).get()).toEqual({ inputTokens: 50_000, outputTokens: 50_000, estimatedWon: 1 });
+    `).get()).toEqual({ inputTokens: 50_000, outputTokens: 50_000, estimatedWon: 250 });
+    db.close();
+  });
+
+  it("keeps the reservation when complete usage would overflow safe cost arithmetic", async () => {
+    const db = openDatabase(":memory:");
+    migrate(db);
+    const fetcher = vi.fn().mockResolvedValue(new Response(JSON.stringify(
+      openAiResponse("한 걸음씩 해 보자", Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER)
+    ), { status: 200 }));
+    const service = new AiCoachService({ db, encryptionKey: key, fetcher });
+    service.updateSettings({
+      enabled: true, provider: "openai", apiKey: "provider-secret", monthlyBudgetWon: 1000
+    });
+
+    await service.message({
+      event: "retry", subject: "korean", retryCount: 1, hintStage: "step"
+    });
+
+    const usage = db.prepare(`
+      SELECT input_tokens AS inputTokens, output_tokens AS outputTokens,
+        estimated_won AS estimatedWon, reserved_output_tokens AS reservedOutputTokens
+      FROM ai_coach_usage
+    `).get();
+    expect(usage).toMatchObject({
+      inputTokens: 0,
+      outputTokens: 0,
+      estimatedWon: expect.any(Number),
+      reservedOutputTokens: 64
+    });
     db.close();
   });
 
@@ -419,6 +451,64 @@ describe("AI coach privacy and budget boundaries", () => {
       SELECT SUM(estimated_won) AS spent FROM ai_coach_usage WHERE month = '2026-07'
     `).get()).toEqual({ spent: 1000 });
     db.close();
+  });
+
+  it("reads the current coach budget and provider rates inside the reservation transaction", async () => {
+    const directory = mkdtempSync(join(tmpdir(), "ai-coach-budget-race-"));
+    const databasePath = join(directory, "coach.sqlite");
+    const firstDb = openDatabase(databasePath);
+    const secondDb = openDatabase(databasePath);
+    const fetcher = vi.fn();
+    try {
+      migrate(firstDb);
+      migrate(secondDb);
+      const first = new AiCoachService({
+        db: firstDb,
+        encryptionKey: key,
+        fetcher,
+        now: () => new Date("2026-07-18T03:00:00.000Z")
+      });
+      const second = new AiCoachService({
+        db: secondDb,
+        encryptionKey: key,
+        now: () => new Date("2026-07-18T03:00:00.000Z")
+      });
+      first.updateSettings({
+        enabled: true,
+        provider: "openai",
+        apiKey: "provider-secret",
+        monthlyBudgetWon: 100
+      });
+
+      const internal = first as unknown as {
+        reserveUsage: (...args: unknown[]) => unknown;
+      };
+      const originalReserve = internal.reserveUsage.bind(first);
+      let changed = false;
+      internal.reserveUsage = (...args) => {
+        if (!changed) {
+          changed = true;
+          second.updateSettings({ monthlyBudgetWon: 100 });
+          secondDb.prepare(`
+            UPDATE ai_provider_settings
+            SET input_won_per_1k = 1000, output_won_per_1k = 1000
+            WHERE provider = 'openai'
+          `).run();
+        }
+        return originalReserve(...args);
+      };
+
+      await expect(first.message({
+        event: "retry", subject: "math", retryCount: 1, hintStage: "first"
+      })).resolves.toMatchObject({ source: "local" });
+      expect(fetcher).not.toHaveBeenCalled();
+      expect(firstDb.prepare("SELECT COUNT(*) AS count FROM ai_coach_usage").get())
+        .toEqual({ count: 0 });
+    } finally {
+      secondDb.close();
+      firstDb.close();
+      rmSync(directory, { recursive: true, force: true });
+    }
   });
 
   it("keeps concurrent reservations within the monthly application cap", async () => {
