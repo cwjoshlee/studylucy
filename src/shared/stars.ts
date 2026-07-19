@@ -112,10 +112,11 @@ export type GuardianDailyPlan = {
   studyDate: string;
   isRestDay: boolean;
   subjectSettings: Record<"korean" | "math", SubjectStepSettings>;
+  /** Ordered foundation/current/challenge IDs per subject; empty on a rest day. */
   requiredItemIds: string[];
-  /** @deprecated Retained while older guardian clients migrate to subjectSettings. */
+  /** @deprecated Response-only compatibility metadata; updates require subjectSettings. */
   koreanTarget: number;
-  /** @deprecated Retained while older guardian clients migrate to subjectSettings. */
+  /** @deprecated Response-only compatibility metadata; updates require subjectSettings. */
   mathTarget: number;
 };
 

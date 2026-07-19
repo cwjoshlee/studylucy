@@ -5,7 +5,10 @@ import type {
   LearningSessionRequest
 } from "../../shared/learning";
 import type { IdleEventInput } from "../../shared/stars";
-import { IssuedPlanError } from "./issued-plan-repository";
+import {
+  assertIssuedStepUnlocked,
+  IssuedPlanError
+} from "./issued-plan-repository";
 
 export type LearningSessionErrorCode =
   | "LEARNING_SESSION_INVALID"
@@ -61,6 +64,7 @@ export class LearningSessionRepository {
       if (issuedAtMs > submitUntilMs) {
         throw new IssuedPlanError("PLAN_SUBMISSION_EXPIRED");
       }
+      assertIssuedStepUnlocked(this.db, studentId, input.planId, input.itemId);
       const activeUntil = new Date(Math.min(
         issuedAtMs + 6 * 60 * 60 * 1_000,
         submitUntilMs

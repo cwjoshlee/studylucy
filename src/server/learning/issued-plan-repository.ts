@@ -13,6 +13,7 @@ export type IssuedPlanErrorCode =
   | "PLAN_NOT_ISSUED"
   | "PLAN_SUBMISSION_EXPIRED"
   | "CONTENT_VERSION_CONFLICT"
+  | "STEP_LOCKED"
   | "SOURCE_DEVICE_STILL_ACTIVE"
   | "INVALID_REQUEST";
 
@@ -72,6 +73,62 @@ type PlanAuthorityRow = PlanRow & {
   trustedDeviceId: string;
   originalDeviceId: string;
 };
+
+type IssuedStepAuthorityRow = {
+  itemId: string;
+  step: LearningStep;
+  payloadJson: string;
+  completed: number;
+};
+
+const STEP_RANK: Record<LearningStep, number> = {
+  foundation: 0,
+  current: 1,
+  challenge: 2
+};
+
+export function assertIssuedStepUnlocked(
+  db: Database.Database,
+  studentId: string,
+  planId: string,
+  itemId: string
+): void {
+  const rows = db.prepare(`
+    SELECT ipi.item_id AS itemId, ipi.step,
+           cv.payload_json AS payloadJson,
+           EXISTS (
+             SELECT 1 FROM attempts AS a
+             WHERE a.user_id = ?
+               AND a.issued_plan_id = ipi.plan_id
+               AND a.item_id = ipi.item_id
+               AND a.completed = 1
+           ) AS completed
+    FROM issued_plan_items AS ipi
+    JOIN content_versions AS cv
+      ON cv.item_id = ipi.item_id
+     AND cv.version = ipi.content_version
+    WHERE ipi.plan_id = ?
+    ORDER BY CASE ipi.step
+      WHEN 'foundation' THEN 0
+      WHEN 'current' THEN 1
+      WHEN 'challenge' THEN 2
+    END, ipi.sort_order, ipi.item_id
+  `).all(studentId, planId) as IssuedStepAuthorityRow[];
+  const target = rows.find((row) => row.itemId === itemId);
+  if (target === undefined) {
+    throw new IssuedPlanError("PLAN_NOT_ISSUED");
+  }
+  const targetSubject = LearningItemPayloadSchema.parse(
+    JSON.parse(target.payloadJson)
+  ).subject;
+  const blocked = rows.some((row) =>
+    STEP_RANK[row.step] < STEP_RANK[target.step] &&
+    LearningItemPayloadSchema.parse(JSON.parse(row.payloadJson)).subject ===
+      targetSubject &&
+    row.completed !== 1
+  );
+  if (blocked) throw new IssuedPlanError("STEP_LOCKED");
+}
 
 export type IssuedPlanAuthority = {
   snapshot: IssuedPlanSnapshot;
@@ -350,6 +407,7 @@ export class IssuedPlanRepository {
     if (item.contentVersion !== input.contentVersion) {
       throw new IssuedPlanError("CONTENT_VERSION_CONFLICT");
     }
+    assertIssuedStepUnlocked(this.db, studentId, input.planId, input.itemId);
     return {
       issuedPlanId: plan.id,
       studyDate: plan.studyDate,
